@@ -329,9 +329,34 @@ cp .env.example .env
 Then edit:
 
 ```text
-OPENAI_API_KEY=your_key_here
+OPENAI_API_KEY=<your-project-api-key>
 OPENAI_MODEL=gpt-5.6-luna
 ```
+
+Leave `OPENAI_API_KEY` blank if you do not use **Draft conversation**. Audio
+generation through Kokoro does not require an OpenAI key. After adding or
+changing the key, recreate the app container so Compose passes the updated
+value into the application:
+
+```bash
+docker compose up -d --force-recreate app
+```
+
+Confirm that the variable reached the container without printing the secret:
+
+```bash
+docker compose exec app sh -c 'test -n "$OPENAI_API_KEY" && echo "OPENAI_API_KEY is set"'
+```
+
+For local development outside Docker, export the value in the shell before
+starting Uvicorn; the application does not automatically load `.env` files:
+
+```bash
+export OPENAI_API_KEY="your-project-api-key"
+```
+
+The local `.env` file is ignored by Git. Never commit or paste a real API key
+into source code, logs, or issue reports.
 
 The implementation uses the OpenAI Responses API by default. `OPENAI_RESPONSES_URL` and `OPENAI_MODEL` are environment-configurable so this layer can be swapped or proxied later without changing the podcast/audio pipeline.
 

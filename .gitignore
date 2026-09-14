@@ -1,0 +1,12 @@
+# Local environment files can contain credentials.
+.env
+.env.*
+!.env.example
+
+# Python and test caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated application output.
+output/
