@@ -4,7 +4,7 @@ Initial podcast-production application for turning a narration script into a fin
 
 ## MVP features
 
-- Browser-based episode editor on port `8080`
+- Browser-based episode editor on port `8081`
 - Preloaded pilot narration script
 - Configurable Kokoro voice and tempo
 - Automatic TTS-friendly script cleanup
@@ -19,10 +19,10 @@ Initial podcast-production application for turning a narration script into a fin
 ## Architecture
 
 ```text
-Browser :8080
+Browser :8081
     |
     v
-FastAPI podcast app
+FastAPI podcast app :8080 (inside Docker)
     |
     +--> script cleanup/chunking
     |
@@ -59,10 +59,13 @@ From the project directory:
 docker compose up -d --build
 ```
 
+Docker publishes host port `8081` to the app's internal port `8080`, so an
+existing service on the host's port `8080` is not affected.
+
 Open:
 
 ```text
-http://localhost:8080
+http://localhost:8081
 ```
 
 The top status card should show:
@@ -73,7 +76,7 @@ App ready · Kokoro online
 
 ## Generate the pilot
 
-1. Open `http://localhost:8080`.
+1. Open `http://localhost:8081`.
 2. The pilot script is preloaded.
 3. Start with voice `am_michael` and tempo `1.00`.
 4. Click **Generate episode**.
@@ -98,7 +101,7 @@ output/<timestamp>-<episode-title>/
 Check the app:
 
 ```bash
-curl http://localhost:8080/api/health
+curl http://localhost:8081/api/health
 ```
 
 Watch logs:
@@ -143,7 +146,7 @@ Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt pytest
 pytest -q
-uvicorn app.main:app --reload --port 8080
+uvicorn app.main:app --reload --port 8081
 ```
 
 When running outside Docker, set `KOKORO_URL` to localhost:
