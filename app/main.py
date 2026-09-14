@@ -22,7 +22,11 @@ EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", APP_ROOT / "output"))
 CONFIG_DIR = Path(os.getenv("CONFIG_DIR", APP_ROOT / "config"))
 HOST_PROFILES_FILE = CONFIG_DIR / "host_profiles.json"
-KOKORO_URL = os.getenv("KOKORO_URL", "http://kokoro:7860")
+KOKORO_URL = os.getenv("KOKORO_URL", "http://kokoro:7860").rstrip("/")
+KOKORO_PUBLIC_URL = os.getenv("KOKORO_PUBLIC_URL", "").strip().rstrip("/")
+KOKORO_TTS_PATH = os.getenv("KOKORO_TTS_PATH", "/tts/generate")
+KOKORO_HEALTH_PATH = os.getenv("KOKORO_HEALTH_PATH", "/tts/status")
+KOKORO_PUBLIC_PORT = int(os.getenv("KOKORO_PUBLIC_PORT", "7860"))
 DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "am_michael")
 DEFAULT_TEMPO = float(os.getenv("DEFAULT_TEMPO", "1.0"))
 MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
@@ -416,16 +420,23 @@ def conversation_model_name() -> str:
     return LOCAL_AI_MODEL if CONVERSATION_PROVIDER == "local" else OPENAI_MODEL
 
 
+def kokoro_endpoint(path: str) -> str:
+    """Join a configurable Kokoro API path to its internal service URL."""
+    return f"{KOKORO_URL}/{path.lstrip('/')}"
+
+
 async def kokoro_status() -> dict:
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(f"{KOKORO_URL}/tts/status")
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5)) as client:
+        response = await client.get(kokoro_endpoint(KOKORO_HEALTH_PATH))
         response.raise_for_status()
-        return response.json()
+        if response.headers.get("content-type", "").startswith("application/json"):
+            return response.json()
+        return {"detail": response.text[:200] or "Kokoro is reachable"}
 
 
 def describe_kokoro_error(exc: httpx.HTTPError) -> str:
     """Return an actionable message even when httpx's exception text is empty."""
-    endpoint = f"{KOKORO_URL}/tts/generate"
+    endpoint = kokoro_endpoint(KOKORO_TTS_PATH)
     if isinstance(exc, httpx.HTTPStatusError):
         response = exc.response
         response_detail = response.text.strip().replace("\n", " ")[:500]
@@ -441,17 +452,27 @@ def describe_kokoro_error(exc: httpx.HTTPError) -> str:
 
 
 async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Path) -> None:
+    """Generate WAV audio through the API exposed by hangrylabs/kokorotts."""
     payload = {
         "text": text,
         "voice": voice,
-        "output_format": "wav",
-        "tempo": tempo,
-        "normalize": True,
+        "speed": tempo,
     }
-    async with httpx.AsyncClient(timeout=KOKORO_TIMEOUT_SECONDS) as client:
-        response = await client.post(f"{KOKORO_URL}/tts/generate", json=payload)
+    timeout = httpx.Timeout(KOKORO_TIMEOUT_SECONDS, connect=10, write=30, pool=10)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(kokoro_endpoint(KOKORO_TTS_PATH), json=payload)
         response.raise_for_status()
-        destination.write_bytes(response.content)
+
+    content_type = response.headers.get("content-type", "").lower()
+    if not response.content.startswith(b"RIFF"):
+        detail = response.text.strip().replace("\n", " ")[:500] if "json" in content_type else ""
+        suffix = f": {detail}" if detail else f" (content type: {content_type or 'unknown'})"
+        raise httpx.HTTPStatusError(
+            f"Kokoro returned a response that is not WAV audio{suffix}",
+            request=response.request,
+            response=response,
+        )
+    destination.write_bytes(response.content)
 
 
 def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
@@ -747,6 +768,7 @@ async def index(request: Request):
             "default_voice": DEFAULT_VOICE,
             "default_tempo": DEFAULT_TEMPO,
             "host_profiles": load_host_profiles(),
+            "kokoro_public_port": KOKORO_PUBLIC_PORT,
         },
     )
 
@@ -771,7 +793,7 @@ async def health():
         kokoro = {"ok": True, "status": status}
     except Exception as exc:  # noqa: BLE001
         kokoro = {"ok": False, "error": str(exc)}
-    return {"app": "ok", "kokoro": kokoro}
+    return {"app": "ok", "kokoro": kokoro, "kokoro_public_url": KOKORO_PUBLIC_URL or None}
 
 
 @app.post("/api/conversation-draft")
