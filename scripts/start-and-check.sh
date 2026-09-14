@@ -3,6 +3,12 @@ set -euo pipefail
 
 readonly app_port="${APP_PORT:-8081}"
 readonly app_url="http://127.0.0.1:${app_port}"
+readonly startup_timeout="${STARTUP_TIMEOUT_SECONDS:-600}"
+
+if [[ ! "${startup_timeout}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Error: STARTUP_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 1
+fi
 
 show_diagnostics() {
   echo "Container status:" >&2
@@ -37,7 +43,8 @@ echo "Building and recreating Patch Notes and Kokoro..."
 docker compose up -d --build --force-recreate kokoro app
 
 echo "Waiting for ${app_url}/api/health..."
-for attempt in {1..30}; do
+deadline=$((SECONDS + startup_timeout))
+while (( SECONDS < deadline )); do
   if response=$(curl --fail --silent --max-time 3 "${app_url}/api/health" 2>/dev/null) \
     && grep -q '"kokoro":{"ok":true' <<<"${response}"; then
     printf '%s\n' "${response}"
@@ -51,10 +58,8 @@ for attempt in {1..30}; do
     exit 1
   fi
 
-  if (( attempt < 30 )); then
-    printf '.'
-    sleep 2
-  fi
+  printf '.'
+  sleep 2
 done
 
 printf '\n' >&2

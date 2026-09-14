@@ -69,7 +69,8 @@ host using `APP_BIND_ADDRESS` and `APP_PORT`, which default to
 starts Kokoro, waits for the configured health endpoint, and prints logs from
 both services on failure. Startup is considered successful only after the app
 reports that Kokoro is online, so audio generation is ready when the script
-returns.
+returns. The default startup timeout is 10 minutes because Kokoro can initialize
+slowly under ARM emulation; set `STARTUP_TIMEOUT_SECONDS` in `.env` to adjust it.
 
 Open:
 
@@ -95,6 +96,11 @@ binfmt/QEMU support before starting Kokoro; this prevents the repeated
 registration uses the privileged `tonistiigi/binfmt` installer container.
 Docker Desktop users must allow x86/amd64 emulation. `KOKORO_PLATFORM` in
 `.env` can be changed when a native ARM64 Kokoro image is available.
+
+Docker's app health status measures whether the web app is serving requests;
+the startup helper separately waits for Kokoro readiness. During a slow first
+Kokoro boot, `docker compose ps` may therefore show the app as healthy before
+the startup helper announces that audio is ready.
 
 ## Generate the pilot
 
