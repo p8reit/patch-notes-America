@@ -16,5 +16,5 @@ COPY episodes ./episodes
 COPY config ./config
 RUN mkdir -p /app/output /app/config
 
-EXPOSE 8080
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+EXPOSE 8081
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8081"]
