@@ -22,7 +22,7 @@ Initial podcast-production application for turning a narration script into a fin
 Browser :8081
     |
     v
-FastAPI podcast app
+FastAPI podcast app :8080 (inside Docker)
     |
     +--> script cleanup/chunking
     |
@@ -58,6 +58,9 @@ From the project directory:
 ```bash
 docker compose up -d --build
 ```
+
+Docker publishes host port `8081` to the app's internal port `8080`, so an
+existing service on the host's port `8080` is not affected.
 
 Open:
 
