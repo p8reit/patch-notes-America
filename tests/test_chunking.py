@@ -23,17 +23,17 @@ def test_split_script_keeps_short_paragraphs():
 
 
 def test_kokoro_timeout_error_is_actionable_when_exception_text_is_empty():
-    request = httpx.Request("POST", "http://kokoro:7860/v1/audio/speech")
+    request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
     error = httpx.ReadTimeout("", request=request)
 
     detail = describe_kokoro_error(error)
 
     assert "did not respond within 180 seconds" in detail
-    assert "http://kokoro:7860/v1/audio/speech" in detail
+    assert "http://kokoro:7860/tts/generate" in detail
 
 
 def test_kokoro_http_error_includes_status_and_response_detail():
-    request = httpx.Request("POST", "http://kokoro:7860/v1/audio/speech")
+    request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
     response = httpx.Response(422, text="voice is not supported", request=request)
     error = httpx.HTTPStatusError("bad response", request=request, response=response)
 
