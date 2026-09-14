@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly app_url="http://127.0.0.1:8081"
+readonly app_port="${APP_PORT:-8081}"
+readonly app_url="http://127.0.0.1:${app_port}"
 
 show_diagnostics() {
   echo "Container status:" >&2
@@ -44,6 +45,6 @@ for attempt in {1..30}; do
 done
 
 printf '\n' >&2
-echo "Error: the app did not become reachable on port 8081." >&2
+echo "Error: the app did not become reachable on port ${app_port}." >&2
 show_diagnostics
 exit 1
