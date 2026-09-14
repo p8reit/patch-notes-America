@@ -215,14 +215,15 @@ def save_host_profiles(hosts: list[dict[str, Any]]) -> None:
 def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Split a script into ordered speaker sections.
 
-    A line containing only ``[Host Name]`` switches the active speaker. Text before
-    the first speaker tag uses the first configured host for backward compatibility.
+    A line containing only ``[Host Name]`` switches the active speaker. Names are
+    case-sensitive, and text before the first speaker tag uses the first configured
+    host.
     """
     cleaned = clean_script(script)
     if not cleaned:
         return []
 
-    canonical_names = {host["name"].casefold(): host["name"] for host in hosts}
+    canonical_names = {host["name"] for host in hosts}
     active_host = hosts[0]["name"]
     buffer: list[str] = []
     sections: list[dict[str, str]] = []
@@ -238,16 +239,29 @@ def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[
         match = re.fullmatch(r"\s*\[([^\]\n]+)\]\s*", line)
         if match:
             requested = match.group(1).strip()
-            canonical = canonical_names.get(requested.casefold())
-            if canonical is None:
+            if requested not in canonical_names:
                 available = ", ".join(host["name"] for host in hosts)
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown host tag [{requested}]. Configured hosts: {available}",
                 )
+            if requested == active_host:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Redundant host tag [{requested}]. Add a tag only when the speaker changes",
+                )
             flush()
-            active_host = canonical
+            active_host = requested
             continue
+
+        # A speaker marker must occupy its own line. Without this check an
+        # inline marker would be passed through to TTS and spoken aloud.
+        inline_tag = re.match(r"\s*\[([^\]\n]+)\]", line)
+        if inline_tag and inline_tag.group(1).strip() in canonical_names:
+            raise HTTPException(
+                status_code=400,
+                detail="Speaker tags must be on their own line, with dialogue on the following line",
+            )
         buffer.append(line)
 
     flush()
@@ -257,12 +271,12 @@ def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[
 def build_speech_chunks(
     script: str, hosts: list[dict[str, Any]], max_chars: int = MAX_CHARS
 ) -> list[dict[str, Any]]:
-    host_lookup = {host["name"].casefold(): host for host in hosts}
+    host_lookup = {host["name"]: host for host in hosts}
     sections = parse_speaker_script(script, hosts)
     chunks: list[dict[str, Any]] = []
 
     for section in sections:
-        host = host_lookup[section["host"].casefold()]
+        host = host_lookup[section["host"]]
         for text_chunk in split_script(section["text"], max_chars=max_chars):
             chunks.append(
                 {
@@ -302,6 +316,13 @@ Character notes: {host.get('character_notes', '')}"""
         )
 
     names = ", ".join(host["name"] for host in hosts)
+    first_speaker = hosts[0]["name"]
+    switch_example = (
+        f"- Format every speaker change as the host's exact configured name in square brackets on its own line, "
+        f"followed by dialogue on the next line, for example:\n[{hosts[1]['name']}]\nSpoken words here."
+        if len(hosts) > 1
+        else "- There is only one host, so do not emit any speaker tags."
+    )
     return f"""You are writing a podcast conversation for Patch Notes: America.
 
 GOAL
@@ -330,10 +351,11 @@ WRITING RULES
 - Let a host occasionally change their mind or concede a point.
 - Do not describe actions, sound effects, emotions, or stage directions in brackets. Brackets are reserved only for exact speaker tags.
 - Output narration only. No Markdown headings, preamble, commentary, or explanation.
-- Every spoken turn MUST begin with the exact speaker tag on its own line, for example:
-[{hosts[0]['name']}]
-Spoken words here.
-- Use only these speaker names: {names}.
+- {first_speaker} is the first speaker. Begin directly with {first_speaker}'s dialogue; text before the first speaker tag belongs to {first_speaker}.
+- Insert a speaker tag only when the active speaker changes. Consecutive paragraphs from the same speaker do not need another tag.
+{switch_example}
+- Never put dialogue on the same line as a speaker tag, and never add a colon after a speaker name.
+- Use only these exact speaker names: {names}. Never emit role labels such as HOST_SOUTHERN, HOST_CITY, or HOST_WORLDLY.
 - Make the first 20 seconds hook the listener. End with a clean transition or takeaway rather than a generic summary.
 """
 
@@ -485,8 +507,16 @@ def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
         raise RuntimeError("ffmpeg is not installed in the application container")
 
     manifest = output_file.parent / "concat.txt"
+    # FFmpeg resolves concat entries relative to the manifest, not the process's
+    # working directory. Segment MP3s live under ``segments/`` while their input
+    # WAVs live under the sibling ``chunks/`` directory, so ``Path.relative_to``
+    # cannot represent the required ``../chunks/...`` path.
+    input_paths = [
+        Path(os.path.relpath(path, start=output_file.parent)).as_posix()
+        for path in chunk_paths
+    ]
     manifest.write_text(
-        "\n".join(f"file '{p.relative_to(output_file.parent).as_posix()}'" for p in chunk_paths) + "\n",
+        "\n".join(f"file '{path}'" for path in input_paths) + "\n",
         encoding="utf-8",
     )
 
