@@ -10,7 +10,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
-- KokoroTTS generation through `POST /tts/generate`
+- KokoroTTS generation through the OpenAI-compatible `POST /v1/audio/speech` API
 - Per-chunk WAV files retained for selective regeneration/debugging
 - FFmpeg assembly into a final 128 kbps MP3
 - Persistent `episodes/` source scripts and `output/` generated episodes
@@ -87,7 +87,18 @@ App ready · Kokoro online
 Kokoro defaults to `127.0.0.1:7860`. Set `KOKORO_PORT` in `.env` if another
 audio service already owns that host port. Communication from Patch Notes to
 Kokoro stays on Docker's private network and is not affected by the selected
-host port.
+host port. The **Open KokoroTTS** link uses the browser's current hostname plus
+`KOKORO_PORT`, rather than hard-coding `localhost`. Set `KOKORO_PUBLIC_URL`
+when Kokoro is published through a different hostname, path, or HTTPS reverse
+proxy.
+
+Audio requests use Kokoro's OpenAI-compatible speech contract: `input`,
+`voice`, `speed`, `response_format`, and `model` are sent to
+`POST /v1/audio/speech`. The endpoint, health path, model name, and per-chunk
+read timeout can be overridden with `KOKORO_TTS_PATH`, `KOKORO_HEALTH_PATH`,
+`KOKORO_MODEL`, and `KOKORO_TIMEOUT_SECONDS`. A response is accepted only when
+it contains a WAV/RIFF payload, preventing an API JSON response from being
+saved and passed to FFmpeg as audio.
 
 The Kokoro image is currently an `amd64` image. Compose explicitly requests
 `linux/amd64`. On an ARM64 Docker host, the startup script registers amd64
