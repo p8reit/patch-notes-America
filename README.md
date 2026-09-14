@@ -56,11 +56,13 @@ http://localhost:7860
 From the project directory:
 
 ```bash
-docker compose up -d --build
+./scripts/start-and-check.sh
 ```
 
 Docker publishes host port `8081` to the app's internal port `8080`, so an
-existing service on the host's port `8080` is not affected.
+existing service on the host's port `8080` is not affected. The startup script
+rebuilds and force-recreates the app container, waits for the health endpoint,
+and prints the app logs if port `8081` never becomes reachable.
 
 Open:
 
@@ -113,7 +115,15 @@ docker compose logs -f app
 Restart after code/config changes:
 
 ```bash
-docker compose up -d --build
+./scripts/start-and-check.sh
+```
+
+If a manual `curl` reports `Failed to connect`, confirm that the container is
+running and that Docker published the expected port:
+
+```bash
+docker compose ps app
+docker compose logs --tail=100 app
 ```
 
 Stop the application:
