@@ -65,6 +65,14 @@ def test_generation_segment_size_is_validated():
         build_generation_segments([{"text": "hello"}], chunks_per_segment=0)
 
 
+def test_job_progress_counts_completed_segments():
+    from app.main import _job_progress
+
+    job = {"segments": [{"status": "complete"}, {"status": "running"}, {"status": "queued"}]}
+
+    assert _job_progress(job) == {"complete": 1, "total": 3}
+
+
 def test_synthesize_chunk_uses_hangrylabs_kokoro_contract(tmp_path, monkeypatch):
     import asyncio
 

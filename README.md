@@ -10,6 +10,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
+- Persistent background render queue designed for slow CPU-only generation
 - KokoroTTS generation through the image's `POST /tts/generate` API
 - Per-chunk WAV files retained for selective regeneration/debugging
 - FFmpeg assembly into a final 128 kbps MP3
@@ -139,8 +140,20 @@ through `queued`, `running`, `complete`, or `failed`, and writes its own MP3
 before the final episode is assembled. Progress survives page/API timeouts in
 `output/<job-id>/job.json`.
 
+The queue uses one worker by default so concurrent episodes do not compete for
+all CPU and memory. After submitting an episode, it is safe to close the
+browser: open the app later and the **Render queue** lists active and completed
+jobs with download links. Queued or running manifests are automatically
+recovered after an app/container restart; interrupted renders restart from the
+first chunk so the final concatenated audio cannot be partial or duplicated.
+
+Set `JOB_WORKERS` above `1` only for a GPU-backed TTS service or a host known to
+have enough capacity. Run one Uvicorn application worker because the queue is
+process-local; multiple Uvicorn workers would each create a queue consumer.
+
 ```text
 POST /api/generation-jobs
+GET  /api/generation-jobs
 GET  /api/generation-jobs/{job_id}
 ```
 
