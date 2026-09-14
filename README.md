@@ -22,7 +22,7 @@ Initial podcast-production application for turning a narration script into a fin
 Browser :8081
     |
     v
-FastAPI podcast app :8080 (inside Docker)
+FastAPI podcast app :8081
     |
     +--> script cleanup/chunking
     |
@@ -59,7 +59,7 @@ From the project directory:
 ./scripts/start-and-check.sh
 ```
 
-Docker publishes host port `8081` to the app's internal port `8080`, so an
+The app listens on port `8081` both inside the container and on the host, so an
 existing service on the host's port `8080` is not affected. The startup script
 rebuilds and force-recreates the app container, waits for the health endpoint,
 and prints the app logs if port `8081` never becomes reachable.

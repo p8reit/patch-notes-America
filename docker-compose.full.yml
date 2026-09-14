@@ -23,9 +23,9 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
       OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-https://api.openai.com/v1/responses}
     ports:
-      - "8081:8080"
+      - "8081:8081"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8081/api/health"]
       interval: 5s
       timeout: 3s
       retries: 12
