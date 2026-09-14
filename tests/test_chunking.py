@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from app.main import build_generation_segments, clean_script, describe_kokoro_error, split_script
 
@@ -22,17 +23,17 @@ def test_split_script_keeps_short_paragraphs():
 
 
 def test_kokoro_timeout_error_is_actionable_when_exception_text_is_empty():
-    request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
+    request = httpx.Request("POST", "http://kokoro:7860/v1/audio/speech")
     error = httpx.ReadTimeout("", request=request)
 
     detail = describe_kokoro_error(error)
 
     assert "did not respond within 180 seconds" in detail
-    assert "http://kokoro:7860/tts/generate" in detail
+    assert "http://kokoro:7860/v1/audio/speech" in detail
 
 
 def test_kokoro_http_error_includes_status_and_response_detail():
-    request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
+    request = httpx.Request("POST", "http://kokoro:7860/v1/audio/speech")
     response = httpx.Response(422, text="voice is not supported", request=request)
     error = httpx.HTTPStatusError("bad response", request=request, response=response)
 
@@ -62,3 +63,80 @@ def test_generation_segment_size_is_validated():
 
     with pytest.raises(HTTPException):
         build_generation_segments([{"text": "hello"}], chunks_per_segment=0)
+
+
+def test_synthesize_chunk_uses_openai_compatible_kokoro_contract(tmp_path, monkeypatch):
+    import asyncio
+
+    from app import main
+
+    captured = {}
+
+    class FakeResponse:
+        content = b"RIFF" + b"\x00" * 40
+        headers = {"content-type": "audio/wav"}
+        request = httpx.Request("POST", "http://kokoro:7860/v1/audio/speech")
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["timeout"] = kwargs["timeout"]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json):
+            captured["url"] = url
+            captured["payload"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    destination = tmp_path / "speech.wav"
+    asyncio.run(main.synthesize_chunk("A short transcript.", "am_michael", 1.15, destination))
+
+    assert captured["url"] == "http://kokoro:7860/v1/audio/speech"
+    assert captured["payload"] == {
+        "model": "kokoro",
+        "input": "A short transcript.",
+        "voice": "am_michael",
+        "response_format": "wav",
+        "speed": 1.15,
+    }
+    assert destination.read_bytes().startswith(b"RIFF")
+
+
+def test_synthesize_chunk_rejects_json_saved_as_wav(tmp_path, monkeypatch):
+    import asyncio
+
+    from app import main
+
+    class FakeResponse:
+        content = b'{"detail":"invalid voice"}'
+        text = content.decode()
+        headers = {"content-type": "application/json"}
+        request = httpx.Request("POST", "http://kokoro:7860/v1/audio/speech")
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json):
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    with pytest.raises(httpx.HTTPStatusError, match="not WAV audio"):
+        asyncio.run(main.synthesize_chunk("Text", "bad_voice", 1.0, tmp_path / "speech.wav"))

@@ -18,6 +18,7 @@
       <div>
         <strong>Services</strong>
         <span id="health">Checking Kokoro...</span>
+        <a id="kokoro-link" href="#" target="_blank" rel="noopener">Open KokoroTTS</a>
       </div>
     </section>
 
@@ -303,6 +304,13 @@
         const data = await res.json();
         el.textContent = data.kokoro.ok ? 'App ready · Kokoro online' : 'App ready · Kokoro offline';
         el.className = data.kokoro.ok ? 'ok' : 'bad';
+        const kokoroLink = document.getElementById('kokoro-link');
+        const inferredKokoroUrl = new URL(window.location.href);
+        inferredKokoroUrl.port = '{{ kokoro_public_port }}';
+        inferredKokoroUrl.pathname = '/';
+        inferredKokoroUrl.search = '';
+        inferredKokoroUrl.hash = '';
+        kokoroLink.href = data.kokoro_public_url || inferredKokoroUrl.toString();
       } catch (err) {
         el.textContent = 'Health check failed';
         el.className = 'bad';
