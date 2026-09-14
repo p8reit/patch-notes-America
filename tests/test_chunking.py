@@ -65,7 +65,7 @@ def test_generation_segment_size_is_validated():
         build_generation_segments([{"text": "hello"}], chunks_per_segment=0)
 
 
-def test_synthesize_chunk_uses_openai_compatible_kokoro_contract(tmp_path, monkeypatch):
+def test_synthesize_chunk_uses_hangrylabs_kokoro_contract(tmp_path, monkeypatch):
     import asyncio
 
     from app import main
@@ -75,7 +75,7 @@ def test_synthesize_chunk_uses_openai_compatible_kokoro_contract(tmp_path, monke
     class FakeResponse:
         content = b"RIFF" + b"\x00" * 40
         headers = {"content-type": "audio/wav"}
-        request = httpx.Request("POST", "http://kokoro:7860/v1/audio/speech")
+        request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
 
         def raise_for_status(self):
             return None
@@ -99,12 +99,10 @@ def test_synthesize_chunk_uses_openai_compatible_kokoro_contract(tmp_path, monke
     destination = tmp_path / "speech.wav"
     asyncio.run(main.synthesize_chunk("A short transcript.", "am_michael", 1.15, destination))
 
-    assert captured["url"] == "http://kokoro:7860/v1/audio/speech"
+    assert captured["url"] == "http://kokoro:7860/tts/generate"
     assert captured["payload"] == {
-        "model": "kokoro",
-        "input": "A short transcript.",
+        "text": "A short transcript.",
         "voice": "am_michael",
-        "response_format": "wav",
         "speed": 1.15,
     }
     assert destination.read_bytes().startswith(b"RIFF")
@@ -119,7 +117,7 @@ def test_synthesize_chunk_rejects_json_saved_as_wav(tmp_path, monkeypatch):
         content = b'{"detail":"invalid voice"}'
         text = content.decode()
         headers = {"content-type": "application/json"}
-        request = httpx.Request("POST", "http://kokoro:7860/v1/audio/speech")
+        request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
 
         def raise_for_status(self):
             return None

@@ -24,9 +24,8 @@ CONFIG_DIR = Path(os.getenv("CONFIG_DIR", APP_ROOT / "config"))
 HOST_PROFILES_FILE = CONFIG_DIR / "host_profiles.json"
 KOKORO_URL = os.getenv("KOKORO_URL", "http://kokoro:7860").rstrip("/")
 KOKORO_PUBLIC_URL = os.getenv("KOKORO_PUBLIC_URL", "").strip().rstrip("/")
-KOKORO_TTS_PATH = os.getenv("KOKORO_TTS_PATH", "/v1/audio/speech")
-KOKORO_HEALTH_PATH = os.getenv("KOKORO_HEALTH_PATH", "/health")
-KOKORO_MODEL = os.getenv("KOKORO_MODEL", "kokoro")
+KOKORO_TTS_PATH = os.getenv("KOKORO_TTS_PATH", "/tts/generate")
+KOKORO_HEALTH_PATH = os.getenv("KOKORO_HEALTH_PATH", "/tts/status")
 KOKORO_PUBLIC_PORT = int(os.getenv("KOKORO_PUBLIC_PORT", "7860"))
 DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "am_michael")
 DEFAULT_TEMPO = float(os.getenv("DEFAULT_TEMPO", "1.0"))
@@ -453,12 +452,11 @@ def describe_kokoro_error(exc: httpx.HTTPError) -> str:
 
 
 async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Path) -> None:
-    """Generate WAV audio through Kokoro's OpenAI-compatible speech API."""
+    """Generate WAV audio through the API exposed by hangrylabs/kokorotts."""
     payload = {
         "model": KOKORO_MODEL,
         "input": text,
         "voice": voice,
-        "response_format": "wav",
         "speed": tempo,
     }
     timeout = httpx.Timeout(KOKORO_TIMEOUT_SECONDS, connect=10, write=30, pool=10)

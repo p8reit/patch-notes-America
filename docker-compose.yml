@@ -22,9 +22,8 @@ services:
       - kokoro
     environment:
       KOKORO_URL: http://kokoro:7860
-      KOKORO_TTS_PATH: ${KOKORO_TTS_PATH:-/v1/audio/speech}
-      KOKORO_HEALTH_PATH: ${KOKORO_HEALTH_PATH:-/health}
-      KOKORO_MODEL: ${KOKORO_MODEL:-kokoro}
+      KOKORO_TTS_PATH: ${KOKORO_TTS_PATH:-/tts/generate}
+      KOKORO_HEALTH_PATH: ${KOKORO_HEALTH_PATH:-/tts/status}
       KOKORO_PUBLIC_URL: ${KOKORO_PUBLIC_URL:-}
       KOKORO_PUBLIC_PORT: ${KOKORO_PORT:-7860}
       KOKORO_TIMEOUT_SECONDS: ${KOKORO_TIMEOUT_SECONDS:-180}
