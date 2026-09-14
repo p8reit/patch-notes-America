@@ -6,9 +6,9 @@ readonly app_url="http://127.0.0.1:${app_port}"
 
 show_diagnostics() {
   echo "Container status:" >&2
-  docker compose ps app >&2 || true
-  echo "Recent app logs:" >&2
-  docker compose logs --tail=100 app >&2 || true
+  docker compose ps app kokoro >&2 || true
+  echo "Recent app and Kokoro logs:" >&2
+  docker compose logs --tail=100 app kokoro >&2 || true
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -21,12 +21,13 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Building and recreating the app container..."
-docker compose up -d --build --force-recreate app
+echo "Building and recreating Patch Notes and Kokoro..."
+docker compose up -d --build --force-recreate kokoro app
 
 echo "Waiting for ${app_url}/api/health..."
 for attempt in {1..30}; do
-  if response=$(curl --fail --silent --max-time 3 "${app_url}/api/health" 2>/dev/null); then
+  if response=$(curl --fail --silent --max-time 3 "${app_url}/api/health" 2>/dev/null) \
+    && grep -q '"kokoro":{"ok":true' <<<"${response}"; then
     printf '%s\n' "${response}"
     printf '\nApp is available at %s\n' "${app_url}"
     exit 0

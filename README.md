@@ -54,21 +54,10 @@ Change `APP_PORT` in `.env` if theHunter already uses `8081`. The default binds
 Patch Notes only to `127.0.0.1:8081`; set `APP_BIND_ADDRESS=0.0.0.0` only when
 the app must be reachable from other machines.
 
-### Existing Kokoro container
+### Start Patch Notes and Kokoro
 
-KokoroTTS should already be running on the Docker host:
-
-```bash
-docker run -d --name kokoro-tts -p 7860:7860 hangrylabs/kokorotts:v0.2
-```
-
-Verify it at:
-
-```text
-http://localhost:7860
-```
-
-Then start Patch Notes from the project directory:
+Kokoro is required, so the default Compose stack always starts it with Patch
+Notes. Start both services from the project directory:
 
 ```bash
 ./scripts/start-and-check.sh
@@ -77,7 +66,10 @@ Then start Patch Notes from the project directory:
 The app always listens on container port `8080`. Compose publishes it on the
 host using `APP_BIND_ADDRESS` and `APP_PORT`, which default to
 `127.0.0.1:8081`. The startup script rebuilds and force-recreates the app,
-waits for the configured health endpoint, and prints logs on failure.
+starts Kokoro, waits for the configured health endpoint, and prints logs from
+both services on failure. Startup is considered successful only after the app
+reports that Kokoro is online, so audio generation is ready when the script
+returns.
 
 Open:
 
@@ -91,19 +83,10 @@ The top status card should show:
 App ready · Kokoro online
 ```
 
-### Start both Patch Notes and Kokoro
-
-If Kokoro is not already running, start the full stack with the same health
-check helper:
-
-```bash
-COMPOSE_FILE=docker-compose.full.yml ./scripts/start-and-check.sh
-```
-
-The bundled Kokoro service defaults to `127.0.0.1:7860`. Set `KOKORO_PORT` in
-`.env` if another audio service already owns that host port. Communication from
-Patch Notes to bundled Kokoro stays on Docker's private network and is not
-affected by the selected host port.
+Kokoro defaults to `127.0.0.1:7860`. Set `KOKORO_PORT` in `.env` if another
+audio service already owns that host port. Communication from Patch Notes to
+Kokoro stays on Docker's private network and is not affected by the selected
+host port.
 
 ## Generate the pilot
 
@@ -166,7 +149,7 @@ Stop the application:
 docker compose down
 ```
 
-Kokoro remains separate and will continue running.
+This stops both Patch Notes and its required Kokoro service.
 
 ## Local development
 
