@@ -4,7 +4,7 @@ Initial podcast-production application for turning a narration script into a fin
 
 ## MVP features
 
-- Browser-based episode editor on port `8080`
+- Browser-based episode editor on port `8081`
 - Preloaded pilot narration script
 - Configurable Kokoro voice and tempo
 - Automatic TTS-friendly script cleanup
@@ -19,10 +19,10 @@ Initial podcast-production application for turning a narration script into a fin
 ## Architecture
 
 ```text
-Browser :8080
+Browser :${APP_PORT:-8081}
     |
     v
-FastAPI podcast app
+host port ${APP_PORT:-8081} -> FastAPI container :8080
     |
     +--> script cleanup/chunking
     |
@@ -37,32 +37,45 @@ FastAPI podcast app
             +--> final episode.mp3
 ```
 
-## Prerequisite
+## Deployment modes
 
-KokoroTTS should already be running on the Docker host:
+The Compose configuration deliberately keeps container ports stable while
+making every host port configurable. It also avoids fixed `container_name`
+values, so Patch Notes can run alongside theHunter and other Compose projects
+without container-name collisions.
 
-```bash
-docker run -d --name kokoro-tts -p 7860:7860 hangrylabs/kokorotts:v0.2
-```
-
-Verify it at:
-
-```text
-http://localhost:7860
-```
-
-## Start the podcast app
-
-From the project directory:
+Copy the sample settings before starting:
 
 ```bash
-docker compose up -d --build
+cp .env.example .env
 ```
+
+Change `APP_PORT` in `.env` if theHunter already uses `8081`. The default binds
+Patch Notes only to `127.0.0.1:8081`; set `APP_BIND_ADDRESS=0.0.0.0` only when
+the app must be reachable from other machines.
+
+### Start Patch Notes and Kokoro
+
+Kokoro is required, so the default Compose stack always starts it with Patch
+Notes. Start both services from the project directory:
+
+```bash
+./scripts/start-and-check.sh
+```
+
+The app always listens on container port `8080`. Compose publishes it on the
+host using `APP_BIND_ADDRESS` and `APP_PORT`, which default to
+`127.0.0.1:8081`. The startup script rebuilds and force-recreates the app,
+starts Kokoro, waits for the configured health endpoint, and prints logs from
+both services on failure. Startup is considered successful only after the app
+reports that Kokoro is online, so audio generation is ready when the script
+returns. The default startup timeout is 10 minutes because Kokoro can initialize
+slowly under ARM emulation; set `STARTUP_TIMEOUT_SECONDS` in `.env` to adjust it.
 
 Open:
 
 ```text
-http://localhost:8080
+http://127.0.0.1:8081
 ```
 
 The top status card should show:
@@ -71,9 +84,27 @@ The top status card should show:
 App ready · Kokoro online
 ```
 
+Kokoro defaults to `127.0.0.1:7860`. Set `KOKORO_PORT` in `.env` if another
+audio service already owns that host port. Communication from Patch Notes to
+Kokoro stays on Docker's private network and is not affected by the selected
+host port.
+
+The Kokoro image is currently an `amd64` image. Compose explicitly requests
+`linux/amd64`. On an ARM64 Docker host, the startup script registers amd64
+binfmt/QEMU support before starting Kokoro; this prevents the repeated
+`exec /usr/local/bin/python: exec format error` restart loop. This one-time
+registration uses the privileged `tonistiigi/binfmt` installer container.
+Docker Desktop users must allow x86/amd64 emulation. `KOKORO_PLATFORM` in
+`.env` can be changed when a native ARM64 Kokoro image is available.
+
+Docker's app health status measures whether the web app is serving requests;
+the startup helper separately waits for Kokoro readiness. During a slow first
+Kokoro boot, `docker compose ps` may therefore show the app as healthy before
+the startup helper announces that audio is ready.
+
 ## Generate the pilot
 
-1. Open `http://localhost:8080`.
+1. Open `http://127.0.0.1:8081`.
 2. The pilot script is preloaded.
 3. Start with voice `am_michael` and tempo `1.00`.
 4. Click **Generate episode**.
@@ -98,7 +129,7 @@ output/<timestamp>-<episode-title>/
 Check the app:
 
 ```bash
-curl http://localhost:8080/api/health
+curl http://127.0.0.1:8081/api/health
 ```
 
 Watch logs:
@@ -110,8 +141,21 @@ docker compose logs -f app
 Restart after code/config changes:
 
 ```bash
-docker compose up -d --build
+./scripts/start-and-check.sh
 ```
+
+If a manual `curl` reports `Failed to connect`, confirm that the container is
+running and that Docker published the expected port:
+
+```bash
+docker compose ps app
+docker compose logs --tail=100 app
+```
+
+Use `127.0.0.1` rather than `localhost` for this check. In some WSL and Docker
+Desktop configurations, `localhost` can resolve through a different IPv6 or
+Windows forwarding path and reset the connection even though the IPv4-published
+port is available.
 
 Stop the application:
 
@@ -119,22 +163,20 @@ Stop the application:
 docker compose down
 ```
 
-Kokoro remains separate and will continue running.
-
-## Run everything from this repo instead
-
-If you do **not** already have Kokoro running, use the full compose file:
-
-```bash
-docker compose -f docker-compose.full.yml up -d --build
-```
-
-Do not use that command while another container is already bound to port `7860`.
+This stops both Patch Notes and its required Kokoro service.
 
 ## Local development
 
 ```bash
 python -m venv .venv
+```
+
+Linux/macOS/WSL:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt pytest
+KOKORO_URL=http://127.0.0.1:7860 uvicorn app.main:app --reload --port "${APP_PORT:-8081}"
 ```
 
 Windows PowerShell:
@@ -143,13 +185,8 @@ Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt pytest
 pytest -q
-uvicorn app.main:app --reload --port 8080
-```
-
-When running outside Docker, set `KOKORO_URL` to localhost:
-
-```powershell
-$env:KOKORO_URL="http://localhost:7860"
+$env:KOKORO_URL="http://127.0.0.1:7860"
+uvicorn app.main:app --reload --port 8081
 ```
 
 ## Initial roadmap

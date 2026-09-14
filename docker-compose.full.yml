@@ -1,21 +1,21 @@
 services:
   kokoro:
     image: hangrylabs/kokorotts:v0.2
-    container_name: patch-notes-kokoro
+    platform: ${KOKORO_PLATFORM:-linux/amd64}
     ports:
-      - "7860:7860"
+      - "${KOKORO_BIND_ADDRESS:-127.0.0.1}:${KOKORO_PORT:-7860}:7860"
     restart: unless-stopped
 
   app:
     build: .
-    container_name: patch-notes-app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     depends_on:
       - kokoro
     environment:
       KOKORO_URL: http://kokoro:7860
-      DEFAULT_VOICE: am_michael
-      DEFAULT_TEMPO: "1.00"
-      MAX_CHARS_PER_CHUNK: "700"
+      DEFAULT_VOICE: ${DEFAULT_VOICE:-am_michael}
+      DEFAULT_TEMPO: ${DEFAULT_TEMPO:-1.00}
+      MAX_CHARS_PER_CHUNK: ${MAX_CHARS_PER_CHUNK:-700}
       EPISODES_DIR: /app/episodes
       OUTPUT_DIR: /app/output
       CONFIG_DIR: /app/config
@@ -23,7 +23,13 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
       OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-https://api.openai.com/v1/responses}
     ports:
-      - "8080:8080"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     volumes:
       - ./episodes:/app/episodes
       - ./output:/app/output
