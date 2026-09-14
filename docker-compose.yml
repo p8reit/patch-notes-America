@@ -1,7 +1,6 @@
 services:
   app:
     build: .
-    container_name: patch-notes-app
     environment:
       KOKORO_URL: ${KOKORO_URL:-http://host.docker.internal:7860}
       DEFAULT_VOICE: ${DEFAULT_VOICE:-am_michael}
@@ -16,7 +15,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8080:8080"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     volumes:
       - ./episodes:/app/episodes
       - ./output:/app/output
