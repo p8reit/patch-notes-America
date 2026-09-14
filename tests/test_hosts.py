@@ -26,13 +26,13 @@ def test_untagged_script_uses_first_host():
 
 
 def test_speaker_tags_switch_hosts_in_order():
-    script = """[Major Patchnotes]\nWelcome to the show.\n\n[Alex]\nGlad to be here.\n\n[Sam]\nLet's go."""
+    script = """Welcome to the show.\n\n[Alex]\nGlad to be here.\n\n[Sam]\nLet's go."""
     sections = parse_speaker_script(script, hosts())
     assert [section["host"] for section in sections] == ["Major Patchnotes", "Alex", "Sam"]
 
 
 def test_build_chunks_preserves_voice_and_tempo():
-    script = """[Major Patchnotes]\nOpening line.\n\n[Alex]\nSecond line."""
+    script = """Opening line.\n\n[Alex]\nSecond line."""
     chunks = build_speech_chunks(script, hosts(), max_chars=500)
     assert chunks[0]["voice"] == "am_michael"
     assert chunks[1]["voice"] == "af_heart"
@@ -44,6 +44,24 @@ def test_unknown_host_tag_is_rejected():
         parse_speaker_script("[Nobody]\nHello", hosts())
     assert exc.value.status_code == 400
     assert "Unknown host tag" in exc.value.detail
+
+
+def test_speaker_names_are_case_sensitive():
+    with pytest.raises(HTTPException) as exc:
+        parse_speaker_script("[alex]\nHello", hosts())
+    assert "Unknown host tag [alex]" in exc.value.detail
+
+
+def test_redundant_speaker_tag_is_rejected():
+    with pytest.raises(HTTPException) as exc:
+        parse_speaker_script("Hello.\n\n[Major Patchnotes]\nStill talking.", hosts())
+    assert "only when the speaker changes" in exc.value.detail
+
+
+def test_dialogue_cannot_share_speaker_tag_line():
+    with pytest.raises(HTTPException) as exc:
+        parse_speaker_script("Hello.\n[Alex] Same line.", hosts())
+    assert "own line" in exc.value.detail
 
 
 def test_character_profile_fields_are_preserved():
@@ -94,6 +112,9 @@ def test_conversation_prompt_contains_cast_and_source_notes():
     assert "Major Patchnotes" in prompt
     assert "Alex" in prompt
     assert "Do not invent factual details" in prompt
+    assert "Begin directly with Major Patchnotes's dialogue" in prompt
+    assert "Insert a speaker tag only when the active speaker changes" in prompt
+    assert "HOST_SOUTHERN, HOST_CITY, or HOST_WORLDLY" in prompt
 
 
 def test_conversation_prompt_rejects_bad_length():
