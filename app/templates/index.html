@@ -107,6 +107,13 @@
 
     <section id="result" class="card result" hidden></section>
 
+    <section class="card jobs-card">
+      <div class="section-heading"><div><p class="eyebrow">BACKGROUND AUDIO</p><h2>Render queue</h2>
+        <p class="hint">Submitted episodes keep rendering after this page is closed. Return later to download completed audio.</p>
+      </div><button id="refresh-jobs" class="secondary" type="button">Refresh jobs</button></div>
+      <div id="job-list" class="job-list"><p class="hint">Loading audio jobs...</p></div>
+    </section>
+
     <section id="clip-studio" class="card clip-studio" hidden>
       <div class="section-heading">
         <div>
@@ -213,6 +220,63 @@
     const hostsJson = document.getElementById('hosts-json');
     const castStatus = document.getElementById('cast-status');
     let currentEpisode = null;
+    const activeJobPollers = new Map();
+
+    function escapeHtml(value) {
+      const element = document.createElement('span');
+      element.textContent = value == null ? '' : String(value);
+      return element.innerHTML;
+    }
+
+    function renderJobs(jobs, workers = 1) {
+      const list = document.getElementById('job-list');
+      if (!jobs.length) { list.innerHTML = '<p class="hint">No audio jobs have been submitted yet.</p>'; return; }
+      list.innerHTML = jobs.map(job => {
+        const progress = job.progress || {complete: 0, total: 0};
+        const detail = job.status === 'complete'
+          ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>`
+          : job.status === 'failed' ? `<span class="job-error">${escapeHtml(job.error || 'Rendering failed')}</span>`
+          : `<span class="hint">${progress.complete}/${progress.total} segments · safe to close this page</span>`;
+        return `<article class="job-row"><div><strong>${escapeHtml(job.title)}</strong><small>${escapeHtml(job.created_at || '')}</small></div>
+          <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${detail}</article>`;
+      }).join('');
+      list.insertAdjacentHTML('beforeend', `<p class="hint worker-note">${workers} audio worker${workers === 1 ? '' : 's'} configured. CPU-only systems should normally use one.</p>`);
+    }
+
+    async function refreshJobs() {
+      const res = await fetch('/api/generation-jobs'); const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Could not load audio jobs');
+      renderJobs(data.jobs, data.workers);
+      data.jobs.filter(job => ['queued', 'running'].includes(job.status)).forEach(job => monitorJob(job.id));
+      const latestComplete = data.jobs.find(job => job.status === 'complete');
+      if (latestComplete && !currentEpisode) currentEpisode = latestComplete.id;
+    }
+
+    function monitorJob(jobId) {
+      if (activeJobPollers.has(jobId)) return;
+      const poll = async () => {
+        try {
+          const res = await fetch(`/api/generation-jobs/${encodeURIComponent(jobId)}`); const job = await res.json();
+          if (!res.ok) throw new Error(job.detail || 'Could not read generation status');
+          await refreshJobs();
+          if (job.status === 'complete') {
+            currentEpisode = job.id;
+            const result = document.getElementById('result');
+            result.innerHTML = `<strong>Episode ready.</strong><p>${escapeHtml(job.title)}</p><a class="download" href="${encodeURI(job.download_url)}">Download MP3</a>`;
+            result.hidden = false; document.getElementById('progress').textContent = 'Background render complete.';
+            activeJobPollers.delete(jobId); return;
+          }
+          if (job.status === 'failed') { document.getElementById('progress').textContent = job.error || 'Background render failed.'; activeJobPollers.delete(jobId); return; }
+          activeJobPollers.set(jobId, window.setTimeout(poll, 2500));
+        } catch (err) {
+          document.getElementById('progress').textContent = `Job remains submitted; status refresh failed: ${err.message}`;
+          activeJobPollers.set(jobId, window.setTimeout(poll, 5000));
+        }
+      };
+      activeJobPollers.set(jobId, window.setTimeout(poll, 500));
+    }
+
+    document.getElementById('refresh-jobs').addEventListener('click', () => refreshJobs());
 
     function renumberHosts() {
       const rows = [...hostsContainer.querySelectorAll('.host-row')];
@@ -419,22 +483,9 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Generation failed');
         currentEpisode = data.job_id;
-        progress.textContent = `Queued ${data.segments} segment batch job${data.segments === 1 ? '' : 's'}...`;
-        while (true) {
-          await new Promise(resolve => setTimeout(resolve, 1200));
-          const statusRes = await fetch(data.status_url);
-          const job = await statusRes.json();
-          if (!statusRes.ok) throw new Error(job.detail || 'Could not read generation status');
-          const complete = job.segments.filter(segment => segment.status === 'complete').length;
-          progress.textContent = `Rendering segments: ${complete}/${job.segments.length}`;
-          if (job.status === 'failed') throw new Error(job.error || 'Segment generation failed');
-          if (job.status === 'complete') {
-            result.innerHTML = `<strong>Episode ready.</strong><p>${job.segments.length} segment batch job(s) completed.</p><a class="download" href="${job.download_url}">Download MP3</a>`;
-            result.hidden = false;
-            progress.textContent = 'Complete.';
-            break;
-          }
-        }
+        progress.textContent = `Submitted ${data.segments} segment${data.segments === 1 ? '' : 's'}. You may close this page.`;
+        await refreshJobs();
+        monitorJob(data.job_id);
       } catch (err) {
         progress.textContent = err.message;
       } finally {
@@ -496,6 +547,7 @@
 
     initialProfiles.forEach(addHost);
     updateHealth();
+    refreshJobs().catch(err => { document.getElementById('job-list').innerHTML = `<p class="job-error">${escapeHtml(err.message)}</p>`; });
   </script>
 </body>
 </html>

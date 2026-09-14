@@ -23,6 +23,18 @@ button, .download { background: #238636; color: white; border: none; border-radi
 button:disabled { opacity: .55; cursor: wait; }
 #progress { color: #8b949e; }
 .result p { color: #8b949e; }
+.job-list { display: grid; gap: 10px; margin-top: 18px; }
+.job-row { display: grid; grid-template-columns: minmax(180px, 1fr) auto minmax(180px, auto); align-items: center; gap: 14px; border: 1px solid #30363d; background: #0d1117; border-radius: 10px; padding: 14px; }
+.job-row div { display: grid; gap: 5px; }
+.job-row small { color: #8b949e; }
+.job-status { border-radius: 999px; padding: 5px 9px; font-size: .78rem; font-weight: 800; text-transform: uppercase; }
+.job-status.queued { background: #30363d; }
+.job-status.running { color: #58a6ff; background: rgba(88,166,255,.13); }
+.job-status.complete { color: #3fb950; background: rgba(63,185,80,.13); }
+.job-status.failed, .job-error { color: #f85149; }
+.download.compact { padding: 8px 12px; font-size: .86rem; text-align: center; }
+.worker-note { margin: 4px 0 0; }
+@media (max-width: 700px) { .job-row { grid-template-columns: 1fr auto; } .job-row > :last-child { grid-column: 1 / -1; } }
 @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } .status-card div { flex-direction: column; } }
 
 /* Multi-host controls */

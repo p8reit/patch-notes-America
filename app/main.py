@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -11,7 +12,7 @@ from typing import Any, List
 from uuid import uuid4
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, Form, HTTPException
+from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -37,6 +38,7 @@ CONVERSATION_PROVIDER = os.getenv("CONVERSATION_PROVIDER", "openai").strip().low
 LOCAL_AI_URL = os.getenv("LOCAL_AI_URL", "http://ollama:11434/api/chat")
 LOCAL_AI_MODEL = os.getenv("LOCAL_AI_MODEL", "llama3.1:8b")
 KOKORO_TIMEOUT_SECONDS = float(os.getenv("KOKORO_TIMEOUT_SECONDS", "180"))
+JOB_WORKERS = max(1, int(os.getenv("JOB_WORKERS", "1")))
 
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,6 +47,9 @@ CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="Patch Notes: America", version="0.5.0")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=APP_ROOT / "app" / "templates")
+
+generation_queue: asyncio.Queue[str] | None = None
+generation_workers: list[asyncio.Task[None]] = []
 
 
 def slugify(value: str) -> str:
@@ -552,11 +557,77 @@ def _load_job(job_id: str) -> tuple[Path, dict[str, Any]]:
     return job_dir, json.loads(job_file.read_text(encoding="utf-8"))
 
 
+def _job_progress(job: dict[str, Any]) -> dict[str, int]:
+    segments = job.get("segments", [])
+    return {
+        "complete": sum(segment.get("status") == "complete" for segment in segments),
+        "total": len(segments),
+    }
+
+
+async def generation_worker(worker_number: int) -> None:
+    """Consume durable jobs serially by default, which is safer on CPU-only hosts."""
+    assert generation_queue is not None
+    while True:
+        job_id = await generation_queue.get()
+        try:
+            await process_generation_job(job_id)
+        finally:
+            generation_queue.task_done()
+
+
+async def queue_generation_job(job_id: str) -> None:
+    if generation_queue is None:
+        raise HTTPException(status_code=503, detail="The audio job worker is not ready")
+    await generation_queue.put(job_id)
+
+
+@app.on_event("startup")
+async def start_generation_workers() -> None:
+    """Start workers and recover work interrupted by a container restart."""
+    global generation_queue
+    generation_queue = asyncio.Queue()
+    for number in range(JOB_WORKERS):
+        generation_workers.append(asyncio.create_task(generation_worker(number + 1)))
+
+    for manifest in sorted(OUTPUT_DIR.glob("*/job.json")):
+        try:
+            job = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if job.get("status") not in {"queued", "running"}:
+            continue
+        # Chunk rendering is deterministic. Start interrupted jobs from scratch so
+        # their concat manifests can never contain a partial or duplicated episode.
+        job["status"] = "queued"
+        job["error"] = None
+        job.pop("started_at", None)
+        job.pop("finished_at", None)
+        for segment in job.get("segments", []):
+            segment["status"] = "queued"
+            segment["error"] = None
+            segment.setdefault("outputs", {})["audio"] = None
+        _write_job(manifest.parent, job)
+        await generation_queue.put(job["id"])
+
+
+@app.on_event("shutdown")
+async def stop_generation_workers() -> None:
+    global generation_queue
+    for worker in generation_workers:
+        worker.cancel()
+    if generation_workers:
+        await asyncio.gather(*generation_workers, return_exceptions=True)
+    generation_workers.clear()
+    generation_queue = None
+
+
 async def process_generation_job(job_id: str) -> None:
     """Render queued segments and checkpoint progress after every state change."""
     job_dir, job = _load_job(job_id)
     job["status"] = "running"
     job["started_at"] = datetime.now(timezone.utc).isoformat()
+    job["worker_pid"] = os.getpid()
     _write_job(job_dir, job)
     all_chunk_paths: list[Path] = []
     chunk_number = 0
@@ -830,7 +901,6 @@ async def chunk_preview(
 
 @app.post("/api/generation-jobs", status_code=202)
 async def create_generation_job(
-    background_tasks: BackgroundTasks,
     title: str = Form(...),
     script: str = Form(...),
     hosts_json: str = Form(...),
@@ -861,7 +931,7 @@ async def create_generation_job(
         "error": None,
     }
     _write_job(job_dir, job)
-    background_tasks.add_task(process_generation_job, job_id)
+    await queue_generation_job(job_id)
     return {
         "ok": True,
         "job_id": job_id,
@@ -871,9 +941,34 @@ async def create_generation_job(
     }
 
 
+@app.get("/api/generation-jobs")
+async def list_generation_jobs():
+    """Return recent durable jobs so a browser can reconnect after being closed."""
+    jobs = []
+    for manifest in sorted(OUTPUT_DIR.glob("*/job.json"), reverse=True):
+        try:
+            job = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        jobs.append({
+            "id": job.get("id"),
+            "title": job.get("title", "Untitled episode"),
+            "status": job.get("status", "unknown"),
+            "created_at": job.get("created_at"),
+            "finished_at": job.get("finished_at"),
+            "download_url": job.get("download_url"),
+            "error": job.get("error"),
+            "progress": _job_progress(job),
+        })
+        if len(jobs) >= 50:
+            break
+    return {"jobs": jobs, "workers": JOB_WORKERS}
+
+
 @app.get("/api/generation-jobs/{job_id}")
 async def generation_job_status(job_id: str):
     _, job = _load_job(job_id)
+    job["progress"] = _job_progress(job)
     return job
 
 
