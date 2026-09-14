@@ -9,6 +9,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Configurable Kokoro voice and tempo
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
+- Durable segment batch jobs with progress polling and per-segment audio
 - KokoroTTS generation through `POST /tts/generate`
 - Per-chunk WAV files retained for selective regeneration/debugging
 - FFmpeg assembly into a final 128 kbps MP3
@@ -117,6 +118,24 @@ output/<timestamp>-<episode-title>/
 ├── script.txt
 └── <episode-title>.mp3
 ```
+
+## Segmented generation jobs
+
+The browser now submits episode renders to `POST /api/generation-jobs` instead
+of holding one request open for an entire episode. Speech chunks are grouped
+into configurable segments (eight chunks by default). Each segment moves
+through `queued`, `running`, `complete`, or `failed`, and writes its own MP3
+before the final episode is assembled. Progress survives page/API timeouts in
+`output/<job-id>/job.json`.
+
+```text
+POST /api/generation-jobs
+GET  /api/generation-jobs/{job_id}
+```
+
+The job manifest has a media output map per segment. It currently contains
+`audio`; a video worker can later add `video` without changing how episodes,
+segments, status polling, or retries are represented.
 
 ## Useful commands
 
@@ -334,6 +353,29 @@ OPENAI_MODEL=gpt-5.6-luna
 ```
 
 The implementation uses the OpenAI Responses API by default. `OPENAI_RESPONSES_URL` and `OPENAI_MODEL` are environment-configurable so this layer can be swapped or proxied later without changing the podcast/audio pipeline.
+
+### Run the conversation engine locally
+
+An optional Ollama profile can replace paid conversation calls while leaving
+prompt construction, speaker validation, and audio generation unchanged:
+
+```bash
+docker compose --profile local-ai up -d ollama
+docker compose exec ollama ollama pull llama3.1:8b
+```
+
+Set the following in `.env`, then restart the app:
+
+```text
+CONVERSATION_PROVIDER=local
+LOCAL_AI_URL=http://ollama:11434/api/chat
+LOCAL_AI_MODEL=llama3.1:8b
+```
+
+The model remains on the named `ollama-data` volume. Choose a smaller model for
+CPU-only or low-memory hosts, or a larger model when adequate GPU/RAM is
+available. Keep the default `openai` provider when quality or latency from the
+local host is insufficient.
 
 ### Conversation API
 

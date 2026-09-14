@@ -1,6 +1,6 @@
 import httpx
 
-from app.main import clean_script, describe_kokoro_error, split_script
+from app.main import build_generation_segments, clean_script, describe_kokoro_error, split_script
 
 
 def test_clean_script_removes_basic_markdown():
@@ -40,3 +40,25 @@ def test_kokoro_http_error_includes_status_and_response_detail():
 
     assert "HTTP 422" in detail
     assert "voice is not supported" in detail
+
+
+def test_generation_segments_have_independent_media_contracts():
+    chunks = [
+        {"host": "Wade", "voice": "am_michael", "tempo": 1.0, "text": f"Part {number}"}
+        for number in range(5)
+    ]
+
+    segments = build_generation_segments(chunks, chunks_per_segment=2)
+
+    assert [len(segment["chunks"]) for segment in segments] == [2, 2, 1]
+    assert [segment["id"] for segment in segments] == ["segment-001", "segment-002", "segment-003"]
+    assert all(segment["status"] == "queued" for segment in segments)
+    assert all(segment["outputs"] == {"audio": None} for segment in segments)
+
+
+def test_generation_segment_size_is_validated():
+    import pytest
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException):
+        build_generation_segments([{"text": "hello"}], chunks_per_segment=0)

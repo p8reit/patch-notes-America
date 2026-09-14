@@ -92,6 +92,12 @@
         Text before the first speaker tag is spoken by the first host.
       </p>
 
+      <label>
+        Audio chunks per segment
+        <input id="chunks-per-segment" name="chunks_per_segment" type="number" min="1" max="100" value="8">
+        <span class="hint">Each segment is checkpointed as a separate batch output, ready for additional media renderers later.</span>
+      </label>
+
       <div class="actions">
         <button type="submit">Generate episode</button>
         <span id="progress"></span>
@@ -398,19 +404,29 @@
       result.hidden = true;
 
       try {
-        const res = await fetch('/api/generate', {
+        const res = await fetch('/api/generation-jobs', {
           method: 'POST',
           body: new FormData(event.target),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Generation failed');
-        const durationText = data.duration ? ` · ${Math.round(data.duration)} seconds` : '';
-        result.innerHTML = `<strong>Episode ready.</strong><p>${data.hosts} host(s), ${data.chunks} audio chunks generated${durationText}.</p><a class="download" href="${data.download_url}">Download MP3</a>`;
-        result.hidden = false;
-        currentEpisode = data.episode;
-        document.getElementById('clip-studio').hidden = false;
-        if (data.duration) document.getElementById('clip-end').value = Math.min(30, data.duration).toFixed(2);
-        progress.textContent = 'Complete.';
+        currentEpisode = data.job_id;
+        progress.textContent = `Queued ${data.segments} segment batch job${data.segments === 1 ? '' : 's'}...`;
+        while (true) {
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          const statusRes = await fetch(data.status_url);
+          const job = await statusRes.json();
+          if (!statusRes.ok) throw new Error(job.detail || 'Could not read generation status');
+          const complete = job.segments.filter(segment => segment.status === 'complete').length;
+          progress.textContent = `Rendering segments: ${complete}/${job.segments.length}`;
+          if (job.status === 'failed') throw new Error(job.error || 'Segment generation failed');
+          if (job.status === 'complete') {
+            result.innerHTML = `<strong>Episode ready.</strong><p>${job.segments.length} segment batch job(s) completed.</p><a class="download" href="${job.download_url}">Download MP3</a>`;
+            result.hidden = false;
+            progress.textContent = 'Complete.';
+            break;
+          }
+        }
       } catch (err) {
         progress.textContent = err.message;
       } finally {

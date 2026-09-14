@@ -1,4 +1,13 @@
 services:
+  ollama:
+    image: ollama/ollama:0.11.10
+    profiles: ["local-ai"]
+    ports:
+      - "${OLLAMA_BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+
   kokoro:
     image: hangrylabs/kokorotts:v0.2
     platform: ${KOKORO_PLATFORM:-linux/amd64}
@@ -22,6 +31,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
       OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-https://api.openai.com/v1/responses}
+      CONVERSATION_PROVIDER: ${CONVERSATION_PROVIDER:-openai}
+      LOCAL_AI_URL: ${LOCAL_AI_URL:-http://ollama:11434/api/chat}
+      LOCAL_AI_MODEL: ${LOCAL_AI_MODEL:-llama3.1:8b}
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8081}:8080"
     healthcheck:
@@ -35,3 +47,6 @@ services:
       - ./output:/app/output
       - ./config:/app/config
     restart: unless-stopped
+
+volumes:
+  ollama-data:
