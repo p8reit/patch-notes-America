@@ -89,11 +89,12 @@ Kokoro stays on Docker's private network and is not affected by the selected
 host port.
 
 The Kokoro image is currently an `amd64` image. Compose explicitly requests
-`linux/amd64`, allowing Docker Desktop to use CPU emulation on an ARM64 host
-instead of trying to execute the image as ARM64 and failing with
-`exec format error`. Native ARM Linux hosts must have Docker's binfmt/QEMU
-emulation installed. `KOKORO_PLATFORM` in `.env` can be changed when an ARM64
-Kokoro image is available.
+`linux/amd64`. On an ARM64 Docker host, the startup script registers amd64
+binfmt/QEMU support before starting Kokoro; this prevents the repeated
+`exec /usr/local/bin/python: exec format error` restart loop. This one-time
+registration uses the privileged `tonistiigi/binfmt` installer container.
+Docker Desktop users must allow x86/amd64 emulation. `KOKORO_PLATFORM` in
+`.env` can be changed when a native ARM64 Kokoro image is available.
 
 ## Generate the pilot
 

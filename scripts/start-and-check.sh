@@ -21,6 +21,18 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+docker_arch=$(docker info --format '{{.Architecture}}' 2>/dev/null || true)
+case "${docker_arch}" in
+  arm64|aarch64)
+    echo "ARM64 Docker host detected; enabling amd64 emulation for Kokoro..."
+    if ! docker run --privileged --rm tonistiigi/binfmt --install amd64; then
+      echo "Error: Docker could not enable amd64 emulation required by Kokoro." >&2
+      echo "Enable x86/amd64 emulation in Docker Desktop, then run this script again." >&2
+      exit 1
+    fi
+    ;;
+esac
+
 echo "Building and recreating Patch Notes and Kokoro..."
 docker compose up -d --build --force-recreate kokoro app
 
