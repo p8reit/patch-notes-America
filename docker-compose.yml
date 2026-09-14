@@ -1,12 +1,14 @@
 services:
   kokoro:
     image: hangrylabs/kokorotts:v0.2
+    platform: ${KOKORO_PLATFORM:-linux/amd64}
     ports:
       - "${KOKORO_BIND_ADDRESS:-127.0.0.1}:${KOKORO_PORT:-7860}:7860"
     restart: unless-stopped
 
   app:
     build: .
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     depends_on:
       - kokoro
     environment:

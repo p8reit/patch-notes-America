@@ -88,6 +88,13 @@ audio service already owns that host port. Communication from Patch Notes to
 Kokoro stays on Docker's private network and is not affected by the selected
 host port.
 
+The Kokoro image is currently an `amd64` image. Compose explicitly requests
+`linux/amd64`, allowing Docker Desktop to use CPU emulation on an ARM64 host
+instead of trying to execute the image as ARM64 and failing with
+`exec format error`. Native ARM Linux hosts must have Docker's binfmt/QEMU
+emulation installed. `KOKORO_PLATFORM` in `.env` can be changed when an ARM64
+Kokoro image is available.
+
 ## Generate the pilot
 
 1. Open `http://127.0.0.1:8081`.
