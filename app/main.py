@@ -8,9 +8,10 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List
+from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -28,6 +29,9 @@ MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com/v1/responses")
+CONVERSATION_PROVIDER = os.getenv("CONVERSATION_PROVIDER", "openai").strip().lower()
+LOCAL_AI_URL = os.getenv("LOCAL_AI_URL", "http://ollama:11434/api/chat")
+LOCAL_AI_MODEL = os.getenv("LOCAL_AI_MODEL", "llama3.1:8b")
 KOKORO_TIMEOUT_SECONDS = float(os.getenv("KOKORO_TIMEOUT_SECONDS", "180"))
 
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
@@ -367,6 +371,51 @@ async def generate_conversation_with_openai(prompt: str) -> str:
     return text
 
 
+async def generate_conversation_locally(prompt: str) -> str:
+    """Generate a draft with Ollama's native chat API.
+
+    Keeping this adapter separate from prompt construction makes it possible to
+    replace Ollama with another local runtime without touching the conversation
+    or media pipelines.
+    """
+    payload = {
+        "model": LOCAL_AI_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.post(LOCAL_AI_URL, json=payload)
+            response.raise_for_status()
+            body = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Local conversation model returned HTTP {exc.response.status_code}: {exc.response.text[:500]}",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach local conversation model: {exc}") from exc
+    text = str(body.get("message", {}).get("content", "")).strip()
+    if not text:
+        raise HTTPException(status_code=502, detail="Local conversation model returned no text")
+    return text
+
+
+async def generate_conversation(prompt: str) -> str:
+    if CONVERSATION_PROVIDER == "local":
+        return await generate_conversation_locally(prompt)
+    if CONVERSATION_PROVIDER == "openai":
+        return await generate_conversation_with_openai(prompt)
+    raise HTTPException(
+        status_code=503,
+        detail="CONVERSATION_PROVIDER must be 'openai' or 'local'",
+    )
+
+
+def conversation_model_name() -> str:
+    return LOCAL_AI_MODEL if CONVERSATION_PROVIDER == "local" else OPENAI_MODEL
+
+
 async def kokoro_status() -> dict:
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.get(f"{KOKORO_URL}/tts/status")
@@ -438,6 +487,90 @@ def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
         output_file.name,
     ]
     subprocess.run(cmd, cwd=output_file.parent, check=True)
+
+
+def build_generation_segments(
+    speech_chunks: list[dict[str, Any]], chunks_per_segment: int = 8
+) -> list[dict[str, Any]]:
+    """Group render units into independently trackable media jobs.
+
+    A segment owns its inputs and output contract. Today the only renderer is
+    audio, while ``outputs`` intentionally leaves room for a future video
+    renderer without changing the episode/job representation.
+    """
+    if chunks_per_segment < 1 or chunks_per_segment > 100:
+        raise HTTPException(status_code=400, detail="Chunks per segment must be between 1 and 100")
+    segments = []
+    for offset in range(0, len(speech_chunks), chunks_per_segment):
+        items = speech_chunks[offset : offset + chunks_per_segment]
+        number = len(segments) + 1
+        segments.append({
+            "id": f"segment-{number:03d}",
+            "number": number,
+            "status": "queued",
+            "chunks": items,
+            "outputs": {"audio": None},
+            "error": None,
+        })
+    return segments
+
+
+def _write_job(job_dir: Path, job: dict[str, Any]) -> None:
+    temporary = job_dir / "job.json.tmp"
+    temporary.write_text(json.dumps(job, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(job_dir / "job.json")
+
+
+def _load_job(job_id: str) -> tuple[Path, dict[str, Any]]:
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", job_id):
+        raise HTTPException(status_code=400, detail="Invalid generation job id")
+    job_dir = OUTPUT_DIR / job_id
+    job_file = job_dir / "job.json"
+    if not job_file.exists():
+        raise HTTPException(status_code=404, detail="Generation job not found")
+    return job_dir, json.loads(job_file.read_text(encoding="utf-8"))
+
+
+async def process_generation_job(job_id: str) -> None:
+    """Render queued segments and checkpoint progress after every state change."""
+    job_dir, job = _load_job(job_id)
+    job["status"] = "running"
+    job["started_at"] = datetime.now(timezone.utc).isoformat()
+    _write_job(job_dir, job)
+    all_chunk_paths: list[Path] = []
+    chunk_number = 0
+    try:
+        for segment in job["segments"]:
+            segment["status"] = "running"
+            _write_job(job_dir, job)
+            segment_paths: list[Path] = []
+            for chunk in segment["chunks"]:
+                chunk_number += 1
+                path = job_dir / "chunks" / f"chunk-{chunk_number:03d}-{slugify(chunk['host'])}.wav"
+                await synthesize_chunk(chunk["text"], chunk["voice"], chunk["tempo"], path)
+                segment_paths.append(path)
+                all_chunk_paths.append(path)
+            segment_audio = job_dir / "segments" / f"{segment['id']}.mp3"
+            assemble_mp3(segment_paths, segment_audio)
+            segment["outputs"]["audio"] = segment_audio.relative_to(job_dir).as_posix()
+            segment["status"] = "complete"
+            _write_job(job_dir, job)
+
+        final_path = job_dir / f"{slugify(job['title'])}.mp3"
+        assemble_mp3(all_chunk_paths, final_path)
+        job["status"] = "complete"
+        job["download_url"] = f"/api/episodes/{job_id}/download"
+    except Exception as exc:  # Persist failures so polling clients never hang.
+        job["status"] = "failed"
+        job["error"] = describe_kokoro_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
+        for segment in job["segments"]:
+            if segment["status"] == "running":
+                segment["status"] = "failed"
+                segment["error"] = job["error"]
+                break
+    finally:
+        job["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _write_job(job_dir, job)
 
 
 def media_duration(path: Path) -> float:
@@ -650,14 +783,15 @@ async def conversation_draft(
 ):
     hosts = parse_hosts(hosts_json)
     prompt = build_conversation_prompt(story_notes, hosts, target_minutes=target_minutes, tone=tone)
-    script = await generate_conversation_with_openai(prompt)
+    script = await generate_conversation(prompt)
     # Validate speaker tags before returning a script that the audio pipeline cannot render.
     parse_speaker_script(script, hosts)
     return {
         "ok": True,
         "script": script,
         "hosts": len(hosts),
-        "model": OPENAI_MODEL,
+        "model": conversation_model_name(),
+        "provider": CONVERSATION_PROVIDER,
         "target_minutes": target_minutes,
     }
 
@@ -670,6 +804,55 @@ async def chunk_preview(
     hosts = parse_hosts(hosts_json)
     chunks = build_speech_chunks(script, hosts)
     return {"count": len(chunks), "hosts": hosts, "chunks": chunks}
+
+
+@app.post("/api/generation-jobs", status_code=202)
+async def create_generation_job(
+    background_tasks: BackgroundTasks,
+    title: str = Form(...),
+    script: str = Form(...),
+    hosts_json: str = Form(...),
+    chunks_per_segment: int = Form(8),
+):
+    """Queue an episode as durable, independently checkpointed segment jobs."""
+    if not script.strip():
+        raise HTTPException(status_code=400, detail="Script cannot be empty")
+    hosts = parse_hosts(hosts_json)
+    speech_chunks = build_speech_chunks(script, hosts)
+    if not speech_chunks:
+        raise HTTPException(status_code=400, detail="No speakable text found")
+    segments = build_generation_segments(speech_chunks, chunks_per_segment)
+    job_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{slugify(title)}-{uuid4().hex[:8]}"
+    job_dir = OUTPUT_DIR / job_id
+    (job_dir / "chunks").mkdir(parents=True)
+    (job_dir / "segments").mkdir()
+    (job_dir / "script.txt").write_text(clean_script(script), encoding="utf-8")
+    job = {
+        "id": job_id,
+        "title": title,
+        "status": "queued",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "hosts": hosts,
+        "media": ["audio"],
+        "segments": segments,
+        "download_url": None,
+        "error": None,
+    }
+    _write_job(job_dir, job)
+    background_tasks.add_task(process_generation_job, job_id)
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": "queued",
+        "segments": len(segments),
+        "status_url": f"/api/generation-jobs/{job_id}",
+    }
+
+
+@app.get("/api/generation-jobs/{job_id}")
+async def generation_job_status(job_id: str):
+    _, job = _load_job(job_id)
+    return job
 
 
 @app.post("/api/generate")
@@ -911,6 +1094,6 @@ async def conversation_draft_packet(
     notes = research_packet_to_notes(packet)
     prompt = build_conversation_prompt(notes, hosts, target_minutes=target_minutes, tone=tone)
     prompt += "\n\nEPISODE FLOW RULES\n- Cover every story in the packet.\n- Spend more time on high-importance stories.\n- Use natural transitions and callbacks between stories.\n- Clearly distinguish verified facts from disputed or uncertain claims.\n- Do not read source URLs aloud.\n"
-    script = await generate_conversation_with_openai(prompt)
+    script = await generate_conversation(prompt)
     parse_speaker_script(script, hosts)
-    return {"ok": True, "script": script, "hosts": len(hosts), "stories": len(packet["stories"]), "model": OPENAI_MODEL}
+    return {"ok": True, "script": script, "hosts": len(hosts), "stories": len(packet["stories"]), "model": conversation_model_name(), "provider": CONVERSATION_PROVIDER}
