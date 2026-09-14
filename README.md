@@ -67,7 +67,7 @@ and prints the app logs if port `8081` never becomes reachable.
 Open:
 
 ```text
-http://localhost:8081
+http://127.0.0.1:8081
 ```
 
 The top status card should show:
@@ -78,7 +78,7 @@ App ready · Kokoro online
 
 ## Generate the pilot
 
-1. Open `http://localhost:8081`.
+1. Open `http://127.0.0.1:8081`.
 2. The pilot script is preloaded.
 3. Start with voice `am_michael` and tempo `1.00`.
 4. Click **Generate episode**.
@@ -103,7 +103,7 @@ output/<timestamp>-<episode-title>/
 Check the app:
 
 ```bash
-curl http://localhost:8081/api/health
+curl http://127.0.0.1:8081/api/health
 ```
 
 Watch logs:
@@ -125,6 +125,11 @@ running and that Docker published the expected port:
 docker compose ps app
 docker compose logs --tail=100 app
 ```
+
+Use `127.0.0.1` rather than `localhost` for this check. In some WSL and Docker
+Desktop configurations, `localhost` can resolve through a different IPv6 or
+Windows forwarding path and reset the connection even though the IPv4-published
+port is available.
 
 Stop the application:
 
