@@ -28,6 +28,7 @@ MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com/v1/responses")
+KOKORO_TIMEOUT_SECONDS = float(os.getenv("KOKORO_TIMEOUT_SECONDS", "180"))
 
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -373,6 +374,23 @@ async def kokoro_status() -> dict:
         return response.json()
 
 
+def describe_kokoro_error(exc: httpx.HTTPError) -> str:
+    """Return an actionable message even when httpx's exception text is empty."""
+    endpoint = f"{KOKORO_URL}/tts/generate"
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        response_detail = response.text.strip().replace("\n", " ")[:500]
+        message = f"Kokoro returned HTTP {response.status_code} from {endpoint}"
+        return f"{message}: {response_detail}" if response_detail else message
+    if isinstance(exc, httpx.TimeoutException):
+        return f"Kokoro did not respond within {KOKORO_TIMEOUT_SECONDS:g} seconds at {endpoint}"
+
+    reason = str(exc).strip()
+    if reason:
+        return f"Could not reach Kokoro at {endpoint}: {reason}"
+    return f"Could not reach Kokoro at {endpoint} ({type(exc).__name__})"
+
+
 async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Path) -> None:
     payload = {
         "text": text,
@@ -381,7 +399,7 @@ async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Pat
         "tempo": tempo,
         "normalize": True,
     }
-    async with httpx.AsyncClient(timeout=180) as client:
+    async with httpx.AsyncClient(timeout=KOKORO_TIMEOUT_SECONDS) as client:
         response = await client.post(f"{KOKORO_URL}/tts/generate", json=payload)
         response.raise_for_status()
         destination.write_bytes(response.content)
@@ -706,7 +724,12 @@ async def generate(
         metadata = enrich_chunk_timeline(metadata, episode_dir)
         (episode_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Kokoro TTS request failed: {exc}") from exc
+        failed_chunk = len(chunk_paths) + 1
+        detail = describe_kokoro_error(exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Kokoro TTS request failed on chunk {failed_chunk} of {len(speech_chunks)}: {detail}",
+        ) from exc
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=500, detail=f"Audio assembly failed: {exc}") from exc
 
