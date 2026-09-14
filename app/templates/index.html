@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Patch Notes: America</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">PODCAST BUILDER</p>
+      <h1>Patch Notes: America</h1>
+      <p class="lede">Build character-driven, multi-host Kokoro podcasts with a persistent cast.</p>
+    </header>
+
+    <section class="card status-card">
+      <div>
+        <strong>Services</strong>
+        <span id="health">Checking Kokoro...</span>
+      </div>
+    </section>
+
+    <form id="episode-form" class="card">
+      <label>
+        Episode title
+        <input name="title" value="Patch Notes America Pilot" required>
+      </label>
+
+      <section class="hosts-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">CAST</p>
+            <h2>Host Profiles</h2>
+          </div>
+          <div class="section-actions">
+            <button id="save-cast" class="secondary" type="button">Save cast</button>
+            <button id="add-host" class="secondary" type="button">+ Add host</button>
+          </div>
+        </div>
+        <p class="hint">Hosts are persistent characters. Audio settings drive Kokoro; personality fields are retained for transcript generation and episode metadata.</p>
+        <div id="hosts"></div>
+        <input id="hosts-json" name="hosts_json" type="hidden">
+        <p id="cast-status" class="hint"></p>
+      </section>
+
+      <section class="card conversation-builder">
+        <div class="section-heading">
+          <div>
+            <h2>Conversation engine</h2>
+            <p class="hint">Give the cast a verified story packet or source notes. The generator writes an editable multi-host discussion directly into the script below.</p>
+          </div>
+        </div>
+        <details class="research-packet">
+          <summary><strong>Episode research packet</strong> — organize multiple stories</summary>
+          <p class="hint">Build a factual packet with verified facts, uncertainty, discussion angles, and sources. Add as many stories as the episode needs.</p>
+          <label>Episode angle<input id="packet-angle" placeholder="What connects this week's stories?"></label>
+          <div id="packet-stories"></div>
+          <div class="section-actions">
+            <button id="add-story" class="secondary" type="button">+ Add story</button>
+            <button id="save-packet" class="secondary" type="button">Save research packet</button>
+            <button id="draft-packet" class="secondary" type="button">Draft full episode</button>
+          </div>
+          <p id="packet-status" class="hint"></p>
+        </details>
+        <label>
+          Quick story / source notes
+          <textarea id="story-notes" rows="8" placeholder="For a single-story segment, paste verified facts, source summaries, uncertainty notes, and discussion angles."></textarea>
+        </label>
+        <div class="host-grid">
+          <label>
+            Target minutes
+            <input id="target-minutes" type="number" min="2" max="60" value="8">
+          </label>
+          <label>
+            Conversation tone
+            <input id="conversation-tone" value="smart, funny, conversational, politically non-tribal">
+          </label>
+        </div>
+        <div class="actions">
+          <button id="draft-conversation" class="secondary" type="button">Draft conversation</button>
+          <span id="conversation-status"></span>
+        </div>
+      </section>
+
+      <label>
+        Episode script
+        <textarea id="episode-script" name="script" rows="24" required>{{ pilot }}</textarea>
+      </label>
+      <p class="hint script-help">
+        Switch speakers with the exact host name on its own line, such as <code>[Wade Mercer]</code>, <code>[Marcus Reed]</code>, or <code>[Julian Cross]</code>.
+        Text before the first speaker tag is spoken by the first host.
+      </p>
+
+      <div class="actions">
+        <button type="submit">Generate episode</button>
+        <span id="progress"></span>
+      </div>
+    </form>
+
+    <section id="result" class="card result" hidden></section>
+
+    <section id="clip-studio" class="card clip-studio" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">SOCIAL DISTRIBUTION</p>
+          <h2>Clip Studio</h2>
+          <p class="hint">Turn the finished episode into captioned vertical, square, or horizontal social clips. Suggestions favor tight 20–60 second exchanges with strong hooks and multiple hosts.</p>
+        </div>
+        <button id="suggest-clips" class="secondary" type="button">Find best moments</button>
+      </div>
+      <div id="clip-suggestions" class="clip-suggestions"></div>
+      <div class="clip-editor">
+        <div class="clip-grid">
+          <label>Start (seconds)<input id="clip-start" type="number" min="0" step="0.01" value="0"></label>
+          <label>End (seconds)<input id="clip-end" type="number" min="5" step="0.01" value="30"></label>
+          <label>Format<select id="clip-aspect"><option value="vertical">Vertical 9:16</option><option value="square">Square 1:1</option><option value="horizontal">Horizontal 16:9</option></select></label>
+        </div>
+        <label>Clip headline<input id="clip-title" value="The part everyone will argue about"></label>
+        <div class="actions">
+          <button id="render-clip" type="button">Render social clip</button>
+          <span id="clip-status" class="hint"></span>
+        </div>
+        <div id="clip-result" class="clip-result"></div>
+      </div>
+    </section>
+  </main>
+
+  <template id="host-template">
+    <article class="host-row">
+      <div class="host-row-heading">
+        <div>
+          <strong class="host-number">Host</strong>
+          <span class="host-role-label"></span>
+        </div>
+        <button class="remove-host danger-link" type="button">Remove</button>
+      </div>
+
+      <div class="host-grid host-grid-primary">
+        <label>
+          Name
+          <input class="host-name" required placeholder="Wade Mercer">
+        </label>
+        <label>
+          Role
+          <input class="host-role" placeholder="Southern Everyman">
+        </label>
+        <label>
+          Kokoro voice
+          <input class="host-voice" required placeholder="am_michael">
+        </label>
+        <label>
+          Tempo
+          <input class="host-tempo" type="number" min="0.5" max="2" step="0.01" required value="1.0">
+        </label>
+      </div>
+
+      <details class="character-details">
+        <summary>Character personality</summary>
+        <div class="character-grid">
+          <label class="wide">
+            Traits <span class="field-note">comma separated</span>
+            <input class="host-traits" placeholder="practical, warm, skeptical, storyteller">
+          </label>
+          <label>
+            Interruption tendency
+            <select class="host-interruption">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label class="wide">
+            Debate style
+            <textarea class="host-debate-style" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Humor style
+            <textarea class="host-humor-style" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Sentence / speaking style
+            <textarea class="host-sentence-style" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Political posture
+            <textarea class="host-political-posture" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Character flaws
+            <textarea class="host-flaws" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Character notes
+            <textarea class="host-character-notes" rows="4"></textarea>
+          </label>
+        </div>
+      </details>
+    </article>
+  </template>
+
+  <script>
+    const initialProfiles = {{ host_profiles | tojson }};
+    const hostsContainer = document.getElementById('hosts');
+    const hostTemplate = document.getElementById('host-template');
+    const hostsJson = document.getElementById('hosts-json');
+    const castStatus = document.getElementById('cast-status');
+    let currentEpisode = null;
+
+    function renumberHosts() {
+      const rows = [...hostsContainer.querySelectorAll('.host-row')];
+      rows.forEach((row, index) => {
+        row.querySelector('.host-number').textContent = `Host ${index + 1}`;
+        row.querySelector('.remove-host').disabled = rows.length === 1;
+      });
+    }
+
+    function bindRoleLabel(row) {
+      const roleInput = row.querySelector('.host-role');
+      const roleLabel = row.querySelector('.host-role-label');
+      const update = () => roleLabel.textContent = roleInput.value.trim() ? ` · ${roleInput.value.trim()}` : '';
+      roleInput.addEventListener('input', update);
+      update();
+    }
+
+    function addHost(host = {}) {
+      const fragment = hostTemplate.content.cloneNode(true);
+      const row = fragment.querySelector('.host-row');
+      row.querySelector('.host-name').value = host.name || '';
+      row.querySelector('.host-role').value = host.role || '';
+      row.querySelector('.host-voice').value = host.voice || '{{ default_voice }}';
+      row.querySelector('.host-tempo').value = host.tempo ?? {{ default_tempo }};
+      row.querySelector('.host-traits').value = Array.isArray(host.traits) ? host.traits.join(', ') : (host.traits || '');
+      row.querySelector('.host-debate-style').value = host.debate_style || '';
+      row.querySelector('.host-humor-style').value = host.humor_style || '';
+      row.querySelector('.host-interruption').value = host.interruption_frequency || 'medium';
+      row.querySelector('.host-sentence-style').value = host.sentence_style || '';
+      row.querySelector('.host-political-posture').value = host.political_posture || '';
+      row.querySelector('.host-flaws').value = host.flaws || '';
+      row.querySelector('.host-character-notes').value = host.character_notes || '';
+      row.querySelector('.remove-host').addEventListener('click', () => {
+        row.remove();
+        renumberHosts();
+      });
+      bindRoleLabel(row);
+      hostsContainer.appendChild(fragment);
+      renumberHosts();
+    }
+
+    function serializeHosts() {
+      const hosts = [...hostsContainer.querySelectorAll('.host-row')].map((row) => ({
+        name: row.querySelector('.host-name').value.trim(),
+        role: row.querySelector('.host-role').value.trim(),
+        voice: row.querySelector('.host-voice').value.trim(),
+        tempo: Number(row.querySelector('.host-tempo').value),
+        traits: row.querySelector('.host-traits').value.split(',').map((item) => item.trim()).filter(Boolean),
+        debate_style: row.querySelector('.host-debate-style').value.trim(),
+        humor_style: row.querySelector('.host-humor-style').value.trim(),
+        interruption_frequency: row.querySelector('.host-interruption').value,
+        sentence_style: row.querySelector('.host-sentence-style').value.trim(),
+        political_posture: row.querySelector('.host-political-posture').value.trim(),
+        flaws: row.querySelector('.host-flaws').value.trim(),
+        character_notes: row.querySelector('.host-character-notes').value.trim(),
+      }));
+      hostsJson.value = JSON.stringify(hosts);
+      return hosts;
+    }
+
+    document.getElementById('add-host').addEventListener('click', () => addHost({
+      name: '',
+      role: '',
+      voice: '{{ default_voice }}',
+      tempo: {{ default_tempo }},
+      traits: [],
+      interruption_frequency: 'medium',
+    }));
+
+    document.getElementById('save-cast').addEventListener('click', async () => {
+      const hosts = serializeHosts();
+      castStatus.textContent = 'Saving cast...';
+      try {
+        const form = new FormData();
+        form.append('hosts_json', JSON.stringify(hosts));
+        const res = await fetch('/api/host-profiles', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Could not save cast');
+        castStatus.textContent = `Saved ${data.count} host profile${data.count === 1 ? '' : 's'}.`;
+      } catch (err) {
+        castStatus.textContent = err.message;
+      }
+    });
+
+    async function updateHealth() {
+      const el = document.getElementById('health');
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        el.textContent = data.kokoro.ok ? 'App ready · Kokoro online' : 'App ready · Kokoro offline';
+        el.className = data.kokoro.ok ? 'ok' : 'bad';
+      } catch (err) {
+        el.textContent = 'Health check failed';
+        el.className = 'bad';
+      }
+    }
+
+
+    function addPacketStory(data = {}) {
+      const wrap = document.createElement('article');
+      wrap.className = 'host-row packet-story';
+      wrap.innerHTML = `
+        <div class="host-row-heading"><strong>Story</strong><button type="button" class="secondary remove-story">Remove</button></div>
+        <label>Headline<input class="story-headline" value="${data.headline || ''}"></label>
+        <div class="host-grid"><label>Importance<select class="story-importance"><option>high</option><option selected>medium</option><option>low</option></select></label><label>Sources, one per line<textarea class="story-sources" rows="3">${(data.sources || []).join('\n')}</textarea></label></div>
+        <label>Verified facts<textarea class="story-facts" rows="5">${data.verified_facts || ''}</textarea></label>
+        <label>Disputed / uncertain<textarea class="story-uncertain" rows="3">${data.disputed_or_uncertain || ''}</textarea></label>
+        <label>Discussion angles<textarea class="story-angles" rows="3">${data.angles || ''}</textarea></label>`;
+      wrap.querySelector('.story-importance').value = data.importance || 'medium';
+      wrap.querySelector('.remove-story').onclick = () => wrap.remove();
+      document.getElementById('packet-stories').appendChild(wrap);
+    }
+
+    function serializePacket() {
+      return {
+        title: document.querySelector('input[name="title"]').value || 'Untitled episode',
+        episode_angle: document.getElementById('packet-angle').value.trim(),
+        stories: [...document.querySelectorAll('.packet-story')].map(el => ({
+          headline: el.querySelector('.story-headline').value.trim(), importance: el.querySelector('.story-importance').value,
+          verified_facts: el.querySelector('.story-facts').value.trim(), disputed_or_uncertain: el.querySelector('.story-uncertain').value.trim(),
+          angles: el.querySelector('.story-angles').value.trim(), sources: el.querySelector('.story-sources').value.split('\n').map(x => x.trim()).filter(Boolean)
+        }))
+      };
+    }
+
+    document.getElementById('add-story').addEventListener('click', () => addPacketStory());
+    addPacketStory();
+
+    document.getElementById('save-packet').addEventListener('click', async () => {
+      const status = document.getElementById('packet-status'); status.textContent = 'Saving packet...';
+      try { const form = new FormData(); form.append('packet_json', JSON.stringify(serializePacket()));
+        const res = await fetch('/api/research-packets', {method:'POST', body:form}); const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Could not save packet'); status.textContent = `Saved ${data.packet.stories.length} stories as ${data.id}.`;
+      } catch(err) { status.textContent = err.message; }
+    });
+
+    document.getElementById('draft-packet').addEventListener('click', async () => {
+      const status = document.getElementById('packet-status'); const button = document.getElementById('draft-packet'); button.disabled=true; status.textContent='Writing full episode from research packet...';
+      try { const form = new FormData(); form.append('packet_json', JSON.stringify(serializePacket())); form.append('hosts_json', JSON.stringify(serializeHosts()));
+        form.append('target_minutes', document.getElementById('target-minutes').value); form.append('tone', document.getElementById('conversation-tone').value);
+        const res=await fetch('/api/conversation-draft-packet',{method:'POST',body:form}); const data=await res.json(); if(!res.ok) throw new Error(data.detail || 'Episode draft failed');
+        document.getElementById('episode-script').value=data.script; status.textContent=`Draft ready: ${data.stories} stories, ${data.hosts} hosts.`;
+      } catch(err) { status.textContent=err.message; } finally { button.disabled=false; }
+    });
+
+    document.getElementById('draft-conversation').addEventListener('click', async () => {
+      const status = document.getElementById('conversation-status');
+      const button = document.getElementById('draft-conversation');
+      const storyNotes = document.getElementById('story-notes').value.trim();
+      if (!storyNotes) {
+        status.textContent = 'Add story or source notes first.';
+        return;
+      }
+      const hosts = serializeHosts();
+      button.disabled = true;
+      status.textContent = `Writing a ${hosts.length}-host conversation...`;
+      try {
+        const form = new FormData();
+        form.append('story_notes', storyNotes);
+        form.append('hosts_json', JSON.stringify(hosts));
+        form.append('target_minutes', document.getElementById('target-minutes').value);
+        form.append('tone', document.getElementById('conversation-tone').value);
+        const res = await fetch('/api/conversation-draft', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Conversation generation failed');
+        document.getElementById('episode-script').value = data.script;
+        status.textContent = `Draft ready using ${data.hosts} hosts. Review and edit it, then generate audio.`;
+      } catch (err) {
+        status.textContent = err.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    document.getElementById('episode-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const hosts = serializeHosts();
+      const progress = document.getElementById('progress');
+      const result = document.getElementById('result');
+      const button = event.target.querySelector('button[type="submit"]');
+
+      const missingName = hosts.find((host) => !host.name);
+      if (missingName) {
+        progress.textContent = 'Every host needs a name.';
+        return;
+      }
+
+      button.disabled = true;
+      progress.textContent = `Generating ${hosts.length}-host episode...`;
+      result.hidden = true;
+
+      try {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          body: new FormData(event.target),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Generation failed');
+        const durationText = data.duration ? ` · ${Math.round(data.duration)} seconds` : '';
+        result.innerHTML = `<strong>Episode ready.</strong><p>${data.hosts} host(s), ${data.chunks} audio chunks generated${durationText}.</p><a class="download" href="${data.download_url}">Download MP3</a>`;
+        result.hidden = false;
+        currentEpisode = data.episode;
+        document.getElementById('clip-studio').hidden = false;
+        if (data.duration) document.getElementById('clip-end').value = Math.min(30, data.duration).toFixed(2);
+        progress.textContent = 'Complete.';
+      } catch (err) {
+        progress.textContent = err.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+
+    function useClipSuggestion(item, index) {
+      document.getElementById('clip-start').value = Number(item.start).toFixed(2);
+      document.getElementById('clip-end').value = Number(item.end).toFixed(2);
+      document.getElementById('clip-title').value = `Clip ${index + 1}: ${item.speakers.join(' + ')}`;
+      document.getElementById('clip-status').textContent = `Selected ${item.duration.toFixed(1)}s moment.`;
+    }
+
+    document.getElementById('suggest-clips').addEventListener('click', async () => {
+      const status = document.getElementById('clip-status');
+      const container = document.getElementById('clip-suggestions');
+      if (!currentEpisode) { status.textContent = 'Generate an episode first.'; return; }
+      status.textContent = 'Scoring episode moments...';
+      container.innerHTML = '';
+      try {
+        const res = await fetch(`/api/episodes/${currentEpisode}/clip-suggestions`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Could not find clips');
+        data.suggestions.forEach((item, index) => {
+          const card = document.createElement('button');
+          card.type = 'button';
+          card.className = 'clip-suggestion secondary';
+          const preview = item.preview.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          card.innerHTML = `<strong>#${index + 1} · ${item.duration.toFixed(1)}s</strong><span>${item.speakers.join(' · ')}</span><small>${preview}</small>`;
+          card.addEventListener('click', () => useClipSuggestion(item, index));
+          container.appendChild(card);
+        });
+        status.textContent = data.suggestions.length ? 'Pick a suggested moment or enter your own times.' : 'No 20–60 second windows found.';
+      } catch (err) { status.textContent = err.message; }
+    });
+
+    document.getElementById('render-clip').addEventListener('click', async () => {
+      const button = document.getElementById('render-clip');
+      const status = document.getElementById('clip-status');
+      const result = document.getElementById('clip-result');
+      if (!currentEpisode) { status.textContent = 'Generate an episode first.'; return; }
+      button.disabled = true; status.textContent = 'Rendering captions and social video...'; result.innerHTML = '';
+      try {
+        const form = new FormData();
+        form.append('start', document.getElementById('clip-start').value);
+        form.append('end', document.getElementById('clip-end').value);
+        form.append('clip_title', document.getElementById('clip-title').value);
+        form.append('aspect', document.getElementById('clip-aspect').value);
+        const res = await fetch(`/api/episodes/${currentEpisode}/clips`, {method:'POST', body:form});
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Clip rendering failed');
+        result.innerHTML = `<a class="download" href="${data.download_url}">Download ${data.aspect} MP4</a>`;
+        status.textContent = `Clip ready: ${(data.end - data.start).toFixed(1)} seconds.`;
+      } catch (err) { status.textContent = err.message; }
+      finally { button.disabled = false; }
+    });
+
+    initialProfiles.forEach(addHost);
+    updateHealth();
+  </script>
+</body>
+</html>

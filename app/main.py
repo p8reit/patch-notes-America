@@ -1,0 +1,893 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, List
+
+import httpx
+from fastapi import FastAPI, Form, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.requests import Request
+
+APP_ROOT = Path(__file__).resolve().parent.parent
+EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", APP_ROOT / "output"))
+CONFIG_DIR = Path(os.getenv("CONFIG_DIR", APP_ROOT / "config"))
+HOST_PROFILES_FILE = CONFIG_DIR / "host_profiles.json"
+KOKORO_URL = os.getenv("KOKORO_URL", "http://kokoro:7860")
+DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "am_michael")
+DEFAULT_TEMPO = float(os.getenv("DEFAULT_TEMPO", "1.0"))
+MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com/v1/responses")
+
+EPISODES_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(title="Patch Notes: America", version="0.5.0")
+app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
+templates = Jinja2Templates(directory=APP_ROOT / "app" / "templates")
+
+
+def slugify(value: str) -> str:
+    value = value.lower().strip()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    return value.strip("-") or "episode"
+
+
+def clean_script(text: str) -> str:
+    text = text.replace("\r\n", "\n")
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def split_script(text: str, max_chars: int = MAX_CHARS) -> List[str]:
+    text = clean_script(text)
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    chunks: list[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current.strip():
+            chunks.append(current.strip())
+            current = ""
+
+    for paragraph in paragraphs:
+        if len(paragraph) <= max_chars:
+            candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                flush()
+                current = paragraph
+            continue
+
+        flush()
+        sentences = re.split(r"(?<=[.!?])\s+", paragraph)
+        sentence_buffer = ""
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            candidate = f"{sentence_buffer} {sentence}".strip()
+            if len(candidate) <= max_chars:
+                sentence_buffer = candidate
+                continue
+
+            if sentence_buffer:
+                chunks.append(sentence_buffer)
+                sentence_buffer = ""
+
+            if len(sentence) <= max_chars:
+                sentence_buffer = sentence
+                continue
+
+            words = sentence.split()
+            hard = ""
+            for word in words:
+                candidate = f"{hard} {word}".strip()
+                if len(candidate) > max_chars and hard:
+                    chunks.append(hard)
+                    hard = word
+                else:
+                    hard = candidate
+            if hard:
+                sentence_buffer = hard
+
+        if sentence_buffer:
+            chunks.append(sentence_buffer)
+
+    flush()
+    return chunks
+
+
+def _text_field(item: dict[str, Any], key: str, default: str = "") -> str:
+    return str(item.get(key, default) or "").strip()
+
+
+def parse_hosts(hosts_json: str) -> list[dict[str, Any]]:
+    try:
+        raw_hosts = json.loads(hosts_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Host configuration is invalid JSON") from exc
+
+    if not isinstance(raw_hosts, list) or not raw_hosts:
+        raise HTTPException(status_code=400, detail="At least one host is required")
+
+    hosts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    allowed_interruptions = {"low", "medium", "high"}
+    for index, item in enumerate(raw_hosts, start=1):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail=f"Host {index} is invalid")
+
+        name = _text_field(item, "name")
+        voice = _text_field(item, "voice")
+        try:
+            tempo = float(item.get("tempo", DEFAULT_TEMPO))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Host {index} has an invalid tempo") from exc
+
+        if not name:
+            raise HTTPException(status_code=400, detail=f"Host {index} needs a name")
+        if name.casefold() in seen:
+            raise HTTPException(status_code=400, detail=f"Host names must be unique: {name}")
+        if not voice:
+            raise HTTPException(status_code=400, detail=f"Host {name} needs a Kokoro voice")
+        if tempo < 0.5 or tempo > 2.0:
+            raise HTTPException(status_code=400, detail=f"Tempo for {name} must be between 0.5 and 2.0")
+
+        interruption_frequency = _text_field(item, "interruption_frequency", "medium").lower()
+        if interruption_frequency not in allowed_interruptions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Interruption frequency for {name} must be low, medium, or high",
+            )
+
+        raw_traits = item.get("traits", [])
+        if isinstance(raw_traits, str):
+            traits = [part.strip() for part in raw_traits.split(",") if part.strip()]
+        elif isinstance(raw_traits, list):
+            traits = [str(part).strip() for part in raw_traits if str(part).strip()]
+        else:
+            raise HTTPException(status_code=400, detail=f"Traits for {name} must be a list or comma-separated text")
+
+        seen.add(name.casefold())
+        hosts.append(
+            {
+                "name": name,
+                "role": _text_field(item, "role"),
+                "voice": voice,
+                "tempo": tempo,
+                "traits": traits,
+                "debate_style": _text_field(item, "debate_style"),
+                "humor_style": _text_field(item, "humor_style"),
+                "interruption_frequency": interruption_frequency,
+                "sentence_style": _text_field(item, "sentence_style"),
+                "political_posture": _text_field(item, "political_posture"),
+                "flaws": _text_field(item, "flaws"),
+                "character_notes": _text_field(item, "character_notes"),
+            }
+        )
+
+    return hosts
+
+
+def load_host_profiles() -> list[dict[str, Any]]:
+    if not HOST_PROFILES_FILE.exists():
+        return [{"name": "Host", "voice": DEFAULT_VOICE, "tempo": DEFAULT_TEMPO}]
+    try:
+        return parse_hosts(HOST_PROFILES_FILE.read_text(encoding="utf-8"))
+    except (HTTPException, OSError):
+        return [{"name": "Host", "voice": DEFAULT_VOICE, "tempo": DEFAULT_TEMPO}]
+
+
+def save_host_profiles(hosts: list[dict[str, Any]]) -> None:
+    HOST_PROFILES_FILE.write_text(json.dumps(hosts, indent=2) + "\n", encoding="utf-8")
+
+
+def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Split a script into ordered speaker sections.
+
+    A line containing only ``[Host Name]`` switches the active speaker. Text before
+    the first speaker tag uses the first configured host for backward compatibility.
+    """
+    cleaned = clean_script(script)
+    if not cleaned:
+        return []
+
+    canonical_names = {host["name"].casefold(): host["name"] for host in hosts}
+    active_host = hosts[0]["name"]
+    buffer: list[str] = []
+    sections: list[dict[str, str]] = []
+
+    def flush() -> None:
+        nonlocal buffer
+        text = "\n".join(buffer).strip()
+        if text:
+            sections.append({"host": active_host, "text": text})
+        buffer = []
+
+    for line in cleaned.splitlines():
+        match = re.fullmatch(r"\s*\[([^\]\n]+)\]\s*", line)
+        if match:
+            requested = match.group(1).strip()
+            canonical = canonical_names.get(requested.casefold())
+            if canonical is None:
+                available = ", ".join(host["name"] for host in hosts)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown host tag [{requested}]. Configured hosts: {available}",
+                )
+            flush()
+            active_host = canonical
+            continue
+        buffer.append(line)
+
+    flush()
+    return sections
+
+
+def build_speech_chunks(
+    script: str, hosts: list[dict[str, Any]], max_chars: int = MAX_CHARS
+) -> list[dict[str, Any]]:
+    host_lookup = {host["name"].casefold(): host for host in hosts}
+    sections = parse_speaker_script(script, hosts)
+    chunks: list[dict[str, Any]] = []
+
+    for section in sections:
+        host = host_lookup[section["host"].casefold()]
+        for text_chunk in split_script(section["text"], max_chars=max_chars):
+            chunks.append(
+                {
+                    "host": host["name"],
+                    "voice": host["voice"],
+                    "tempo": host["tempo"],
+                    "text": text_chunk,
+                }
+            )
+    return chunks
+
+
+def build_conversation_prompt(
+    story_notes: str,
+    hosts: list[dict[str, Any]],
+    target_minutes: int = 8,
+    tone: str = "smart, funny, conversational, politically non-tribal",
+) -> str:
+    if not story_notes.strip():
+        raise HTTPException(status_code=400, detail="Story/source notes cannot be empty")
+    if target_minutes < 2 or target_minutes > 60:
+        raise HTTPException(status_code=400, detail="Target length must be between 2 and 60 minutes")
+
+    cast = []
+    for host in hosts:
+        cast.append(
+            f"""HOST: {host['name']}
+Role: {host.get('role', '')}
+Traits: {', '.join(host.get('traits', []))}
+Debate style: {host.get('debate_style', '')}
+Humor style: {host.get('humor_style', '')}
+Interruption tendency: {host.get('interruption_frequency', 'medium')}
+Speaking style: {host.get('sentence_style', '')}
+Political posture: {host.get('political_posture', '')}
+Flaws: {host.get('flaws', '')}
+Character notes: {host.get('character_notes', '')}"""
+        )
+
+    names = ", ".join(host["name"] for host in hosts)
+    return f"""You are writing a podcast conversation for Patch Notes: America.
+
+GOAL
+Create a natural, entertaining discussion among {names}. Capture the ingredients of excellent podcast chemistry without imitating any real host, show, comedian, or public figure. The hosts like one another. They can disagree, tease, interrupt, correct, and challenge each other without becoming partisan caricatures.
+
+TONE
+{tone}
+
+TARGET LENGTH
+About {target_minutes} spoken minutes. Favor tight back-and-forth over long monologues.
+
+CAST
+
+{chr(10).join(cast)}
+
+SOURCE / STORY NOTES
+{story_notes.strip()}
+
+WRITING RULES
+- Stay grounded in the supplied notes. Do not invent factual details, quotes, polling numbers, dates, or allegations.
+- If the notes leave something uncertain, have a host explicitly say it is uncertain or needs verification.
+- No host is permanently correct. Let different hosts make the strongest point at different moments.
+- Wade-style practical reasoning should not become anti-intellectual; city-style analysis should not become smug; worldly context should not become a lecture. Apply equivalent protections to any added hosts.
+- Use callbacks, follow-up questions, occasional interruptions, short reactions, and friendly roasting.
+- Avoid repetitive agreement phrases and obvious turn-taking.
+- Let a host occasionally change their mind or concede a point.
+- Do not describe actions, sound effects, emotions, or stage directions in brackets. Brackets are reserved only for exact speaker tags.
+- Output narration only. No Markdown headings, preamble, commentary, or explanation.
+- Every spoken turn MUST begin with the exact speaker tag on its own line, for example:
+[{hosts[0]['name']}]
+Spoken words here.
+- Use only these speaker names: {names}.
+- Make the first 20 seconds hook the listener. End with a clean transition or takeaway rather than a generic summary.
+"""
+
+
+def extract_response_text(payload: dict[str, Any]) -> str:
+    if isinstance(payload.get("output_text"), str) and payload["output_text"].strip():
+        return payload["output_text"].strip()
+    parts: list[str] = []
+    for item in payload.get("output", []):
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []):
+            if isinstance(content, dict) and isinstance(content.get("text"), str):
+                parts.append(content["text"])
+    return "\n".join(parts).strip()
+
+
+async def generate_conversation_with_openai(prompt: str) -> str:
+    if not OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Conversation generation is configured, but OPENAI_API_KEY is not set. Add it to your .env or Docker environment.",
+        )
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": prompt,
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            response = await client.post(OPENAI_RESPONSES_URL, headers=headers, json=payload)
+            response.raise_for_status()
+            text = extract_response_text(response.json())
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:500]
+        raise HTTPException(status_code=502, detail=f"Conversation model request failed: {detail}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Conversation model request failed: {exc}") from exc
+    if not text:
+        raise HTTPException(status_code=502, detail="Conversation model returned no text")
+    return text
+
+
+async def kokoro_status() -> dict:
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(f"{KOKORO_URL}/tts/status")
+        response.raise_for_status()
+        return response.json()
+
+
+async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Path) -> None:
+    payload = {
+        "text": text,
+        "voice": voice,
+        "output_format": "wav",
+        "tempo": tempo,
+        "normalize": True,
+    }
+    async with httpx.AsyncClient(timeout=180) as client:
+        response = await client.post(f"{KOKORO_URL}/tts/generate", json=payload)
+        response.raise_for_status()
+        destination.write_bytes(response.content)
+
+
+def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg is not installed in the application container")
+
+    manifest = output_file.parent / "concat.txt"
+    manifest.write_text(
+        "\n".join(f"file '{p.relative_to(output_file.parent).as_posix()}'" for p in chunk_paths) + "\n",
+        encoding="utf-8",
+    )
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        manifest.name,
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "128k",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        output_file.name,
+    ]
+    subprocess.run(cmd, cwd=output_file.parent, check=True)
+
+
+def media_duration(path: Path) -> float:
+    if not shutil.which("ffprobe"):
+        raise RuntimeError("ffprobe is not installed in the application container")
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        ],
+        check=True, capture_output=True, text=True,
+    )
+    return round(float(result.stdout.strip()), 3)
+
+
+def enrich_chunk_timeline(metadata: dict[str, Any], episode_dir: Path) -> dict[str, Any]:
+    """Measure rendered chunks and add deterministic episode start/end timestamps."""
+    cursor = 0.0
+    chunk_files = sorted((episode_dir / "chunks").glob("chunk-*.wav"))
+    chunks = metadata.get("chunks", [])
+    if len(chunk_files) != len(chunks):
+        return metadata
+    for item, chunk_file in zip(chunks, chunk_files):
+        duration = media_duration(chunk_file)
+        item["duration"] = duration
+        item["start"] = round(cursor, 3)
+        cursor += duration
+        item["end"] = round(cursor, 3)
+    metadata["duration"] = round(cursor, 3)
+    return metadata
+
+
+def _clip_score(text: str, speakers: int, duration: float) -> float:
+    score = 0.0
+    lower = text.lower()
+    score += min(len(text) / 260.0, 3.0)
+    score += min(speakers - 1, 3) * 1.35
+    score += text.count("?") * 0.5 + text.count("!") * 0.35
+    for token in ("but ", "here's", "here is", "problem", "actually", "because", "why ", "wait", "hold on", "the thing is", "that's the point", "that is the point"):
+        if token in lower:
+            score += 0.35
+    if 25 <= duration <= 50:
+        score += 1.0
+    elif 18 <= duration <= 60:
+        score += 0.5
+    return round(score, 3)
+
+
+def suggest_clip_windows(metadata: dict[str, Any], min_seconds: float = 20, max_seconds: float = 60, limit: int = 5) -> list[dict[str, Any]]:
+    chunks = metadata.get("chunks", [])
+    if not chunks or any("start" not in c or "end" not in c for c in chunks):
+        return []
+    candidates: list[dict[str, Any]] = []
+    for start_idx in range(len(chunks)):
+        speakers: set[str] = set()
+        texts: list[str] = []
+        start = float(chunks[start_idx]["start"])
+        for end_idx in range(start_idx, len(chunks)):
+            c = chunks[end_idx]
+            end = float(c["end"])
+            duration = end - start
+            if duration > max_seconds:
+                break
+            speakers.add(str(c.get("host", "Host")))
+            texts.append(str(c.get("text", "")))
+            if duration >= min_seconds:
+                text = " ".join(texts)
+                candidates.append({
+                    "start": round(start, 2), "end": round(end, 2), "duration": round(duration, 2),
+                    "speakers": sorted(speakers), "preview": text[:260].strip(),
+                    "score": _clip_score(text, len(speakers), duration),
+                })
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    selected: list[dict[str, Any]] = []
+    for candidate in candidates:
+        # Avoid returning five heavily overlapping versions of the same moment.
+        overlap = False
+        for chosen in selected:
+            intersection = max(0.0, min(candidate["end"], chosen["end"]) - max(candidate["start"], chosen["start"]))
+            if intersection / min(candidate["duration"], chosen["duration"]) > 0.55:
+                overlap = True
+                break
+        if not overlap:
+            selected.append(candidate)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _ass_time(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours}:{minutes:02d}:{secs:05.2f}"
+
+
+def _ass_escape(text: str) -> str:
+    text = text.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
+    return text.replace("\n", r"\N")
+
+
+def build_clip_ass(metadata: dict[str, Any], start: float, end: float, destination: Path, width: int, height: int) -> None:
+    font_size = 64 if height >= 1600 else 42
+    margin_v = int(height * 0.18)
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,{font_size},&H00FFFFFF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,{margin_v},1\nStyle: Speaker,DejaVu Sans,{max(30, int(font_size*.52))},&H0058A6FF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,{max(60, int(margin_v*.62))},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
+    events: list[str] = []
+    for chunk in metadata.get("chunks", []):
+        c_start = float(chunk.get("start", 0))
+        c_end = float(chunk.get("end", 0))
+        if c_end <= start or c_start >= end:
+            continue
+        rel_start = max(c_start, start) - start
+        rel_end = min(c_end, end) - start
+        host = _ass_escape(str(chunk.get("host", "")))
+        text = _ass_escape(str(chunk.get("text", "")))
+        # Split very long TTS chunks into visual sentences while keeping timing proportional.
+        sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+", text) if x.strip()] or [text]
+        total_chars = max(sum(len(x) for x in sentences), 1)
+        cursor = rel_start
+        for sentence in sentences:
+            span = (rel_end - rel_start) * (len(sentence) / total_chars)
+            next_cursor = min(rel_end, cursor + max(span, 0.6))
+            events.append(f"Dialogue: 0,{_ass_time(cursor)},{_ass_time(next_cursor)},Default,,0,0,0,,{sentence}")
+            events.append(f"Dialogue: 1,{_ass_time(cursor)},{_ass_time(next_cursor)},Speaker,,0,0,0,,{host}")
+            cursor = next_cursor
+    destination.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+
+
+def render_social_clip(episode_dir: Path, start: float, end: float, title: str, aspect: str, destination: Path, metadata: dict[str, Any]) -> None:
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg is not installed in the application container")
+    presets = {"vertical": (1080, 1920), "square": (1080, 1080), "horizontal": (1920, 1080)}
+    if aspect not in presets:
+        raise HTTPException(status_code=400, detail="Aspect must be vertical, square, or horizontal")
+    width, height = presets[aspect]
+    duration = end - start
+    if duration < 5 or duration > 90:
+        raise HTTPException(status_code=400, detail="Clip length must be between 5 and 90 seconds")
+    mp3_files = list(episode_dir.glob("*.mp3"))
+    if not mp3_files:
+        raise HTTPException(status_code=404, detail="Episode audio not found")
+    clips_dir = episode_dir / "clips"
+    clips_dir.mkdir(exist_ok=True)
+    ass_file = clips_dir / f"{destination.stem}.ass"
+    build_clip_ass(metadata, start, end, ass_file, width, height)
+    safe_title = title.replace("'", "’").replace(":", " - ")[:90]
+    font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    vf = (
+        f"drawtext=fontfile={font}:text='PATCH NOTES\\: AMERICA':fontcolor=white:fontsize={max(34,int(width*.045))}:x=(w-text_w)/2:y={int(height*.07)},"
+        f"drawtext=fontfile={font}:text='{safe_title}':fontcolor=white:fontsize={max(28,int(width*.038))}:x=(w-text_w)/2:y={int(height*.12)}:box=1:boxcolor=black@0.35:boxborderw=18,"
+        f"subtitles='{ass_file.as_posix()}':fontsdir=/usr/share/fonts/truetype/dejavu"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", f"color=c=0x0d1117:s={width}x{height}:r=30:d={duration}",
+        "-ss", str(start), "-t", str(duration), "-i", str(mp3_files[0]),
+        "-map", "0:v:0", "-map", "1:a:0", "-vf", vf,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", str(destination),
+    ]
+    subprocess.run(cmd, check=True)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    pilot_path = EPISODES_DIR / "pilot.txt"
+    pilot = pilot_path.read_text(encoding="utf-8") if pilot_path.exists() else ""
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "pilot": pilot,
+            "default_voice": DEFAULT_VOICE,
+            "default_tempo": DEFAULT_TEMPO,
+            "host_profiles": load_host_profiles(),
+        },
+    )
+
+
+@app.get("/api/host-profiles")
+async def get_host_profiles():
+    return {"hosts": load_host_profiles()}
+
+
+@app.post("/api/host-profiles")
+async def update_host_profiles(hosts_json: str = Form(...)):
+    hosts = parse_hosts(hosts_json)
+    save_host_profiles(hosts)
+    return {"ok": True, "hosts": hosts, "count": len(hosts)}
+
+
+@app.get("/api/health")
+async def health():
+    kokoro = {"ok": False}
+    try:
+        status = await kokoro_status()
+        kokoro = {"ok": True, "status": status}
+    except Exception as exc:  # noqa: BLE001
+        kokoro = {"ok": False, "error": str(exc)}
+    return {"app": "ok", "kokoro": kokoro}
+
+
+@app.post("/api/conversation-draft")
+async def conversation_draft(
+    story_notes: str = Form(...),
+    hosts_json: str = Form(...),
+    target_minutes: int = Form(8),
+    tone: str = Form("smart, funny, conversational, politically non-tribal"),
+):
+    hosts = parse_hosts(hosts_json)
+    prompt = build_conversation_prompt(story_notes, hosts, target_minutes=target_minutes, tone=tone)
+    script = await generate_conversation_with_openai(prompt)
+    # Validate speaker tags before returning a script that the audio pipeline cannot render.
+    parse_speaker_script(script, hosts)
+    return {
+        "ok": True,
+        "script": script,
+        "hosts": len(hosts),
+        "model": OPENAI_MODEL,
+        "target_minutes": target_minutes,
+    }
+
+
+@app.post("/api/chunk-preview")
+async def chunk_preview(
+    script: str = Form(...),
+    hosts_json: str = Form(...),
+):
+    hosts = parse_hosts(hosts_json)
+    chunks = build_speech_chunks(script, hosts)
+    return {"count": len(chunks), "hosts": hosts, "chunks": chunks}
+
+
+@app.post("/api/generate")
+async def generate(
+    title: str = Form(...),
+    script: str = Form(...),
+    hosts_json: str = Form(...),
+):
+    if not script.strip():
+        raise HTTPException(status_code=400, detail="Script cannot be empty")
+
+    hosts = parse_hosts(hosts_json)
+    speech_chunks = build_speech_chunks(script, hosts)
+    if not speech_chunks:
+        raise HTTPException(status_code=400, detail="No speakable text found")
+
+    episode_slug = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{slugify(title)}"
+    episode_dir = OUTPUT_DIR / episode_slug
+    chunks_dir = episode_dir / "chunks"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+
+    cleaned = clean_script(script)
+    (episode_dir / "script.txt").write_text(cleaned, encoding="utf-8")
+    metadata = {
+        "title": title,
+        "hosts": hosts,
+        "chunk_count": len(speech_chunks),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "chunks": [
+            {
+                "number": index,
+                "host": chunk["host"],
+                "voice": chunk["voice"],
+                "tempo": chunk["tempo"],
+                "text": chunk["text"],
+            }
+            for index, chunk in enumerate(speech_chunks, start=1)
+        ],
+    }
+    (episode_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    chunk_paths: list[Path] = []
+    try:
+        for index, chunk in enumerate(speech_chunks, start=1):
+            speaker_slug = slugify(chunk["host"])
+            chunk_path = chunks_dir / f"chunk-{index:03d}-{speaker_slug}.wav"
+            await synthesize_chunk(chunk["text"], chunk["voice"], chunk["tempo"], chunk_path)
+            chunk_paths.append(chunk_path)
+
+        final_path = episode_dir / f"{slugify(title)}.mp3"
+        assemble_mp3(chunk_paths, final_path)
+        metadata = enrich_chunk_timeline(metadata, episode_dir)
+        (episode_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Kokoro TTS request failed: {exc}") from exc
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=500, detail=f"Audio assembly failed: {exc}") from exc
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "episode": episode_slug,
+            "hosts": len(hosts),
+            "chunks": len(speech_chunks),
+            "duration": metadata.get("duration"),
+            "download_url": f"/api/episodes/{episode_slug}/download",
+            "clip_studio_url": f"/api/episodes/{episode_slug}/clip-suggestions",
+        }
+    )
+
+
+@app.get("/api/episodes/{episode_slug}/clip-suggestions")
+async def clip_suggestions(episode_slug: str):
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", episode_slug):
+        raise HTTPException(status_code=400, detail="Invalid episode id")
+    episode_dir = OUTPUT_DIR / episode_slug
+    metadata_file = episode_dir / "metadata.json"
+    if not metadata_file.exists():
+        raise HTTPException(status_code=404, detail="Episode not found")
+    metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+    if any("start" not in c for c in metadata.get("chunks", [])):
+        metadata = enrich_chunk_timeline(metadata, episode_dir)
+        metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return {"episode": episode_slug, "duration": metadata.get("duration"), "suggestions": suggest_clip_windows(metadata)}
+
+
+@app.post("/api/episodes/{episode_slug}/clips")
+async def create_clip(
+    episode_slug: str,
+    start: float = Form(...),
+    end: float = Form(...),
+    clip_title: str = Form("Best moment"),
+    aspect: str = Form("vertical"),
+):
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", episode_slug):
+        raise HTTPException(status_code=400, detail="Invalid episode id")
+    episode_dir = OUTPUT_DIR / episode_slug
+    metadata_file = episode_dir / "metadata.json"
+    if not metadata_file.exists():
+        raise HTTPException(status_code=404, detail="Episode not found")
+    metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+    if any("start" not in c for c in metadata.get("chunks", [])):
+        metadata = enrich_chunk_timeline(metadata, episode_dir)
+        metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    duration = float(metadata.get("duration") or 0)
+    if start < 0 or end <= start or (duration and end > duration + 0.25):
+        raise HTTPException(status_code=400, detail="Clip start/end are outside the episode timeline")
+    clip_id = f"{slugify(clip_title)}-{int(start*1000)}-{int(end*1000)}-{aspect}"
+    destination = episode_dir / "clips" / f"{clip_id}.mp4"
+    destination.parent.mkdir(exist_ok=True)
+    try:
+        render_social_clip(episode_dir, start, end, clip_title, aspect, destination, metadata)
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=500, detail=f"Clip rendering failed: {exc}") from exc
+    return {
+        "ok": True, "clip": clip_id, "start": start, "end": end, "aspect": aspect,
+        "download_url": f"/api/episodes/{episode_slug}/clips/{clip_id}/download",
+    }
+
+
+@app.get("/api/episodes/{episode_slug}/clips/{clip_id}/download")
+async def download_clip(episode_slug: str, clip_id: str):
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", episode_slug) or not re.fullmatch(r"[a-zA-Z0-9._-]+", clip_id):
+        raise HTTPException(status_code=400, detail="Invalid clip id")
+    path = OUTPUT_DIR / episode_slug / "clips" / f"{clip_id}.mp4"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return FileResponse(path, media_type="video/mp4", filename=path.name)
+
+
+@app.get("/api/episodes/{episode_slug}/download")
+async def download_episode(episode_slug: str):
+    episode_dir = OUTPUT_DIR / episode_slug
+    if not episode_dir.exists():
+        raise HTTPException(status_code=404, detail="Episode not found")
+    mp3_files = list(episode_dir.glob("*.mp3"))
+    if not mp3_files:
+        raise HTTPException(status_code=404, detail="Episode audio not found")
+    return FileResponse(mp3_files[0], media_type="audio/mpeg", filename=mp3_files[0].name)
+
+RESEARCH_PACKETS_DIR = CONFIG_DIR / "research_packets"
+RESEARCH_PACKETS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def parse_research_packet(packet_json: str) -> dict[str, Any]:
+    try:
+        packet = json.loads(packet_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Research packet is invalid JSON") from exc
+    if not isinstance(packet, dict):
+        raise HTTPException(status_code=400, detail="Research packet must be an object")
+    title = _text_field(packet, "title", "Untitled episode")
+    raw_stories = packet.get("stories", [])
+    if not isinstance(raw_stories, list) or not raw_stories:
+        raise HTTPException(status_code=400, detail="Research packet needs at least one story")
+    stories = []
+    for i, story in enumerate(raw_stories, 1):
+        if not isinstance(story, dict):
+            raise HTTPException(status_code=400, detail=f"Story {i} is invalid")
+        headline = _text_field(story, "headline")
+        facts = _text_field(story, "verified_facts")
+        if not headline or not facts:
+            raise HTTPException(status_code=400, detail=f"Story {i} needs a headline and verified facts")
+        sources = story.get("sources", [])
+        if isinstance(sources, str):
+            sources = [s.strip() for s in sources.splitlines() if s.strip()]
+        if not isinstance(sources, list):
+            raise HTTPException(status_code=400, detail=f"Sources for story {i} must be a list")
+        stories.append({
+            "headline": headline,
+            "importance": _text_field(story, "importance", "medium").lower(),
+            "verified_facts": facts,
+            "disputed_or_uncertain": _text_field(story, "disputed_or_uncertain"),
+            "angles": _text_field(story, "angles"),
+            "sources": [str(s).strip() for s in sources if str(s).strip()],
+        })
+    return {"title": title, "episode_angle": _text_field(packet, "episode_angle"), "stories": stories}
+
+
+def research_packet_to_notes(packet: dict[str, Any]) -> str:
+    lines = [f"EPISODE: {packet['title']}"]
+    if packet.get("episode_angle"):
+        lines += [f"EPISODE ANGLE: {packet['episode_angle']}"]
+    for i, story in enumerate(packet["stories"], 1):
+        lines += ["", f"STORY {i}: {story['headline']}", f"Importance: {story['importance']}",
+                  "Verified facts:", story["verified_facts"]]
+        if story.get("disputed_or_uncertain"):
+            lines += ["Disputed / uncertain:", story["disputed_or_uncertain"]]
+        if story.get("angles"):
+            lines += ["Discussion angles:", story["angles"]]
+        if story.get("sources"):
+            lines += ["Sources:"] + [f"- {s}" for s in story["sources"]]
+    return "\n".join(lines).strip()
+
+
+@app.post("/api/research-packets")
+async def save_research_packet(packet_json: str = Form(...)):
+    packet = parse_research_packet(packet_json)
+    packet_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{slugify(packet['title'])}"
+    path = RESEARCH_PACKETS_DIR / f"{packet_id}.json"
+    path.write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, "id": packet_id, "packet": packet, "notes": research_packet_to_notes(packet)}
+
+
+@app.get("/api/research-packets")
+async def list_research_packets():
+    packets = []
+    for path in sorted(RESEARCH_PACKETS_DIR.glob("*.json"), reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            packets.append({"id": path.stem, "title": data.get("title", path.stem), "stories": len(data.get("stories", []))})
+        except (OSError, json.JSONDecodeError):
+            continue
+    return {"packets": packets}
+
+
+@app.get("/api/research-packets/{packet_id}")
+async def get_research_packet(packet_id: str):
+    safe_id = slugify(packet_id)
+    path = RESEARCH_PACKETS_DIR / f"{safe_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Research packet not found")
+    packet = json.loads(path.read_text(encoding="utf-8"))
+    return {"id": safe_id, "packet": packet, "notes": research_packet_to_notes(packet)}
+
+
+@app.post("/api/conversation-draft-packet")
+async def conversation_draft_packet(
+    packet_json: str = Form(...), hosts_json: str = Form(...), target_minutes: int = Form(30),
+    tone: str = Form("smart, funny, conversational, politically non-tribal"),
+):
+    packet = parse_research_packet(packet_json)
+    hosts = parse_hosts(hosts_json)
+    notes = research_packet_to_notes(packet)
+    prompt = build_conversation_prompt(notes, hosts, target_minutes=target_minutes, tone=tone)
+    prompt += "\n\nEPISODE FLOW RULES\n- Cover every story in the packet.\n- Spend more time on high-importance stories.\n- Use natural transitions and callbacks between stories.\n- Clearly distinguish verified facts from disputed or uncertain claims.\n- Do not read source URLs aloud.\n"
+    script = await generate_conversation_with_openai(prompt)
+    parse_speaker_script(script, hosts)
+    return {"ok": True, "script": script, "hosts": len(hosts), "stories": len(packet["stories"]), "model": OPENAI_MODEL}

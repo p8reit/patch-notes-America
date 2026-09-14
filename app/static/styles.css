@@ -1,0 +1,66 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #e8ecf2;
+  background: #0d1117;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: #0d1117; }
+.shell { width: min(980px, 92vw); margin: 48px auto; }
+header { margin-bottom: 24px; }
+.eyebrow { letter-spacing: .14em; font-size: .75rem; color: #8b949e; }
+h1 { margin: 0; font-size: clamp(2.2rem, 6vw, 4.5rem); line-height: .95; }
+.lede { color: #8b949e; font-size: 1.1rem; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 22px; margin: 18px 0; box-shadow: 0 12px 30px rgba(0,0,0,.2); }
+.status-card div { display: flex; justify-content: space-between; gap: 16px; }
+.ok { color: #3fb950; }
+.bad { color: #f85149; }
+label { display: grid; gap: 8px; margin-bottom: 18px; font-weight: 600; }
+input, textarea { width: 100%; border: 1px solid #30363d; background: #0d1117; color: #e8ecf2; border-radius: 10px; padding: 12px 14px; font: inherit; }
+textarea { resize: vertical; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: 1fr 180px; gap: 16px; }
+.actions { display: flex; align-items: center; gap: 14px; }
+button, .download { background: #238636; color: white; border: none; border-radius: 10px; padding: 12px 18px; font-weight: 700; text-decoration: none; cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }
+#progress { color: #8b949e; }
+.result p { color: #8b949e; }
+@media (max-width: 700px) { .grid { grid-template-columns: 1fr; } .status-card div { flex-direction: column; } }
+
+/* Multi-host controls */
+.hosts-section { margin: 8px 0 22px; }
+.section-heading, .host-row-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.section-heading h2 { margin: 2px 0 0; }
+.hint { color: #8b949e; font-size: .92rem; line-height: 1.5; }
+.script-help { margin-top: -8px; }
+code { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 2px 6px; }
+.host-row { border: 1px solid #30363d; background: #0d1117; border-radius: 12px; padding: 16px; margin: 12px 0; }
+.host-row label { margin-bottom: 0; }
+.host-grid { display: grid; grid-template-columns: 1.4fr 1fr 140px; gap: 14px; margin-top: 14px; }
+.secondary { background: #21262d; border: 1px solid #30363d; }
+.danger-link { background: transparent; color: #f85149; padding: 4px 0; }
+.danger-link:disabled { opacity: .25; cursor: not-allowed; }
+@media (max-width: 760px) { .host-grid { grid-template-columns: 1fr; } }
+
+/* Persistent character profiles */
+.section-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.host-role-label { color: #8b949e; font-size: .92rem; font-weight: 500; }
+.host-grid-primary { grid-template-columns: 1.15fr 1.15fr 1fr 110px; }
+.character-details { margin-top: 16px; border-top: 1px solid #30363d; padding-top: 14px; }
+.character-details summary { cursor: pointer; color: #c9d1d9; font-weight: 700; user-select: none; }
+.character-grid { display: grid; grid-template-columns: 1fr 190px; gap: 14px; margin-top: 16px; }
+.character-grid label { margin-bottom: 0; }
+.character-grid .wide { grid-column: 1 / -1; }
+.field-note { color: #8b949e; font-size: .78rem; font-weight: 400; }
+select { width: 100%; border: 1px solid #30363d; background: #0d1117; color: #e8ecf2; border-radius: 10px; padding: 12px 14px; font: inherit; }
+@media (max-width: 900px) { .host-grid-primary { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 700px) { .host-grid-primary, .character-grid { grid-template-columns: 1fr; } .character-grid .wide { grid-column: auto; } .section-heading { align-items: flex-start; flex-direction: column; } }
+
+/* Social clip studio */
+.clip-studio h2 { margin: 2px 0 0; }
+.clip-suggestions { display: grid; gap: 10px; margin: 18px 0; }
+.clip-suggestion { width: 100%; text-align: left; display: grid; gap: 5px; }
+.clip-suggestion span { color: #58a6ff; font-size: .86rem; }
+.clip-suggestion small { color: #8b949e; line-height: 1.4; font-weight: 400; }
+.clip-editor { border-top: 1px solid #30363d; padding-top: 18px; }
+.clip-grid { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 14px; }
+.clip-result { margin-top: 16px; }
+@media (max-width: 700px) { .clip-grid { grid-template-columns: 1fr; } }

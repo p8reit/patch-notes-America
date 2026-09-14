@@ -1,0 +1,163 @@
+import json
+
+import pytest
+from fastapi import HTTPException
+
+from app.main import build_speech_chunks, parse_hosts, parse_speaker_script
+
+
+def hosts():
+    return [
+        {"name": "Major Patchnotes", "voice": "am_michael", "tempo": 1.0},
+        {"name": "Alex", "voice": "af_heart", "tempo": 1.05},
+        {"name": "Sam", "voice": "bm_george", "tempo": 0.95},
+    ]
+
+
+def test_parse_hosts_accepts_any_number_of_hosts():
+    configured = parse_hosts(json.dumps(hosts()))
+    assert len(configured) == 3
+    assert configured[2]["name"] == "Sam"
+
+
+def test_untagged_script_uses_first_host():
+    sections = parse_speaker_script("Hello world.", hosts())
+    assert sections == [{"host": "Major Patchnotes", "text": "Hello world."}]
+
+
+def test_speaker_tags_switch_hosts_in_order():
+    script = """[Major Patchnotes]\nWelcome to the show.\n\n[Alex]\nGlad to be here.\n\n[Sam]\nLet's go."""
+    sections = parse_speaker_script(script, hosts())
+    assert [section["host"] for section in sections] == ["Major Patchnotes", "Alex", "Sam"]
+
+
+def test_build_chunks_preserves_voice_and_tempo():
+    script = """[Major Patchnotes]\nOpening line.\n\n[Alex]\nSecond line."""
+    chunks = build_speech_chunks(script, hosts(), max_chars=500)
+    assert chunks[0]["voice"] == "am_michael"
+    assert chunks[1]["voice"] == "af_heart"
+    assert chunks[1]["tempo"] == 1.05
+
+
+def test_unknown_host_tag_is_rejected():
+    with pytest.raises(HTTPException) as exc:
+        parse_speaker_script("[Nobody]\nHello", hosts())
+    assert exc.value.status_code == 400
+    assert "Unknown host tag" in exc.value.detail
+
+
+def test_character_profile_fields_are_preserved():
+    configured = parse_hosts(json.dumps([
+        {
+            "name": "Wade Mercer",
+            "role": "Southern Everyman",
+            "voice": "am_michael",
+            "tempo": 0.96,
+            "traits": ["practical", "dry humor"],
+            "debate_style": "Brings policy back to everyday life.",
+            "humor_style": "Deadpan analogies.",
+            "interruption_frequency": "low",
+            "sentence_style": "Conversational.",
+            "political_posture": "Independent-minded.",
+            "flaws": "Can oversimplify.",
+            "character_notes": "Southern without being a caricature."
+        }
+    ]))
+    host = configured[0]
+    assert host["role"] == "Southern Everyman"
+    assert host["traits"] == ["practical", "dry humor"]
+    assert host["interruption_frequency"] == "low"
+    assert host["flaws"] == "Can oversimplify."
+
+
+def test_traits_accept_comma_separated_text():
+    configured = parse_hosts(json.dumps([
+        {"name": "Marcus Reed", "voice": "am_eric", "tempo": 1.05, "traits": "quick, analytical, pragmatic"}
+    ]))
+    assert configured[0]["traits"] == ["quick", "analytical", "pragmatic"]
+
+
+def test_invalid_interruption_frequency_is_rejected():
+    with pytest.raises(HTTPException) as exc:
+        parse_hosts(json.dumps([
+            {"name": "Julian Cross", "voice": "bm_george", "tempo": 0.98, "interruption_frequency": "constant"}
+        ]))
+    assert exc.value.status_code == 400
+    assert "Interruption frequency" in exc.value.detail
+
+from app.main import build_conversation_prompt, extract_response_text
+
+
+def test_conversation_prompt_contains_cast_and_source_notes():
+    prompt = build_conversation_prompt("Verified story fact here.", parse_hosts(json.dumps(hosts())), 8)
+    assert "Verified story fact here." in prompt
+    assert "Major Patchnotes" in prompt
+    assert "Alex" in prompt
+    assert "Do not invent factual details" in prompt
+
+
+def test_conversation_prompt_rejects_bad_length():
+    with pytest.raises(HTTPException):
+        build_conversation_prompt("Story", parse_hosts(json.dumps(hosts())), 1)
+
+
+def test_extract_response_text_handles_responses_shape():
+    payload = {"output": [{"content": [{"type": "output_text", "text": "[Alex]\\nHello."}]}]}
+    assert extract_response_text(payload) == "[Alex]\\nHello."
+
+
+def test_research_packet_parsing_and_notes():
+    from app.main import parse_research_packet, research_packet_to_notes
+    import json
+    packet = parse_research_packet(json.dumps({
+        "title": "Weekly show",
+        "episode_angle": "What actually matters",
+        "stories": [{
+            "headline": "Story one",
+            "importance": "high",
+            "verified_facts": "Fact A is verified.",
+            "disputed_or_uncertain": "Claim B remains disputed.",
+            "angles": "Why listeners should care.",
+            "sources": ["Reuters", "AP"]
+        }]
+    }))
+    assert packet["stories"][0]["headline"] == "Story one"
+    notes = research_packet_to_notes(packet)
+    assert "Verified facts:" in notes
+    assert "Claim B remains disputed." in notes
+    assert "Reuters" in notes
+
+
+def test_research_packet_requires_story_facts():
+    from app.main import parse_research_packet
+    from fastapi import HTTPException
+    import json, pytest
+    with pytest.raises(HTTPException):
+        parse_research_packet(json.dumps({"title": "Bad", "stories": [{"headline": "No facts"}]}))
+
+
+def test_clip_suggestions_prefer_multi_speaker_windows():
+    from app.main import suggest_clip_windows
+    metadata = {"chunks": [
+        {"host": "Wade", "text": "Here is the problem and why it matters.", "start": 0.0, "end": 12.0},
+        {"host": "Marcus", "text": "But wait, that's the point. What happens next?", "start": 12.0, "end": 25.0},
+        {"host": "Julian", "text": "Actually, there is a bigger context because the rest of the world reacts too.", "start": 25.0, "end": 39.0},
+        {"host": "Wade", "text": "And normal people still have to pay for it.", "start": 39.0, "end": 50.0},
+    ]}
+    suggestions = suggest_clip_windows(metadata, limit=3)
+    assert suggestions
+    assert 20 <= suggestions[0]["duration"] <= 60
+    assert len(suggestions[0]["speakers"]) >= 2
+
+
+def test_build_clip_ass_contains_speaker_and_text(tmp_path):
+    from app.main import build_clip_ass
+    metadata = {"chunks": [
+        {"host": "Wade Mercer", "text": "Now hold on a minute. This is the useful part.", "start": 5.0, "end": 12.0},
+    ]}
+    dest = tmp_path / "clip.ass"
+    build_clip_ass(metadata, 4.0, 14.0, dest, 1080, 1920)
+    text = dest.read_text()
+    assert "Wade Mercer" in text
+    assert "This is the useful part." in text
+    assert "PlayResX: 1080" in text
