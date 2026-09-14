@@ -454,8 +454,7 @@ def describe_kokoro_error(exc: httpx.HTTPError) -> str:
 async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Path) -> None:
     """Generate WAV audio through the API exposed by hangrylabs/kokorotts."""
     payload = {
-        "model": KOKORO_MODEL,
-        "input": text,
+        "text": text,
         "voice": voice,
         "speed": tempo,
     }
