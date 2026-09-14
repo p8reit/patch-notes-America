@@ -507,8 +507,16 @@ def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
         raise RuntimeError("ffmpeg is not installed in the application container")
 
     manifest = output_file.parent / "concat.txt"
+    # FFmpeg resolves concat entries relative to the manifest, not the process's
+    # working directory. Segment MP3s live under ``segments/`` while their input
+    # WAVs live under the sibling ``chunks/`` directory, so ``Path.relative_to``
+    # cannot represent the required ``../chunks/...`` path.
+    input_paths = [
+        Path(os.path.relpath(path, start=output_file.parent)).as_posix()
+        for path in chunk_paths
+    ]
     manifest.write_text(
-        "\n".join(f"file '{p.relative_to(output_file.parent).as_posix()}'" for p in chunk_paths) + "\n",
+        "\n".join(f"file '{path}'" for path in input_paths) + "\n",
         encoding="utf-8",
     )
 

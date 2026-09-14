@@ -65,6 +65,34 @@ def test_generation_segment_size_is_validated():
         build_generation_segments([{"text": "hello"}], chunks_per_segment=0)
 
 
+def test_assemble_mp3_supports_inputs_in_sibling_directory(tmp_path, monkeypatch):
+    from app import main
+
+    chunks_dir = tmp_path / "chunks"
+    segments_dir = tmp_path / "segments"
+    chunks_dir.mkdir()
+    segments_dir.mkdir()
+    chunk_paths = [chunks_dir / "chunk-001.wav", chunks_dir / "chunk-002.wav"]
+    for path in chunk_paths:
+        path.touch()
+
+    captured = {}
+    monkeypatch.setattr(main.shutil, "which", lambda command: "/usr/bin/ffmpeg")
+
+    def fake_run(command, *, cwd, check):
+        captured.update(command=command, cwd=cwd, check=check)
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+
+    main.assemble_mp3(chunk_paths, segments_dir / "segment-001.mp3")
+
+    assert (segments_dir / "concat.txt").read_text() == (
+        "file '../chunks/chunk-001.wav'\nfile '../chunks/chunk-002.wav'\n"
+    )
+    assert captured["cwd"] == segments_dir
+    assert captured["check"] is True
+
+
 def test_job_progress_counts_completed_segments():
     from app.main import _job_progress
 
