@@ -23,12 +23,12 @@ EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", APP_ROOT / "output"))
 CONFIG_DIR = Path(os.getenv("CONFIG_DIR", APP_ROOT / "config"))
 HOST_PROFILES_FILE = CONFIG_DIR / "host_profiles.json"
-KOKORO_URL = os.getenv("KOKORO_URL", "http://kokoro:7860").rstrip("/")
-KOKORO_PUBLIC_URL = os.getenv("KOKORO_PUBLIC_URL", "").strip().rstrip("/")
-KOKORO_TTS_PATH = os.getenv("KOKORO_TTS_PATH", "/tts/generate")
-KOKORO_HEALTH_PATH = os.getenv("KOKORO_HEALTH_PATH", "/tts/status")
-KOKORO_PUBLIC_PORT = int(os.getenv("KOKORO_PUBLIC_PORT", "7860"))
-DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "am_michael")
+CHATTERBOX_URL = os.getenv("CHATTERBOX_URL", "http://chatterbox:8000").rstrip("/")
+CHATTERBOX_PUBLIC_URL = os.getenv("CHATTERBOX_PUBLIC_URL", "").strip().rstrip("/")
+CHATTERBOX_TTS_PATH = os.getenv("CHATTERBOX_TTS_PATH", "/v1/audio/speech")
+CHATTERBOX_HEALTH_PATH = os.getenv("CHATTERBOX_HEALTH_PATH", "/health")
+CHATTERBOX_PUBLIC_PORT = int(os.getenv("CHATTERBOX_PUBLIC_PORT", "8000"))
+DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "default")
 DEFAULT_TEMPO = float(os.getenv("DEFAULT_TEMPO", "1.0"))
 MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -37,7 +37,7 @@ OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com
 CONVERSATION_PROVIDER = os.getenv("CONVERSATION_PROVIDER", "openai").strip().lower()
 LOCAL_AI_URL = os.getenv("LOCAL_AI_URL", "http://ollama:11434/api/chat")
 LOCAL_AI_MODEL = os.getenv("LOCAL_AI_MODEL", "llama3.1:8b")
-KOKORO_TIMEOUT_SECONDS = float(os.getenv("KOKORO_TIMEOUT_SECONDS", "180"))
+CHATTERBOX_TIMEOUT_SECONDS = float(os.getenv("CHATTERBOX_TIMEOUT_SECONDS", "600"))
 JOB_WORKERS = max(1, int(os.getenv("JOB_WORKERS", "1")))
 
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
@@ -159,7 +159,7 @@ def parse_hosts(hosts_json: str) -> list[dict[str, Any]]:
         if name.casefold() in seen:
             raise HTTPException(status_code=400, detail=f"Host names must be unique: {name}")
         if not voice:
-            raise HTTPException(status_code=400, detail=f"Host {name} needs a Kokoro voice")
+            raise HTTPException(status_code=400, detail=f"Host {name} needs a Chatterbox voice")
         if tempo < 0.5 or tempo > 2.0:
             raise HTTPException(status_code=400, detail=f"Tempo for {name} must be between 0.5 and 2.0")
 
@@ -447,47 +447,49 @@ def conversation_model_name() -> str:
     return LOCAL_AI_MODEL if CONVERSATION_PROVIDER == "local" else OPENAI_MODEL
 
 
-def kokoro_endpoint(path: str) -> str:
-    """Join a configurable Kokoro API path to its internal service URL."""
-    return f"{KOKORO_URL}/{path.lstrip('/')}"
+def chatterbox_endpoint(path: str) -> str:
+    """Join a configurable Chatterbox API path to its internal service URL."""
+    return f"{CHATTERBOX_URL}/{path.lstrip('/')}"
 
 
-async def kokoro_status() -> dict:
+async def chatterbox_status() -> dict:
     async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5)) as client:
-        response = await client.get(kokoro_endpoint(KOKORO_HEALTH_PATH))
+        response = await client.get(chatterbox_endpoint(CHATTERBOX_HEALTH_PATH))
         response.raise_for_status()
         if response.headers.get("content-type", "").startswith("application/json"):
             return response.json()
-        return {"detail": response.text[:200] or "Kokoro is reachable"}
+        return {"detail": response.text[:200] or "Chatterbox is reachable"}
 
 
-def describe_kokoro_error(exc: httpx.HTTPError) -> str:
+def describe_chatterbox_error(exc: httpx.HTTPError) -> str:
     """Return an actionable message even when httpx's exception text is empty."""
-    endpoint = kokoro_endpoint(KOKORO_TTS_PATH)
+    endpoint = chatterbox_endpoint(CHATTERBOX_TTS_PATH)
     if isinstance(exc, httpx.HTTPStatusError):
         response = exc.response
         response_detail = response.text.strip().replace("\n", " ")[:500]
-        message = f"Kokoro returned HTTP {response.status_code} from {endpoint}"
+        message = f"Chatterbox returned HTTP {response.status_code} from {endpoint}"
         return f"{message}: {response_detail}" if response_detail else message
     if isinstance(exc, httpx.TimeoutException):
-        return f"Kokoro did not respond within {KOKORO_TIMEOUT_SECONDS:g} seconds at {endpoint}"
+        return f"Chatterbox did not respond within {CHATTERBOX_TIMEOUT_SECONDS:g} seconds at {endpoint}"
 
     reason = str(exc).strip()
     if reason:
-        return f"Could not reach Kokoro at {endpoint}: {reason}"
-    return f"Could not reach Kokoro at {endpoint} ({type(exc).__name__})"
+        return f"Could not reach Chatterbox at {endpoint}: {reason}"
+    return f"Could not reach Chatterbox at {endpoint} ({type(exc).__name__})"
 
 
 async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Path) -> None:
-    """Generate WAV audio through the API exposed by hangrylabs/kokorotts."""
+    """Generate WAV audio through the local Chatterbox service."""
     payload = {
-        "text": text,
+        "input": text,
+        "model": "chatterbox",
         "voice": voice,
         "speed": tempo,
+        "response_format": "wav",
     }
-    timeout = httpx.Timeout(KOKORO_TIMEOUT_SECONDS, connect=10, write=30, pool=10)
+    timeout = httpx.Timeout(CHATTERBOX_TIMEOUT_SECONDS, connect=10, write=30, pool=10)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(kokoro_endpoint(KOKORO_TTS_PATH), json=payload)
+        response = await client.post(chatterbox_endpoint(CHATTERBOX_TTS_PATH), json=payload)
         response.raise_for_status()
 
     content_type = response.headers.get("content-type", "").lower()
@@ -495,7 +497,7 @@ async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Pat
         detail = response.text.strip().replace("\n", " ")[:500] if "json" in content_type else ""
         suffix = f": {detail}" if detail else f" (content type: {content_type or 'unknown'})"
         raise httpx.HTTPStatusError(
-            f"Kokoro returned a response that is not WAV audio{suffix}",
+            f"Chatterbox returned a response that is not WAV audio{suffix}",
             request=response.request,
             response=response,
         )
@@ -684,7 +686,7 @@ async def process_generation_job(job_id: str) -> None:
         job["download_url"] = f"/api/episodes/{job_id}/download"
     except Exception as exc:  # Persist failures so polling clients never hang.
         job["status"] = "failed"
-        job["error"] = describe_kokoro_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
+        job["error"] = describe_chatterbox_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
         for segment in job["segments"]:
             if segment["status"] == "running":
                 segment["status"] = "failed"
@@ -869,7 +871,7 @@ async def index(request: Request):
             "default_voice": DEFAULT_VOICE,
             "default_tempo": DEFAULT_TEMPO,
             "host_profiles": load_host_profiles(),
-            "kokoro_public_port": KOKORO_PUBLIC_PORT,
+            "chatterbox_public_port": CHATTERBOX_PUBLIC_PORT,
         },
     )
 
@@ -888,13 +890,13 @@ async def update_host_profiles(hosts_json: str = Form(...)):
 
 @app.get("/api/health")
 async def health():
-    kokoro = {"ok": False}
+    chatterbox = {"ok": False}
     try:
-        status = await kokoro_status()
-        kokoro = {"ok": True, "status": status}
+        status = await chatterbox_status()
+        chatterbox = {"ok": True, "status": status}
     except Exception as exc:  # noqa: BLE001
-        kokoro = {"ok": False, "error": str(exc)}
-    return {"app": "ok", "kokoro": kokoro, "kokoro_public_url": KOKORO_PUBLIC_URL or None}
+        chatterbox = {"ok": False, "error": str(exc)}
+    return {"app": "ok", "chatterbox": chatterbox, "chatterbox_public_url": CHATTERBOX_PUBLIC_URL or None}
 
 
 @app.post("/api/conversation-draft")
@@ -1055,10 +1057,10 @@ async def generate(
         (episode_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     except httpx.HTTPError as exc:
         failed_chunk = len(chunk_paths) + 1
-        detail = describe_kokoro_error(exc)
+        detail = describe_chatterbox_error(exc)
         raise HTTPException(
             status_code=502,
-            detail=f"Kokoro TTS request failed on chunk {failed_chunk} of {len(speech_chunks)}: {detail}",
+            detail=f"Chatterbox TTS request failed on chunk {failed_chunk} of {len(speech_chunks)}: {detail}",
         ) from exc
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=500, detail=f"Audio assembly failed: {exc}") from exc
