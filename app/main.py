@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import shutil
 import subprocess
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List
 from uuid import uuid4
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, Form, HTTPException
+from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -37,6 +39,9 @@ CONVERSATION_PROVIDER = os.getenv("CONVERSATION_PROVIDER", "openai").strip().low
 LOCAL_AI_URL = os.getenv("LOCAL_AI_URL", "http://ollama:11434/api/chat")
 LOCAL_AI_MODEL = os.getenv("LOCAL_AI_MODEL", "llama3.1:8b")
 KOKORO_TIMEOUT_SECONDS = float(os.getenv("KOKORO_TIMEOUT_SECONDS", "180"))
+JOB_WORKERS = max(1, int(os.getenv("JOB_WORKERS", "1")))
+TTS_MAX_ATTEMPTS = max(1, int(os.getenv("TTS_MAX_ATTEMPTS", "5")))
+TTS_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("TTS_RETRY_DELAY_SECONDS", "15")))
 
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,6 +50,9 @@ CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="Patch Notes: America", version="0.5.0")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=APP_ROOT / "app" / "templates")
+
+generation_queue: asyncio.Queue[str] | None = None
+generation_workers: list[asyncio.Task[None]] = []
 
 
 def slugify(value: str) -> str:
@@ -524,6 +532,10 @@ def build_generation_segments(
     segments = []
     for offset in range(0, len(speech_chunks), chunks_per_segment):
         items = speech_chunks[offset : offset + chunks_per_segment]
+        items = [
+            {**item, "status": "queued", "output": None, "error": None}
+            for item in items
+        ]
         number = len(segments) + 1
         segments.append({
             "id": f"segment-{number:03d}",
@@ -552,11 +564,146 @@ def _load_job(job_id: str) -> tuple[Path, dict[str, Any]]:
     return job_dir, json.loads(job_file.read_text(encoding="utf-8"))
 
 
+def _job_progress(job: dict[str, Any]) -> dict[str, int]:
+    segments = job.get("segments", [])
+    chunks = [chunk for segment in segments for chunk in segment.get("chunks", [])]
+    return {
+        "complete": sum(segment.get("status") == "complete" for segment in segments),
+        "total": len(segments),
+        "chunks_complete": sum(chunk.get("status") == "complete" for chunk in chunks),
+        "chunks_total": len(chunks),
+    }
+
+
+async def generation_worker(worker_number: int) -> None:
+    """Consume durable jobs serially by default, which is safer on CPU-only hosts."""
+    assert generation_queue is not None
+    while True:
+        job_id = await generation_queue.get()
+        try:
+            await process_generation_job(job_id)
+        finally:
+            generation_queue.task_done()
+
+
+def _valid_wav(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 44 and path.read_bytes()[:4] == b"RIFF"
+    except OSError:
+        return False
+
+
+def _retryable_tts_error(exc: httpx.HTTPError) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return True
+    return exc.response.status_code in {408, 425, 429} or exc.response.status_code >= 500
+
+
+async def synthesize_chunk_with_retry(
+    job_dir: Path,
+    job: dict[str, Any],
+    chunk: dict[str, Any],
+    destination: Path,
+) -> None:
+    """Retry backend crashes/disconnects and checkpoint every attempt."""
+    temporary = destination.with_suffix(".wav.tmp")
+    for attempt in range(1, TTS_MAX_ATTEMPTS + 1):
+        chunk["status"] = "running"
+        chunk["attempt"] = attempt
+        chunk["error"] = None
+        _write_job(job_dir, job)
+        try:
+            temporary.unlink(missing_ok=True)
+            await synthesize_chunk(chunk["text"], chunk["voice"], chunk["tempo"], temporary)
+            temporary.replace(destination)
+            chunk["status"] = "complete"
+            chunk["output"] = destination.relative_to(job_dir).as_posix()
+            _write_job(job_dir, job)
+            return
+        except (httpx.HTTPError, OSError) as exc:
+            temporary.unlink(missing_ok=True)
+            chunk["error"] = describe_kokoro_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
+            can_retry = attempt < TTS_MAX_ATTEMPTS and (
+                not isinstance(exc, httpx.HTTPError) or _retryable_tts_error(exc)
+            )
+            chunk["status"] = "retrying" if can_retry else "failed"
+            _write_job(job_dir, job)
+            if not can_retry:
+                raise
+            await asyncio.sleep(TTS_RETRY_DELAY_SECONDS * attempt)
+
+
+async def queue_generation_job(job_id: str) -> None:
+    if generation_queue is None:
+        raise HTTPException(status_code=503, detail="The audio job worker is not ready")
+    await generation_queue.put(job_id)
+
+
+async def start_generation_workers() -> None:
+    """Start workers and recover work interrupted by a container restart."""
+    global generation_queue
+    generation_queue = asyncio.Queue()
+    for number in range(JOB_WORKERS):
+        generation_workers.append(asyncio.create_task(generation_worker(number + 1)))
+
+    for manifest in sorted(OUTPUT_DIR.glob("*/job.json")):
+        try:
+            job = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if job.get("status") not in {"queued", "running"}:
+            continue
+        # Keep valid completed chunks: CPU renders may represent hours of work.
+        job["status"] = "queued"
+        job["error"] = None
+        job.pop("started_at", None)
+        job.pop("finished_at", None)
+        for segment in job.get("segments", []):
+            segment["error"] = None
+            reusable = True
+            for chunk in segment.get("chunks", []):
+                output = chunk.get("output")
+                if chunk.get("status") == "complete" and output and _valid_wav(manifest.parent / output):
+                    continue
+                reusable = False
+                chunk["status"] = "queued"
+                chunk["output"] = None
+                chunk["error"] = None
+            if not reusable:
+                segment["status"] = "queued"
+                segment.setdefault("outputs", {})["audio"] = None
+        _write_job(manifest.parent, job)
+        await generation_queue.put(job["id"])
+
+
+async def stop_generation_workers() -> None:
+    global generation_queue
+    for worker in generation_workers:
+        worker.cancel()
+    if generation_workers:
+        await asyncio.gather(*generation_workers, return_exceptions=True)
+    generation_workers.clear()
+    generation_queue = None
+
+
+@asynccontextmanager
+async def application_lifespan(_app: FastAPI):
+    await start_generation_workers()
+    try:
+        yield
+    finally:
+        await stop_generation_workers()
+
+
+app.router.lifespan_context = application_lifespan
+
+
 async def process_generation_job(job_id: str) -> None:
     """Render queued segments and checkpoint progress after every state change."""
     job_dir, job = _load_job(job_id)
     job["status"] = "running"
     job["started_at"] = datetime.now(timezone.utc).isoformat()
+    job["worker_pid"] = os.getpid()
     _write_job(job_dir, job)
     all_chunk_paths: list[Path] = []
     chunk_number = 0
@@ -568,7 +715,12 @@ async def process_generation_job(job_id: str) -> None:
             for chunk in segment["chunks"]:
                 chunk_number += 1
                 path = job_dir / "chunks" / f"chunk-{chunk_number:03d}-{slugify(chunk['host'])}.wav"
-                await synthesize_chunk(chunk["text"], chunk["voice"], chunk["tempo"], path)
+                saved_output = chunk.get("output")
+                saved_path = job_dir / saved_output if saved_output else path
+                if chunk.get("status") == "complete" and _valid_wav(saved_path):
+                    path = saved_path
+                else:
+                    await synthesize_chunk_with_retry(job_dir, job, chunk, path)
                 segment_paths.append(path)
                 all_chunk_paths.append(path)
             segment_audio = job_dir / "segments" / f"{segment['id']}.mp3"
@@ -830,7 +982,6 @@ async def chunk_preview(
 
 @app.post("/api/generation-jobs", status_code=202)
 async def create_generation_job(
-    background_tasks: BackgroundTasks,
     title: str = Form(...),
     script: str = Form(...),
     hosts_json: str = Form(...),
@@ -861,7 +1012,7 @@ async def create_generation_job(
         "error": None,
     }
     _write_job(job_dir, job)
-    background_tasks.add_task(process_generation_job, job_id)
+    await queue_generation_job(job_id)
     return {
         "ok": True,
         "job_id": job_id,
@@ -871,9 +1022,34 @@ async def create_generation_job(
     }
 
 
+@app.get("/api/generation-jobs")
+async def list_generation_jobs():
+    """Return recent durable jobs so a browser can reconnect after being closed."""
+    jobs = []
+    for manifest in sorted(OUTPUT_DIR.glob("*/job.json"), reverse=True):
+        try:
+            job = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        jobs.append({
+            "id": job.get("id"),
+            "title": job.get("title", "Untitled episode"),
+            "status": job.get("status", "unknown"),
+            "created_at": job.get("created_at"),
+            "finished_at": job.get("finished_at"),
+            "download_url": job.get("download_url"),
+            "error": job.get("error"),
+            "progress": _job_progress(job),
+        })
+        if len(jobs) >= 50:
+            break
+    return {"jobs": jobs, "workers": JOB_WORKERS}
+
+
 @app.get("/api/generation-jobs/{job_id}")
 async def generation_job_status(job_id: str):
     _, job = _load_job(job_id)
+    job["progress"] = _job_progress(job)
     return job
 
 
