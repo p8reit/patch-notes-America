@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from app.main import build_generation_segments, clean_script, describe_kokoro_error, split_script
+from app.main import build_generation_segments, clean_script, describe_chatterbox_error, split_script
 
 
 def test_clean_script_removes_basic_markdown():
@@ -22,22 +22,22 @@ def test_split_script_keeps_short_paragraphs():
     assert chunks == ["Hello there.\n\nSecond paragraph."]
 
 
-def test_kokoro_timeout_error_is_actionable_when_exception_text_is_empty():
-    request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
+def test_chatterbox_timeout_error_is_actionable_when_exception_text_is_empty():
+    request = httpx.Request("POST", "http://chatterbox:8000/v1/audio/speech")
     error = httpx.ReadTimeout("", request=request)
 
-    detail = describe_kokoro_error(error)
+    detail = describe_chatterbox_error(error)
 
-    assert "did not respond within 180 seconds" in detail
-    assert "http://kokoro:7860/tts/generate" in detail
+    assert "did not respond within 600 seconds" in detail
+    assert "http://chatterbox:8000/v1/audio/speech" in detail
 
 
-def test_kokoro_http_error_includes_status_and_response_detail():
-    request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
+def test_chatterbox_http_error_includes_status_and_response_detail():
+    request = httpx.Request("POST", "http://chatterbox:8000/v1/audio/speech")
     response = httpx.Response(422, text="voice is not supported", request=request)
     error = httpx.HTTPStatusError("bad response", request=request, response=response)
 
-    detail = describe_kokoro_error(error)
+    detail = describe_chatterbox_error(error)
 
     assert "HTTP 422" in detail
     assert "voice is not supported" in detail
@@ -130,7 +130,7 @@ def test_synthesize_chunk_uses_hangrylabs_kokoro_contract(tmp_path, monkeypatch)
     class FakeResponse:
         content = b"RIFF" + b"\x00" * 40
         headers = {"content-type": "audio/wav"}
-        request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
+        request = httpx.Request("POST", "http://chatterbox:8000/v1/audio/speech")
 
         def raise_for_status(self):
             return None
@@ -154,11 +154,13 @@ def test_synthesize_chunk_uses_hangrylabs_kokoro_contract(tmp_path, monkeypatch)
     destination = tmp_path / "speech.wav"
     asyncio.run(main.synthesize_chunk("A short transcript.", "am_michael", 1.15, destination))
 
-    assert captured["url"] == "http://kokoro:7860/tts/generate"
+    assert captured["url"] == "http://chatterbox:8000/v1/audio/speech"
     assert captured["payload"] == {
-        "text": "A short transcript.",
+        "input": "A short transcript.",
+        "model": "chatterbox",
         "voice": "am_michael",
         "speed": 1.15,
+        "response_format": "wav",
     }
     assert destination.read_bytes().startswith(b"RIFF")
 
@@ -172,7 +174,7 @@ def test_synthesize_chunk_rejects_json_saved_as_wav(tmp_path, monkeypatch):
         content = b'{"detail":"invalid voice"}'
         text = content.decode()
         headers = {"content-type": "application/json"}
-        request = httpx.Request("POST", "http://kokoro:7860/tts/generate")
+        request = httpx.Request("POST", "http://chatterbox:8000/v1/audio/speech")
 
         def raise_for_status(self):
             return None

@@ -24,12 +24,12 @@ EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", APP_ROOT / "output"))
 CONFIG_DIR = Path(os.getenv("CONFIG_DIR", APP_ROOT / "config"))
 HOST_PROFILES_FILE = CONFIG_DIR / "host_profiles.json"
-KOKORO_URL = os.getenv("KOKORO_URL", "http://kokoro:7860").rstrip("/")
-KOKORO_PUBLIC_URL = os.getenv("KOKORO_PUBLIC_URL", "").strip().rstrip("/")
-KOKORO_TTS_PATH = os.getenv("KOKORO_TTS_PATH", "/tts/generate")
-KOKORO_HEALTH_PATH = os.getenv("KOKORO_HEALTH_PATH", "/tts/status")
-KOKORO_PUBLIC_PORT = int(os.getenv("KOKORO_PUBLIC_PORT", "7860"))
-DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "am_michael")
+CHATTERBOX_URL = os.getenv("CHATTERBOX_URL", "http://chatterbox:8000").rstrip("/")
+CHATTERBOX_PUBLIC_URL = os.getenv("CHATTERBOX_PUBLIC_URL", "").strip().rstrip("/")
+CHATTERBOX_TTS_PATH = os.getenv("CHATTERBOX_TTS_PATH", "/v1/audio/speech")
+CHATTERBOX_HEALTH_PATH = os.getenv("CHATTERBOX_HEALTH_PATH", "/health")
+CHATTERBOX_PUBLIC_PORT = int(os.getenv("CHATTERBOX_PUBLIC_PORT", "8000"))
+DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "default")
 DEFAULT_TEMPO = float(os.getenv("DEFAULT_TEMPO", "1.0"))
 MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -162,7 +162,7 @@ def parse_hosts(hosts_json: str) -> list[dict[str, Any]]:
         if name.casefold() in seen:
             raise HTTPException(status_code=400, detail=f"Host names must be unique: {name}")
         if not voice:
-            raise HTTPException(status_code=400, detail=f"Host {name} needs a Kokoro voice")
+            raise HTTPException(status_code=400, detail=f"Host {name} needs a Chatterbox voice")
         if tempo < 0.5 or tempo > 2.0:
             raise HTTPException(status_code=400, detail=f"Tempo for {name} must be between 0.5 and 2.0")
 
@@ -218,14 +218,15 @@ def save_host_profiles(hosts: list[dict[str, Any]]) -> None:
 def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Split a script into ordered speaker sections.
 
-    A line containing only ``[Host Name]`` switches the active speaker. Text before
-    the first speaker tag uses the first configured host for backward compatibility.
+    A line containing only ``[Host Name]`` switches the active speaker. Names are
+    case-sensitive, and text before the first speaker tag uses the first configured
+    host.
     """
     cleaned = clean_script(script)
     if not cleaned:
         return []
 
-    canonical_names = {host["name"].casefold(): host["name"] for host in hosts}
+    canonical_names = {host["name"] for host in hosts}
     active_host = hosts[0]["name"]
     buffer: list[str] = []
     sections: list[dict[str, str]] = []
@@ -241,16 +242,29 @@ def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[
         match = re.fullmatch(r"\s*\[([^\]\n]+)\]\s*", line)
         if match:
             requested = match.group(1).strip()
-            canonical = canonical_names.get(requested.casefold())
-            if canonical is None:
+            if requested not in canonical_names:
                 available = ", ".join(host["name"] for host in hosts)
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown host tag [{requested}]. Configured hosts: {available}",
                 )
+            if requested == active_host:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Redundant host tag [{requested}]. Add a tag only when the speaker changes",
+                )
             flush()
-            active_host = canonical
+            active_host = requested
             continue
+
+        # A speaker marker must occupy its own line. Without this check an
+        # inline marker would be passed through to TTS and spoken aloud.
+        inline_tag = re.match(r"\s*\[([^\]\n]+)\]", line)
+        if inline_tag and inline_tag.group(1).strip() in canonical_names:
+            raise HTTPException(
+                status_code=400,
+                detail="Speaker tags must be on their own line, with dialogue on the following line",
+            )
         buffer.append(line)
 
     flush()
@@ -260,12 +274,12 @@ def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[
 def build_speech_chunks(
     script: str, hosts: list[dict[str, Any]], max_chars: int = MAX_CHARS
 ) -> list[dict[str, Any]]:
-    host_lookup = {host["name"].casefold(): host for host in hosts}
+    host_lookup = {host["name"]: host for host in hosts}
     sections = parse_speaker_script(script, hosts)
     chunks: list[dict[str, Any]] = []
 
     for section in sections:
-        host = host_lookup[section["host"].casefold()]
+        host = host_lookup[section["host"]]
         for text_chunk in split_script(section["text"], max_chars=max_chars):
             chunks.append(
                 {
@@ -305,6 +319,13 @@ Character notes: {host.get('character_notes', '')}"""
         )
 
     names = ", ".join(host["name"] for host in hosts)
+    first_speaker = hosts[0]["name"]
+    switch_example = (
+        f"- Format every speaker change as the host's exact configured name in square brackets on its own line, "
+        f"followed by dialogue on the next line, for example:\n[{hosts[1]['name']}]\nSpoken words here."
+        if len(hosts) > 1
+        else "- There is only one host, so do not emit any speaker tags."
+    )
     return f"""You are writing a podcast conversation for Patch Notes: America.
 
 GOAL
@@ -333,10 +354,11 @@ WRITING RULES
 - Let a host occasionally change their mind or concede a point.
 - Do not describe actions, sound effects, emotions, or stage directions in brackets. Brackets are reserved only for exact speaker tags.
 - Output narration only. No Markdown headings, preamble, commentary, or explanation.
-- Every spoken turn MUST begin with the exact speaker tag on its own line, for example:
-[{hosts[0]['name']}]
-Spoken words here.
-- Use only these speaker names: {names}.
+- {first_speaker} is the first speaker. Begin directly with {first_speaker}'s dialogue; text before the first speaker tag belongs to {first_speaker}.
+- Insert a speaker tag only when the active speaker changes. Consecutive paragraphs from the same speaker do not need another tag.
+{switch_example}
+- Never put dialogue on the same line as a speaker tag, and never add a colon after a speaker name.
+- Use only these exact speaker names: {names}. Never emit role labels such as HOST_SOUTHERN, HOST_CITY, or HOST_WORLDLY.
 - Make the first 20 seconds hook the listener. End with a clean transition or takeaway rather than a generic summary.
 """
 
@@ -428,47 +450,49 @@ def conversation_model_name() -> str:
     return LOCAL_AI_MODEL if CONVERSATION_PROVIDER == "local" else OPENAI_MODEL
 
 
-def kokoro_endpoint(path: str) -> str:
-    """Join a configurable Kokoro API path to its internal service URL."""
-    return f"{KOKORO_URL}/{path.lstrip('/')}"
+def chatterbox_endpoint(path: str) -> str:
+    """Join a configurable Chatterbox API path to its internal service URL."""
+    return f"{CHATTERBOX_URL}/{path.lstrip('/')}"
 
 
-async def kokoro_status() -> dict:
+async def chatterbox_status() -> dict:
     async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5)) as client:
-        response = await client.get(kokoro_endpoint(KOKORO_HEALTH_PATH))
+        response = await client.get(chatterbox_endpoint(CHATTERBOX_HEALTH_PATH))
         response.raise_for_status()
         if response.headers.get("content-type", "").startswith("application/json"):
             return response.json()
-        return {"detail": response.text[:200] or "Kokoro is reachable"}
+        return {"detail": response.text[:200] or "Chatterbox is reachable"}
 
 
-def describe_kokoro_error(exc: httpx.HTTPError) -> str:
+def describe_chatterbox_error(exc: httpx.HTTPError) -> str:
     """Return an actionable message even when httpx's exception text is empty."""
-    endpoint = kokoro_endpoint(KOKORO_TTS_PATH)
+    endpoint = chatterbox_endpoint(CHATTERBOX_TTS_PATH)
     if isinstance(exc, httpx.HTTPStatusError):
         response = exc.response
         response_detail = response.text.strip().replace("\n", " ")[:500]
-        message = f"Kokoro returned HTTP {response.status_code} from {endpoint}"
+        message = f"Chatterbox returned HTTP {response.status_code} from {endpoint}"
         return f"{message}: {response_detail}" if response_detail else message
     if isinstance(exc, httpx.TimeoutException):
-        return f"Kokoro did not respond within {KOKORO_TIMEOUT_SECONDS:g} seconds at {endpoint}"
+        return f"Chatterbox did not respond within {CHATTERBOX_TIMEOUT_SECONDS:g} seconds at {endpoint}"
 
     reason = str(exc).strip()
     if reason:
-        return f"Could not reach Kokoro at {endpoint}: {reason}"
-    return f"Could not reach Kokoro at {endpoint} ({type(exc).__name__})"
+        return f"Could not reach Chatterbox at {endpoint}: {reason}"
+    return f"Could not reach Chatterbox at {endpoint} ({type(exc).__name__})"
 
 
 async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Path) -> None:
-    """Generate WAV audio through the API exposed by hangrylabs/kokorotts."""
+    """Generate WAV audio through the local Chatterbox service."""
     payload = {
-        "text": text,
+        "input": text,
+        "model": "chatterbox",
         "voice": voice,
         "speed": tempo,
+        "response_format": "wav",
     }
-    timeout = httpx.Timeout(KOKORO_TIMEOUT_SECONDS, connect=10, write=30, pool=10)
+    timeout = httpx.Timeout(CHATTERBOX_TIMEOUT_SECONDS, connect=10, write=30, pool=10)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(kokoro_endpoint(KOKORO_TTS_PATH), json=payload)
+        response = await client.post(chatterbox_endpoint(CHATTERBOX_TTS_PATH), json=payload)
         response.raise_for_status()
 
     content_type = response.headers.get("content-type", "").lower()
@@ -476,7 +500,7 @@ async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Pat
         detail = response.text.strip().replace("\n", " ")[:500] if "json" in content_type else ""
         suffix = f": {detail}" if detail else f" (content type: {content_type or 'unknown'})"
         raise httpx.HTTPStatusError(
-            f"Kokoro returned a response that is not WAV audio{suffix}",
+            f"Chatterbox returned a response that is not WAV audio{suffix}",
             request=response.request,
             response=response,
         )
@@ -488,8 +512,16 @@ def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
         raise RuntimeError("ffmpeg is not installed in the application container")
 
     manifest = output_file.parent / "concat.txt"
+    # FFmpeg resolves concat entries relative to the manifest, not the process's
+    # working directory. Segment MP3s live under ``segments/`` while their input
+    # WAVs live under the sibling ``chunks/`` directory, so ``Path.relative_to``
+    # cannot represent the required ``../chunks/...`` path.
+    input_paths = [
+        Path(os.path.relpath(path, start=output_file.parent)).as_posix()
+        for path in chunk_paths
+    ]
     manifest.write_text(
-        "\n".join(f"file '{p.relative_to(output_file.parent).as_posix()}'" for p in chunk_paths) + "\n",
+        "\n".join(f"file '{path}'" for path in input_paths) + "\n",
         encoding="utf-8",
     )
 
@@ -735,7 +767,7 @@ async def process_generation_job(job_id: str) -> None:
         job["download_url"] = f"/api/episodes/{job_id}/download"
     except Exception as exc:  # Persist failures so polling clients never hang.
         job["status"] = "failed"
-        job["error"] = describe_kokoro_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
+        job["error"] = describe_chatterbox_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
         for segment in job["segments"]:
             if segment["status"] == "running":
                 segment["status"] = "failed"
@@ -920,7 +952,7 @@ async def index(request: Request):
             "default_voice": DEFAULT_VOICE,
             "default_tempo": DEFAULT_TEMPO,
             "host_profiles": load_host_profiles(),
-            "kokoro_public_port": KOKORO_PUBLIC_PORT,
+            "chatterbox_public_port": CHATTERBOX_PUBLIC_PORT,
         },
     )
 
@@ -939,13 +971,13 @@ async def update_host_profiles(hosts_json: str = Form(...)):
 
 @app.get("/api/health")
 async def health():
-    kokoro = {"ok": False}
+    chatterbox = {"ok": False}
     try:
-        status = await kokoro_status()
-        kokoro = {"ok": True, "status": status}
+        status = await chatterbox_status()
+        chatterbox = {"ok": True, "status": status}
     except Exception as exc:  # noqa: BLE001
-        kokoro = {"ok": False, "error": str(exc)}
-    return {"app": "ok", "kokoro": kokoro, "kokoro_public_url": KOKORO_PUBLIC_URL or None}
+        chatterbox = {"ok": False, "error": str(exc)}
+    return {"app": "ok", "chatterbox": chatterbox, "chatterbox_public_url": CHATTERBOX_PUBLIC_URL or None}
 
 
 @app.post("/api/conversation-draft")
@@ -1106,10 +1138,10 @@ async def generate(
         (episode_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     except httpx.HTTPError as exc:
         failed_chunk = len(chunk_paths) + 1
-        detail = describe_kokoro_error(exc)
+        detail = describe_chatterbox_error(exc)
         raise HTTPException(
             status_code=502,
-            detail=f"Kokoro TTS request failed on chunk {failed_chunk} of {len(speech_chunks)}: {detail}",
+            detail=f"Chatterbox TTS request failed on chunk {failed_chunk} of {len(speech_chunks)}: {detail}",
         ) from exc
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=500, detail=f"Audio assembly failed: {exc}") from exc
