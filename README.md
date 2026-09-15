@@ -1,21 +1,21 @@
 # Patch Notes: America
 
-Initial podcast-production application for turning a narration script into a finished MP3 using a locally hosted KokoroTTS server.
+Initial podcast-production application for turning a narration script into a finished MP3 using a locally hosted Chatterbox server.
 
 ## MVP features
 
 - Browser-based episode editor on port `8081`
 - Preloaded pilot narration script
-- Configurable Kokoro voice and tempo
+- Configurable Chatterbox voice and tempo
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
 - Persistent background render queue designed for slow CPU-only generation
-- KokoroTTS generation through the image's `POST /tts/generate` API
+- Chatterbox generation through the bundled `POST /v1/audio/speech` service
 - Per-chunk WAV files retained for selective regeneration/debugging
 - FFmpeg assembly into a final 128 kbps MP3
 - Persistent `episodes/` source scripts and `output/` generated episodes
-- Health endpoint showing whether the app can reach Kokoro
+- Health endpoint showing whether the app can reach Chatterbox
 - Basic unit tests and GitHub Actions CI
 
 ## Architecture
@@ -28,7 +28,7 @@ host port ${APP_PORT:-8081} -> FastAPI container :8080
     |
     +--> script cleanup/chunking
     |
-    +--> KokoroTTS :7860
+    +--> Chatterbox :8000
     |       |
     |       +--> chunk-001.wav
     |       +--> chunk-002.wav
@@ -56,9 +56,9 @@ Change `APP_PORT` in `.env` if theHunter already uses `8081`. The default binds
 Patch Notes only to `127.0.0.1:8081`; set `APP_BIND_ADDRESS=0.0.0.0` only when
 the app must be reachable from other machines.
 
-### Start Patch Notes and Kokoro
+### Start Patch Notes and Chatterbox
 
-Kokoro is required, so the default Compose stack always starts it with Patch
+Chatterbox is required, so the default Compose stack always starts it with Patch
 Notes. Start both services from the project directory:
 
 ```bash
@@ -68,9 +68,9 @@ Notes. Start both services from the project directory:
 The app always listens on container port `8080`. Compose publishes it on the
 host using `APP_BIND_ADDRESS` and `APP_PORT`, which default to
 `127.0.0.1:8081`. The startup script rebuilds and force-recreates the app,
-starts Kokoro, waits for the configured health endpoint, and prints logs from
+starts Chatterbox, waits for the configured health endpoint, and prints logs from
 both services on failure. Startup is considered successful only after the app
-reports that Kokoro is online, so audio generation is ready when the script
+reports that Chatterbox is online, so audio generation is ready when the script
 returns.
 
 Open:
@@ -82,38 +82,41 @@ http://127.0.0.1:8081
 The top status card should show:
 
 ```text
-App ready · Kokoro online
+App ready · Chatterbox online
 ```
 
-Kokoro defaults to `127.0.0.1:7860`. Set `KOKORO_PORT` in `.env` if another
+Chatterbox defaults to `127.0.0.1:8000`. Set `CHATTERBOX_PORT` in `.env` if another
 audio service already owns that host port. Communication from Patch Notes to
-Kokoro stays on Docker's private network and is not affected by the selected
-host port. The **Open KokoroTTS** link uses the browser's current hostname plus
-`KOKORO_PORT`, rather than hard-coding `localhost`. Set `KOKORO_PUBLIC_URL`
-when Kokoro is published through a different hostname, path, or HTTPS reverse
+Chatterbox stays on Docker's private network and is not affected by the selected
+host port. The **Open Chatterbox** link uses the browser's current hostname plus
+`CHATTERBOX_PORT`, rather than hard-coding `localhost`. Set `CHATTERBOX_PUBLIC_URL`
+when Chatterbox is published through a different hostname, path, or HTTPS reverse
 proxy.
 
-Audio requests use the API contract exposed by the configured
-`hangrylabs/kokorotts` image: `text`, `voice`, and `speed` are sent to
-`POST /tts/generate`. The endpoint, health path, and per-chunk read timeout can
-be overridden with `KOKORO_TTS_PATH`, `KOKORO_HEALTH_PATH`, and
-`KOKORO_TIMEOUT_SECONDS`. A response is accepted only when it contains a
+Audio requests use the bundled Chatterbox service: `input`, `model`, `voice`,
+`speed`, and `response_format` are sent to `POST /v1/audio/speech`. The endpoint,
+health path, and per-chunk read timeout can
+be overridden with `CHATTERBOX_TTS_PATH`, `CHATTERBOX_HEALTH_PATH`, and
+`CHATTERBOX_TIMEOUT_SECONDS`. A response is accepted only when it contains a
 WAV/RIFF payload, preventing an API JSON response from being saved and passed
 to FFmpeg as audio.
 
-The Kokoro image is currently an `amd64` image. Compose explicitly requests
-`linux/amd64`. On an ARM64 Docker host, the startup script registers amd64
-binfmt/QEMU support before starting Kokoro; this prevents the repeated
-`exec /usr/local/bin/python: exec format error` restart loop. This one-time
-registration uses the privileged `tonistiigi/binfmt` installer container.
-Docker Desktop users must allow x86/amd64 emulation. `KOKORO_PLATFORM` in
-`.env` can be changed when a native ARM64 Kokoro image is available.
+The first generation downloads Chatterbox model weights into the persistent
+`chatterbox-models` volume. CPU inference is supported and can be slow; set
+`CHATTERBOX_DEVICE=cuda` when the container has access to a compatible NVIDIA
+GPU. The default 600-second request timeout accommodates model startup.
+
+For voice cloning, place a clean, authorized reference recording at
+`voices/<voice-id>.wav`, then set that host's Chatterbox voice ID to the filename
+without `.wav`. The special ID `default` needs no reference recording. Do not
+clone a voice without the speaker's permission.
 
 ## Generate the pilot
 
 1. Open `http://127.0.0.1:8081`.
 2. The pilot script is preloaded.
-3. Start with voice `am_michael` and tempo `1.00`.
+3. Start with voice `default` and tempo `1.00`, or add authorized reference WAVs
+   under `voices/` and select their filename-based voice IDs.
 4. Click **Generate episode**.
 5. When complete, click **Download MP3**.
 
@@ -200,7 +203,7 @@ Stop the application:
 docker compose down
 ```
 
-This stops both Patch Notes and its required Kokoro service.
+This stops both Patch Notes and its required Chatterbox service.
 
 ## Local development
 
@@ -213,7 +216,7 @@ Linux/macOS/WSL:
 ```bash
 source .venv/bin/activate
 pip install -r requirements.txt pytest
-KOKORO_URL=http://127.0.0.1:7860 uvicorn app.main:app --reload --port "${APP_PORT:-8081}"
+CHATTERBOX_URL=http://127.0.0.1:8000 uvicorn app.main:app --reload --port "${APP_PORT:-8081}"
 ```
 
 Windows PowerShell:
@@ -222,7 +225,7 @@ Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt pytest
 pytest -q
-$env:KOKORO_URL="http://127.0.0.1:7860"
+$env:CHATTERBOX_URL="http://127.0.0.1:8000"
 uvicorn app.main:app --reload --port 8081
 ```
 
@@ -232,7 +235,7 @@ uvicorn app.main:app --reload --port 8081
 
 - [x] Script editor
 - [x] Script chunking
-- [x] Kokoro integration
+- [x] Chatterbox integration
 - [x] MP3 assembly
 - [x] Pilot seed script
 - [ ] Voice browser/preview
@@ -277,7 +280,7 @@ Use `--public` instead if you want the source public.
 The application supports any number of hosts in a single episode. Use **+ Add host** in the web UI to add cast members. Each host has independent settings for:
 
 - Display/name used in the script
-- Kokoro voice
+- Chatterbox voice
 - Tempo
 
 Switch speakers by putting the configured host name on its own line inside square brackets:
@@ -323,7 +326,7 @@ Every profile supports:
 ```text
 name
 role
-Kokoro voice
+Chatterbox voice
 tempo
 traits
 debate style
@@ -357,7 +360,7 @@ The app can turn a verified story/source packet into an editable, personality-aw
 3. Choose the desired spoken length and tone.
 4. Select **Draft conversation**.
 5. Review/edit the generated speaker-tagged script.
-6. Generate the episode through Kokoro as usual.
+6. Generate the episode through Chatterbox as usual.
 
 The generator uses every host's role, traits, debate style, humor style, interruption tendency, speaking style, political posture, flaws, and character notes. It explicitly instructs the model not to imitate real-world podcast personalities and not to invent facts beyond the supplied source packet.
 
