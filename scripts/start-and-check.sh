@@ -34,7 +34,9 @@ case "${docker_arch}" in
 esac
 
 echo "Building and recreating Patch Notes and Kokoro..."
-docker compose up -d --build --force-recreate kokoro app
+# Remove services left behind by older Compose definitions. In particular, an
+# obsolete Chatterbox container can otherwise keep crash-looping on ARM/LLVM.
+docker compose up -d --build --force-recreate --remove-orphans kokoro app
 
 echo "Waiting for ${app_url}/api/health..."
 for attempt in {1..30}; do

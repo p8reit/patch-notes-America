@@ -10,6 +10,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
+- Persistent background render queue designed for slow CPU-only generation
 - KokoroTTS generation through the image's `POST /tts/generate` API
 - Per-chunk WAV files retained for selective regeneration/debugging
 - FFmpeg assembly into a final 128 kbps MP3
@@ -67,10 +68,10 @@ Notes. Start both services from the project directory:
 The app always listens on container port `8080`. Compose publishes it on the
 host using `APP_BIND_ADDRESS` and `APP_PORT`, which default to
 `127.0.0.1:8081`. The startup script rebuilds and force-recreates the app,
-starts Kokoro, waits for the configured health endpoint, and prints logs from
-both services on failure. Startup is considered successful only after the app
-reports that Kokoro is online, so audio generation is ready when the script
-returns.
+starts Kokoro, removes containers orphaned by older Compose configurations,
+waits for the configured health endpoint, and prints logs from both services
+on failure. Startup is considered successful only after the app reports that
+Kokoro is online, so audio generation is ready when the script returns.
 
 Open:
 
@@ -108,6 +109,24 @@ registration uses the privileged `tonistiigi/binfmt` installer container.
 Docker Desktop users must allow x86/amd64 emulation. `KOKORO_PLATFORM` in
 `.env` can be changed when a native ARM64 Kokoro image is available.
 
+### Repeated `chatterbox-1` LLVM errors
+
+Current releases use the Compose service named `kokoro`; they do not submit
+audio to a `chatterbox` container. If logs show `chatterbox-1` repeatedly
+failing in LLVM while `/api/health` says Kokoro is online, that container is an
+orphan left by an older Compose definition—not a failed background job. The
+recommended startup script removes it automatically. For a stack started
+manually, remove stale services once and bring up the current stack:
+
+```bash
+docker compose down --remove-orphans
+docker compose up -d --build --remove-orphans kokoro app
+```
+
+This cleanup does not remove the bind-mounted `episodes/`, `output/`, or
+`config/` directories, so queued job manifests and completed chunks remain
+available when the app starts again.
+
 ## Generate the pilot
 
 1. Open `http://127.0.0.1:8081`.
@@ -139,8 +158,28 @@ through `queued`, `running`, `complete`, or `failed`, and writes its own MP3
 before the final episode is assembled. Progress survives page/API timeouts in
 `output/<job-id>/job.json`.
 
+The queue uses one worker by default so concurrent episodes do not compete for
+all CPU and memory. After submitting an episode, it is safe to close the
+browser: open the app later and the **Render queue** lists active and completed
+jobs with download links. Queued or running manifests are automatically
+recovered after an app/container restart; interrupted renders restart from the
+last unfinished chunk. Completed WAV files are validated before reuse, avoiding
+the loss of hours of CPU rendering while preventing corrupt partial files from
+entering the final episode.
+
+Transient TTS container crashes and dropped connections are retried five times
+by default with an increasing delay. Configure `TTS_MAX_ATTEMPTS` and
+`TTS_RETRY_DELAY_SECONDS` for a backend that takes longer to restart. Each
+attempt and each completed chunk is written to `job.json`, so the Render queue
+continues to show useful progress during a slow CPU render.
+
+Set `JOB_WORKERS` above `1` only for a GPU-backed TTS service or a host known to
+have enough capacity. Run one Uvicorn application worker because the queue is
+process-local; multiple Uvicorn workers would each create a queue consumer.
+
 ```text
 POST /api/generation-jobs
+GET  /api/generation-jobs
 GET  /api/generation-jobs/{job_id}
 ```
 
