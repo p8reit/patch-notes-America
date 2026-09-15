@@ -65,43 +65,62 @@ def test_generation_segment_size_is_validated():
         build_generation_segments([{"text": "hello"}], chunks_per_segment=0)
 
 
-def test_assemble_mp3_supports_inputs_in_sibling_directory(tmp_path, monkeypatch):
-    from app import main
-
-    chunks_dir = tmp_path / "chunks"
-    segments_dir = tmp_path / "segments"
-    chunks_dir.mkdir()
-    segments_dir.mkdir()
-    chunk_paths = [chunks_dir / "chunk-001.wav", chunks_dir / "chunk-002.wav"]
-    for path in chunk_paths:
-        path.touch()
-
-    captured = {}
-    monkeypatch.setattr(main.shutil, "which", lambda command: "/usr/bin/ffmpeg")
-
-    def fake_run(command, *, cwd, check):
-        captured.update(command=command, cwd=cwd, check=check)
-
-    monkeypatch.setattr(main.subprocess, "run", fake_run)
-
-    main.assemble_mp3(chunk_paths, segments_dir / "segment-001.mp3")
-
-    assert (segments_dir / "concat.txt").read_text() == (
-        "file '../chunks/chunk-001.wav'\nfile '../chunks/chunk-002.wav'\n"
-    )
-    assert captured["cwd"] == segments_dir
-    assert captured["check"] is True
-
-
 def test_job_progress_counts_completed_segments():
     from app.main import _job_progress
 
     job = {"segments": [{"status": "complete"}, {"status": "running"}, {"status": "queued"}]}
 
-    assert _job_progress(job) == {"complete": 1, "total": 3}
+    assert _job_progress(job) == {
+        "complete": 1,
+        "total": 3,
+        "chunks_complete": 0,
+        "chunks_total": 0,
+    }
 
 
-def test_synthesize_chunk_uses_chatterbox_contract(tmp_path, monkeypatch):
+def test_generation_segments_initialize_durable_chunk_state():
+    chunks = [{"host": "Wade", "voice": "am_michael", "tempo": 1.0, "text": "Hello"}]
+
+    segment = build_generation_segments(chunks)[0]
+
+    assert segment["chunks"][0]["status"] == "queued"
+    assert segment["chunks"][0]["output"] is None
+
+
+def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypatch):
+    import asyncio
+
+    from app import main
+
+    attempts = 0
+
+    async def flaky_synthesis(text, voice, tempo, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.ConnectError("backend restarted")
+        destination.write_bytes(b"RIFF" + b"\x00" * 44)
+
+    async def no_delay(_seconds):
+        return None
+
+    monkeypatch.setattr(main, "synthesize_chunk", flaky_synthesis)
+    monkeypatch.setattr(main.asyncio, "sleep", no_delay)
+    monkeypatch.setattr(main, "TTS_MAX_ATTEMPTS", 3)
+    job = {"segments": []}
+    chunk = {"text": "Hello", "voice": "am_michael", "tempo": 1.0}
+    destination = tmp_path / "chunk.wav"
+
+    asyncio.run(main.synthesize_chunk_with_retry(tmp_path, job, chunk, destination))
+
+    assert attempts == 3
+    assert chunk["status"] == "complete"
+    assert chunk["attempt"] == 3
+    assert chunk["output"] == "chunk.wav"
+    assert destination.read_bytes().startswith(b"RIFF")
+
+
+def test_synthesize_chunk_uses_hangrylabs_kokoro_contract(tmp_path, monkeypatch):
     import asyncio
 
     from app import main

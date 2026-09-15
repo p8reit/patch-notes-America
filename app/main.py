@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List
@@ -37,8 +38,10 @@ OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com
 CONVERSATION_PROVIDER = os.getenv("CONVERSATION_PROVIDER", "openai").strip().lower()
 LOCAL_AI_URL = os.getenv("LOCAL_AI_URL", "http://ollama:11434/api/chat")
 LOCAL_AI_MODEL = os.getenv("LOCAL_AI_MODEL", "llama3.1:8b")
-CHATTERBOX_TIMEOUT_SECONDS = float(os.getenv("CHATTERBOX_TIMEOUT_SECONDS", "600"))
+KOKORO_TIMEOUT_SECONDS = float(os.getenv("KOKORO_TIMEOUT_SECONDS", "180"))
 JOB_WORKERS = max(1, int(os.getenv("JOB_WORKERS", "1")))
+TTS_MAX_ATTEMPTS = max(1, int(os.getenv("TTS_MAX_ATTEMPTS", "5")))
+TTS_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("TTS_RETRY_DELAY_SECONDS", "15")))
 
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -561,6 +564,10 @@ def build_generation_segments(
     segments = []
     for offset in range(0, len(speech_chunks), chunks_per_segment):
         items = speech_chunks[offset : offset + chunks_per_segment]
+        items = [
+            {**item, "status": "queued", "output": None, "error": None}
+            for item in items
+        ]
         number = len(segments) + 1
         segments.append({
             "id": f"segment-{number:03d}",
@@ -591,9 +598,12 @@ def _load_job(job_id: str) -> tuple[Path, dict[str, Any]]:
 
 def _job_progress(job: dict[str, Any]) -> dict[str, int]:
     segments = job.get("segments", [])
+    chunks = [chunk for segment in segments for chunk in segment.get("chunks", [])]
     return {
         "complete": sum(segment.get("status") == "complete" for segment in segments),
         "total": len(segments),
+        "chunks_complete": sum(chunk.get("status") == "complete" for chunk in chunks),
+        "chunks_total": len(chunks),
     }
 
 
@@ -608,13 +618,59 @@ async def generation_worker(worker_number: int) -> None:
             generation_queue.task_done()
 
 
+def _valid_wav(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 44 and path.read_bytes()[:4] == b"RIFF"
+    except OSError:
+        return False
+
+
+def _retryable_tts_error(exc: httpx.HTTPError) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return True
+    return exc.response.status_code in {408, 425, 429} or exc.response.status_code >= 500
+
+
+async def synthesize_chunk_with_retry(
+    job_dir: Path,
+    job: dict[str, Any],
+    chunk: dict[str, Any],
+    destination: Path,
+) -> None:
+    """Retry backend crashes/disconnects and checkpoint every attempt."""
+    temporary = destination.with_suffix(".wav.tmp")
+    for attempt in range(1, TTS_MAX_ATTEMPTS + 1):
+        chunk["status"] = "running"
+        chunk["attempt"] = attempt
+        chunk["error"] = None
+        _write_job(job_dir, job)
+        try:
+            temporary.unlink(missing_ok=True)
+            await synthesize_chunk(chunk["text"], chunk["voice"], chunk["tempo"], temporary)
+            temporary.replace(destination)
+            chunk["status"] = "complete"
+            chunk["output"] = destination.relative_to(job_dir).as_posix()
+            _write_job(job_dir, job)
+            return
+        except (httpx.HTTPError, OSError) as exc:
+            temporary.unlink(missing_ok=True)
+            chunk["error"] = describe_kokoro_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
+            can_retry = attempt < TTS_MAX_ATTEMPTS and (
+                not isinstance(exc, httpx.HTTPError) or _retryable_tts_error(exc)
+            )
+            chunk["status"] = "retrying" if can_retry else "failed"
+            _write_job(job_dir, job)
+            if not can_retry:
+                raise
+            await asyncio.sleep(TTS_RETRY_DELAY_SECONDS * attempt)
+
+
 async def queue_generation_job(job_id: str) -> None:
     if generation_queue is None:
         raise HTTPException(status_code=503, detail="The audio job worker is not ready")
     await generation_queue.put(job_id)
 
 
-@app.on_event("startup")
 async def start_generation_workers() -> None:
     """Start workers and recover work interrupted by a container restart."""
     global generation_queue
@@ -629,21 +685,29 @@ async def start_generation_workers() -> None:
             continue
         if job.get("status") not in {"queued", "running"}:
             continue
-        # Chunk rendering is deterministic. Start interrupted jobs from scratch so
-        # their concat manifests can never contain a partial or duplicated episode.
+        # Keep valid completed chunks: CPU renders may represent hours of work.
         job["status"] = "queued"
         job["error"] = None
         job.pop("started_at", None)
         job.pop("finished_at", None)
         for segment in job.get("segments", []):
-            segment["status"] = "queued"
             segment["error"] = None
-            segment.setdefault("outputs", {})["audio"] = None
+            reusable = True
+            for chunk in segment.get("chunks", []):
+                output = chunk.get("output")
+                if chunk.get("status") == "complete" and output and _valid_wav(manifest.parent / output):
+                    continue
+                reusable = False
+                chunk["status"] = "queued"
+                chunk["output"] = None
+                chunk["error"] = None
+            if not reusable:
+                segment["status"] = "queued"
+                segment.setdefault("outputs", {})["audio"] = None
         _write_job(manifest.parent, job)
         await generation_queue.put(job["id"])
 
 
-@app.on_event("shutdown")
 async def stop_generation_workers() -> None:
     global generation_queue
     for worker in generation_workers:
@@ -652,6 +716,18 @@ async def stop_generation_workers() -> None:
         await asyncio.gather(*generation_workers, return_exceptions=True)
     generation_workers.clear()
     generation_queue = None
+
+
+@asynccontextmanager
+async def application_lifespan(_app: FastAPI):
+    await start_generation_workers()
+    try:
+        yield
+    finally:
+        await stop_generation_workers()
+
+
+app.router.lifespan_context = application_lifespan
 
 
 async def process_generation_job(job_id: str) -> None:
@@ -671,7 +747,12 @@ async def process_generation_job(job_id: str) -> None:
             for chunk in segment["chunks"]:
                 chunk_number += 1
                 path = job_dir / "chunks" / f"chunk-{chunk_number:03d}-{slugify(chunk['host'])}.wav"
-                await synthesize_chunk(chunk["text"], chunk["voice"], chunk["tempo"], path)
+                saved_output = chunk.get("output")
+                saved_path = job_dir / saved_output if saved_output else path
+                if chunk.get("status") == "complete" and _valid_wav(saved_path):
+                    path = saved_path
+                else:
+                    await synthesize_chunk_with_retry(job_dir, job, chunk, path)
                 segment_paths.append(path)
                 all_chunk_paths.append(path)
             segment_audio = job_dir / "segments" / f"{segment['id']}.mp3"

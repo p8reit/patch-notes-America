@@ -236,7 +236,7 @@
         const detail = job.status === 'complete'
           ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>`
           : job.status === 'failed' ? `<span class="job-error">${escapeHtml(job.error || 'Rendering failed')}</span>`
-          : `<span class="hint">${progress.complete}/${progress.total} segments · safe to close this page</span>`;
+          : `<span class="hint">${progress.complete}/${progress.total} segments · ${progress.chunks_complete || 0}/${progress.chunks_total || 0} chunks · safe to close this page</span>`;
         return `<article class="job-row"><div><strong>${escapeHtml(job.title)}</strong><small>${escapeHtml(job.created_at || '')}</small></div>
           <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${detail}</article>`;
       }).join('');
