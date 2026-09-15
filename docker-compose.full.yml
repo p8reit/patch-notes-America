@@ -8,18 +8,26 @@ services:
       - ollama-data:/root/.ollama
     restart: unless-stopped
 
-  kokoro:
-    image: hangrylabs/kokorotts:v0.2
-    platform: ${KOKORO_PLATFORM:-linux/amd64}
+  chatterbox:
+    build:
+      context: .
+      dockerfile: chatterbox/Dockerfile
+    environment:
+      CHATTERBOX_DEVICE: ${CHATTERBOX_DEVICE:-cpu}
+      CHATTERBOX_EXAGGERATION: ${CHATTERBOX_EXAGGERATION:-0.5}
+      CHATTERBOX_CFG_WEIGHT: ${CHATTERBOX_CFG_WEIGHT:-0.5}
     ports:
-      - "${KOKORO_BIND_ADDRESS:-127.0.0.1}:${KOKORO_PORT:-7860}:7860"
+      - "${CHATTERBOX_BIND_ADDRESS:-127.0.0.1}:${CHATTERBOX_PORT:-8000}:8000"
+    volumes:
+      - ./voices:/voices:ro
+      - chatterbox-models:/models
     restart: unless-stopped
 
   app:
     build: .
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     depends_on:
-      - kokoro
+      - chatterbox
     environment:
       KOKORO_URL: http://kokoro:7860
       KOKORO_TTS_PATH: ${KOKORO_TTS_PATH:-/tts/generate}
@@ -45,7 +53,7 @@ services:
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8081}:8080"
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8080/api/health | grep -q '\"kokoro\":{\"ok\":true'"]
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8080/api/health | grep -q '\"chatterbox\":{\"ok\":true'"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -58,3 +66,4 @@ services:
 
 volumes:
   ollama-data:
+  chatterbox-models:
