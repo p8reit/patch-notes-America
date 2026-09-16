@@ -2,7 +2,7 @@
   {
     "name": "Wade Mercer",
     "role": "Southern Everyman",
-    "voice": "default",
+    "voice": "wade_mercer",
     "tempo": 0.96,
     "traits": [
       "practical",
@@ -29,7 +29,7 @@
   {
     "name": "Marcus Reed",
     "role": "City Pragmatist",
-    "voice": "default",
+    "voice": "marcus_reed",
     "tempo": 1.05,
     "traits": [
       "quick-thinking",
@@ -56,7 +56,7 @@
   {
     "name": "Julian Cross",
     "role": "Worldly Context Guy",
-    "voice": "default",
+    "voice": "julian_cross",
     "tempo": 0.98,
     "traits": [
       "composed",
