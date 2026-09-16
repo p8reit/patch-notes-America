@@ -18,7 +18,13 @@
     "sentence_style": "Conversational medium-length sentences with relaxed pacing and occasional short punch lines.",
     "political_posture": "Independent-minded and skeptical of both parties, especially when institutions or elites talk past ordinary people.",
     "flaws": "Can oversimplify complex policy, trust practical intuition too much, and occasionally dismiss an abstract argument before hearing all of it.",
-    "character_notes": "Southern without being a caricature. Familiar with small-town life, trades, farming, church communities, local politics, hunting, and family economics. Never write him as stupid or as a generic redneck. He is often the emotional and comedic anchor of the show."
+    "character_notes": "Southern without being a caricature. Familiar with small-town life, trades, farming, church communities, local politics, hunting, and family economics. Never write him as stupid or as a generic redneck. He is often the emotional and comedic anchor of the show.",
+    "exaggeration": 0.6,
+    "cfg_weight": 0.32,
+    "temperature": 0.75,
+    "min_p": 0.05,
+    "top_p": 1.0,
+    "repetition_penalty": 1.2
   },
   {
     "name": "Marcus Reed",
@@ -39,7 +45,13 @@
     "sentence_style": "Crisp, energetic, short-to-medium sentences with fast transitions and direct questions.",
     "political_posture": "Pragmatic rather than tribal. Interested in whether an idea works, what the numbers show, and whether the public story matches reality.",
     "flaws": "Can become too focused on winning the argument, move faster than the nuance deserves, and occasionally mistake a strong data point for the whole story.",
-    "character_notes": "Urban, media-literate, business-and-technology aware, and comfortable with internet culture without sounding chronically online. He is the primary facilitator and often introduces the next question or challenges another host's premise."
+    "character_notes": "Urban, media-literate, business-and-technology aware, and comfortable with internet culture without sounding chronically online. He is the primary facilitator and often introduces the next question or challenges another host's premise.",
+    "exaggeration": 0.72,
+    "cfg_weight": 0.38,
+    "temperature": 0.85,
+    "min_p": 0.05,
+    "top_p": 1.0,
+    "repetition_penalty": 1.2
   },
   {
     "name": "Julian Cross",
@@ -60,6 +72,12 @@
     "sentence_style": "Measured, polished sentences with enough context to explain the bigger picture without turning into a lecture.",
     "political_posture": "Institutionally and historically minded, skeptical of simplistic partisan narratives, and attentive to how American choices affect the rest of the world.",
     "flaws": "Can overcomplicate straightforward issues, drift toward theory, and occasionally lose sight of how a policy feels to people dealing with it day to day.",
-    "character_notes": "Worldly rather than tied to a single nationality. Reads international media and understands geopolitics, markets, alliances, and history. Smart but never smug. His job is to widen the frame, not to be the permanent correct answer."
+    "character_notes": "Worldly rather than tied to a single nationality. Reads international media and understands geopolitics, markets, alliances, and history. Smart but never smug. His job is to widen the frame, not to be the permanent correct answer.",
+    "exaggeration": 0.52,
+    "cfg_weight": 0.3,
+    "temperature": 0.72,
+    "min_p": 0.05,
+    "top_p": 1.0,
+    "repetition_penalty": 1.2
   }
 ]

@@ -6,7 +6,7 @@ Initial podcast-production application for turning a narration script into a fin
 
 - Browser-based episode editor on port `8081`
 - Preloaded pilot narration script
-- Configurable Chatterbox voice and tempo
+- Per-host Chatterbox reference voice, tempo, exaggeration, CFG weight, temperature, Min P, Top P, and repetition penalty
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
@@ -164,7 +164,7 @@ available when the app starts again.
 
 1. Open `http://127.0.0.1:8081`.
 2. The pilot script is preloaded.
-3. Start with voice `default` and tempo `1.00`, or add authorized reference WAVs
+3. Start with voice `default`, or add authorized reference WAVs. Expand **Chatterbox voice controls** on each host to tune exaggeration, CFG weight, temperature, Min P, Top P, and repetition penalty; tempo remains available as output speed control
    under `voices/` and select their filename-based voice IDs.
 4. Click **Generate episode**.
 5. When complete, click **Download MP3**.
@@ -366,7 +366,7 @@ chunks/chunk-002-alex.wav
 chunks/chunk-003-sam.wav
 ```
 
-`metadata.json` also records the host, voice, tempo, and text used for every generated chunk.
+`metadata.json` also records the host, voice, tempo, Chatterbox sampling controls, and text used for every generated chunk.
 
 ## Persistent host personalities
 

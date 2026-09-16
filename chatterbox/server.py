@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import os
 import re
 import subprocess
@@ -30,6 +31,12 @@ class SpeechRequest(BaseModel):
     voice: str = "default"
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     response_format: str = "wav"
+    exaggeration: float = Field(default=EXAGGERATION, ge=0.0, le=2.0)
+    cfg_weight: float = Field(default=CFG_WEIGHT, ge=0.0, le=1.0)
+    temperature: float = Field(default=0.8, ge=0.05, le=5.0)
+    min_p: float = Field(default=0.05, ge=0.0, le=1.0)
+    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    repetition_penalty: float = Field(default=1.2, ge=0.0, le=2.0)
 
 
 def get_model() -> ChatterboxTTS:
@@ -91,6 +98,39 @@ def encode_wav(wav: torch.Tensor, sample_rate: int, speed: float) -> bytes:
     return result.stdout
 
 
+def generate_audio(model: ChatterboxTTS, request: SpeechRequest, prompt: str | None) -> torch.Tensor:
+    """Apply every supported sampler control across Chatterbox releases.
+
+    Chatterbox 0.1.x exposes the sampling controls on its internal T3 inference
+    method, while newer releases may expose them directly on ``generate``.
+    """
+    options = {
+        "exaggeration": request.exaggeration,
+        "cfg_weight": request.cfg_weight,
+        "temperature": request.temperature,
+    }
+    advanced = {
+        "min_p": request.min_p,
+        "top_p": request.top_p,
+        "repetition_penalty": request.repetition_penalty,
+    }
+    generate_parameters = inspect.signature(model.generate).parameters
+    if all(field in generate_parameters for field in advanced):
+        return model.generate(request.input, audio_prompt_path=prompt, **options, **advanced)
+
+    inference = model.t3.inference
+
+    def configured_inference(*args, **kwargs):
+        kwargs.update(advanced)
+        return inference(*args, **kwargs)
+
+    model.t3.inference = configured_inference
+    try:
+        return model.generate(request.input, audio_prompt_path=prompt, **options)
+    finally:
+        model.t3.inference = inference
+
+
 @app.get("/health")
 def health() -> dict[str, str | bool]:
     return {"ok": True, "provider": "chatterbox", "device": DEVICE, "model_loaded": _model is not None}
@@ -111,10 +151,5 @@ def speech(request: SpeechRequest) -> Response:
     prompt = voice_prompt(request.voice)
     model = get_model()
     with _model_lock:
-        wav = model.generate(
-            request.input,
-            audio_prompt_path=prompt,
-            exaggeration=EXAGGERATION,
-            cfg_weight=CFG_WEIGHT,
-        )
+        wav = generate_audio(model, request, prompt)
     return Response(encode_wav(wav, model.sr, request.speed), media_type="audio/wav")
