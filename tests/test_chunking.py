@@ -165,6 +165,13 @@ def test_synthesize_chunk_uses_chatterbox_contract(tmp_path, monkeypatch):
     assert destination.read_bytes().startswith(b"RIFF")
 
 
+def test_chatterbox_timeout_has_a_default():
+    from app import main
+
+    assert isinstance(main.CHATTERBOX_TIMEOUT_SECONDS, float)
+    assert main.CHATTERBOX_TIMEOUT_SECONDS > 0
+
+
 def test_synthesize_chunk_rejects_json_saved_as_wav(tmp_path, monkeypatch):
     import asyncio
 

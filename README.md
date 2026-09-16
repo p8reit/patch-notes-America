@@ -106,6 +106,34 @@ The first generation downloads Chatterbox model weights into the persistent
 `CHATTERBOX_DEVICE=cuda` when the container has access to a compatible NVIDIA
 GPU. The default 600-second request timeout accommodates model startup.
 
+#### Applying timeout configuration changes
+
+The application source is copied into the app image when it is built, and
+environment variables are read when the Python process starts. Consequently,
+`docker compose restart` alone does not install an updated `app/main.py` or
+apply changes made to the Compose environment. After pulling this fix or
+changing `CHATTERBOX_TIMEOUT_SECONDS` in `.env`, rebuild and recreate the app:
+
+```bash
+docker compose up -d --build --force-recreate app
+```
+
+Recreating the app container does not remove episode, output, config, or model
+data. To confirm that the new container has both the fixed source and the value
+from `.env`, run:
+
+```bash
+docker compose exec app python -c \
+  'from app.main import CHATTERBOX_TIMEOUT_SECONDS; print(CHATTERBOX_TIMEOUT_SECONDS)'
+```
+
+If that command still reports a `NameError`, force a clean app-image rebuild:
+
+```bash
+docker compose build --no-cache app
+docker compose up -d --force-recreate app
+```
+
 For voice cloning, place a clean, authorized reference recording at
 `voices/<voice-id>.wav`, then set that host's Chatterbox voice ID to the filename
 without `.wav`. The special ID `default` needs no reference recording. Do not
