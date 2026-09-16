@@ -33,6 +33,14 @@ CHATTERBOX_PUBLIC_PORT = int(os.getenv("CHATTERBOX_PUBLIC_PORT", "8000"))
 CHATTERBOX_TIMEOUT_SECONDS = float(os.getenv("CHATTERBOX_TIMEOUT_SECONDS", "600"))
 DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "default")
 DEFAULT_TEMPO = float(os.getenv("DEFAULT_TEMPO", "1.0"))
+CHATTERBOX_DEFAULTS = {
+    "exaggeration": 0.5,
+    "cfg_weight": 0.5,
+    "temperature": 0.8,
+    "min_p": 0.05,
+    "top_p": 1.0,
+    "repetition_penalty": 1.2,
+}
 MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
@@ -167,6 +175,28 @@ def parse_hosts(hosts_json: str) -> list[dict[str, Any]]:
         if tempo < 0.5 or tempo > 2.0:
             raise HTTPException(status_code=400, detail=f"Tempo for {name} must be between 0.5 and 2.0")
 
+        chatterbox: dict[str, float] = {}
+        ranges = {
+            "exaggeration": (0.0, 2.0),
+            "cfg_weight": (0.0, 1.0),
+            "temperature": (0.05, 5.0),
+            "min_p": (0.0, 1.0),
+            "top_p": (0.0, 1.0),
+            "repetition_penalty": (0.0, 2.0),
+        }
+        for field, default in CHATTERBOX_DEFAULTS.items():
+            try:
+                value = float(item.get(field, default))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"{field} for {name} must be a number") from exc
+            minimum, maximum = ranges[field]
+            if value < minimum or value > maximum:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field} for {name} must be between {minimum:g} and {maximum:g}",
+                )
+            chatterbox[field] = value
+
         interruption_frequency = _text_field(item, "interruption_frequency", "medium").lower()
         if interruption_frequency not in allowed_interruptions:
             raise HTTPException(
@@ -189,6 +219,7 @@ def parse_hosts(hosts_json: str) -> list[dict[str, Any]]:
                 "role": _text_field(item, "role"),
                 "voice": voice,
                 "tempo": tempo,
+                **chatterbox,
                 "traits": traits,
                 "debate_style": _text_field(item, "debate_style"),
                 "humor_style": _text_field(item, "humor_style"),
@@ -287,6 +318,7 @@ def build_speech_chunks(
                     "host": host["name"],
                     "voice": host["voice"],
                     "tempo": host["tempo"],
+                    **{field: host.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
                     "text": text_chunk,
                 }
             )
@@ -494,7 +526,9 @@ def describe_chatterbox_error(exc: httpx.HTTPError) -> str:
     return f"Could not reach Chatterbox at {endpoint} ({type(exc).__name__})"
 
 
-async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Path) -> None:
+async def synthesize_chunk(
+    text: str, voice: str, tempo: float, destination: Path, **chatterbox_settings: float
+) -> None:
     """Generate WAV audio through the local Chatterbox service."""
     payload = {
         "input": text,
@@ -502,6 +536,7 @@ async def synthesize_chunk(text: str, voice: str, tempo: float, destination: Pat
         "voice": voice,
         "speed": tempo,
         "response_format": "wav",
+        **{field: chatterbox_settings.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
     }
     timeout = httpx.Timeout(CHATTERBOX_TIMEOUT_SECONDS, connect=10, write=30, pool=10)
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -659,7 +694,10 @@ async def synthesize_chunk_with_retry(
         _write_job(job_dir, job)
         try:
             temporary.unlink(missing_ok=True)
-            await synthesize_chunk(chunk["text"], chunk["voice"], chunk["tempo"], temporary)
+            await synthesize_chunk(
+                chunk["text"], chunk["voice"], chunk["tempo"], temporary,
+                **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
+            )
             temporary.replace(destination)
             chunk["status"] = "complete"
             chunk["output"] = destination.relative_to(job_dir).as_posix()
@@ -1139,6 +1177,7 @@ async def generate(
                 "host": chunk["host"],
                 "voice": chunk["voice"],
                 "tempo": chunk["tempo"],
+                **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
                 "text": chunk["text"],
             }
             for index, chunk in enumerate(speech_chunks, start=1)
@@ -1151,7 +1190,10 @@ async def generate(
         for index, chunk in enumerate(speech_chunks, start=1):
             speaker_slug = slugify(chunk["host"])
             chunk_path = chunks_dir / f"chunk-{index:03d}-{speaker_slug}.wav"
-            await synthesize_chunk(chunk["text"], chunk["voice"], chunk["tempo"], chunk_path)
+            await synthesize_chunk(
+                chunk["text"], chunk["voice"], chunk["tempo"], chunk_path,
+                **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
+            )
             chunk_paths.append(chunk_path)
 
         final_path = episode_dir / f"{slugify(title)}.mp3"

@@ -94,7 +94,7 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
 
     attempts = 0
 
-    async def flaky_synthesis(text, voice, tempo, destination):
+    async def flaky_synthesis(text, voice, tempo, destination, **settings):
         nonlocal attempts
         attempts += 1
         if attempts < 3:
@@ -161,6 +161,12 @@ def test_synthesize_chunk_uses_chatterbox_contract(tmp_path, monkeypatch):
         "voice": "am_michael",
         "speed": 1.15,
         "response_format": "wav",
+        "exaggeration": 0.5,
+        "cfg_weight": 0.5,
+        "temperature": 0.8,
+        "min_p": 0.05,
+        "top_p": 1.0,
+        "repetition_penalty": 1.2,
     }
     assert destination.read_bytes().startswith(b"RIFF")
 

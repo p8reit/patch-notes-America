@@ -170,6 +170,19 @@
         </label>
       </div>
 
+      <details class="voice-details">
+        <summary>Chatterbox voice controls</summary>
+        <p class="hint">Tune synthesis for this host. These values are sent to Chatterbox for every spoken chunk.</p>
+        <div class="voice-grid">
+          <label>Exaggeration<input class="host-exaggeration" type="number" min="0" max="2" step="0.01" required value="0.5"></label>
+          <label>CFG weight<input class="host-cfg-weight" type="number" min="0" max="1" step="0.01" required value="0.5"></label>
+          <label>Temperature<input class="host-temperature" type="number" min="0.05" max="5" step="0.01" required value="0.8"></label>
+          <label>Min P<input class="host-min-p" type="number" min="0" max="1" step="0.01" required value="0.05"></label>
+          <label>Top P<input class="host-top-p" type="number" min="0" max="1" step="0.01" required value="1.0"></label>
+          <label>Repetition penalty<input class="host-repetition-penalty" type="number" min="0" max="2" step="0.01" required value="1.2"></label>
+        </div>
+      </details>
+
       <details class="character-details">
         <summary>Character personality</summary>
         <div class="character-grid">
@@ -335,6 +348,12 @@
       row.querySelector('.host-role').value = host.role || '';
       populateVoiceSelect(row.querySelector('.host-voice'), host.voice || '{{ default_voice }}');
       row.querySelector('.host-tempo').value = host.tempo ?? {{ default_tempo }};
+      row.querySelector('.host-exaggeration').value = host.exaggeration ?? 0.5;
+      row.querySelector('.host-cfg-weight').value = host.cfg_weight ?? 0.5;
+      row.querySelector('.host-temperature').value = host.temperature ?? 0.8;
+      row.querySelector('.host-min-p').value = host.min_p ?? 0.05;
+      row.querySelector('.host-top-p').value = host.top_p ?? 1.0;
+      row.querySelector('.host-repetition-penalty').value = host.repetition_penalty ?? 1.2;
       row.querySelector('.host-traits').value = Array.isArray(host.traits) ? host.traits.join(', ') : (host.traits || '');
       row.querySelector('.host-debate-style').value = host.debate_style || '';
       row.querySelector('.host-humor-style').value = host.humor_style || '';
@@ -358,6 +377,12 @@
         role: row.querySelector('.host-role').value.trim(),
         voice: row.querySelector('.host-voice').value.trim(),
         tempo: Number(row.querySelector('.host-tempo').value),
+        exaggeration: Number(row.querySelector('.host-exaggeration').value),
+        cfg_weight: Number(row.querySelector('.host-cfg-weight').value),
+        temperature: Number(row.querySelector('.host-temperature').value),
+        min_p: Number(row.querySelector('.host-min-p').value),
+        top_p: Number(row.querySelector('.host-top-p').value),
+        repetition_penalty: Number(row.querySelector('.host-repetition-penalty').value),
         traits: row.querySelector('.host-traits').value.split(',').map((item) => item.trim()).filter(Boolean),
         debate_style: row.querySelector('.host-debate-style').value.trim(),
         humor_style: row.querySelector('.host-humor-style').value.trim(),
