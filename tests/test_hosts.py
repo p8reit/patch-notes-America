@@ -182,3 +182,23 @@ def test_build_clip_ass_contains_speaker_and_text(tmp_path):
     assert "Wade Mercer" in text
     assert "This is the useful part." in text
     assert "PlayResX: 1080" in text
+
+
+def test_chatterbox_voice_controls_are_preserved_in_chunks():
+    configured = parse_hosts(json.dumps([{
+        "name": "Wade", "voice": "wade_mercer", "tempo": 1.0,
+        "exaggeration": 0.6, "cfg_weight": 0.32, "temperature": 0.75,
+        "min_p": 0.05, "top_p": 1.0, "repetition_penalty": 1.2,
+    }]))
+    chunks = build_speech_chunks("Testing voice controls.", configured)
+    assert chunks[0]["exaggeration"] == 0.6
+    assert chunks[0]["cfg_weight"] == 0.32
+    assert chunks[0]["temperature"] == 0.75
+    assert chunks[0]["min_p"] == 0.05
+    assert chunks[0]["top_p"] == 1.0
+    assert chunks[0]["repetition_penalty"] == 1.2
+
+
+def test_chatterbox_voice_controls_reject_out_of_range_values():
+    with pytest.raises(HTTPException, match="top_p for Wade must be between 0 and 1"):
+        parse_hosts(json.dumps([{"name": "Wade", "voice": "default", "top_p": 1.5}]))
