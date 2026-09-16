@@ -172,6 +172,42 @@ def test_chatterbox_timeout_has_a_default():
     assert main.CHATTERBOX_TIMEOUT_SECONDS > 0
 
 
+def test_chatterbox_voices_uses_discovery_endpoint(monkeypatch):
+    import asyncio
+
+    from app import main
+
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"voices": [{"id": "default"}, {"id": "wade"}]}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["timeout"] = kwargs["timeout"]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url):
+            captured["url"] = url
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+
+    voices = asyncio.run(main.chatterbox_voices())
+
+    assert captured == {"timeout": 10.0, "url": "http://chatterbox:8000/voices"}
+    assert voices == [{"id": "default"}, {"id": "wade"}]
+
+
 def test_synthesize_chunk_rejects_json_saved_as_wav(tmp_path, monkeypatch):
     import asyncio
 

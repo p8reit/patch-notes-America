@@ -21,6 +21,7 @@ textarea { resize: vertical; line-height: 1.5; }
 .actions { display: flex; align-items: center; gap: 14px; }
 button, .download { background: #238636; color: white; border: none; border-radius: 10px; padding: 12px 18px; font-weight: 700; text-decoration: none; cursor: pointer; }
 button:disabled { opacity: .55; cursor: wait; }
+.compact-button { padding: 5px 9px; margin-left: 6px; font-size: .8rem; }
 #progress { color: #8b949e; }
 .result p { color: #8b949e; }
 .job-list { display: grid; gap: 10px; margin-top: 18px; }

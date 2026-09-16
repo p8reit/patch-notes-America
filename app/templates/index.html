@@ -40,6 +40,7 @@
           </div>
         </div>
         <p class="hint">Hosts are persistent characters. Audio settings drive Chatterbox; personality fields are retained for transcript generation and episode metadata.</p>
+        <p class="hint">Voice choices come from WAV reference files in <code>voices/</code>. <button id="refresh-voices" class="secondary compact-button" type="button">Refresh voices</button> <span id="voice-status"></span></p>
         <div id="hosts"></div>
         <input id="hosts-json" name="hosts_json" type="hidden">
         <p id="cast-status" class="hint"></p>
@@ -161,7 +162,7 @@
         </label>
         <label>
           Chatterbox voice
-          <input class="host-voice" required placeholder="default or wade">
+          <select class="host-voice" required></select>
         </label>
         <label>
           Tempo
@@ -219,6 +220,8 @@
     const hostTemplate = document.getElementById('host-template');
     const hostsJson = document.getElementById('hosts-json');
     const castStatus = document.getElementById('cast-status');
+    const voiceStatus = document.getElementById('voice-status');
+    let availableVoices = [{id: '{{ default_voice }}', label: 'Default (built in)'}];
     let currentEpisode = null;
     const activeJobPollers = new Map();
 
@@ -294,12 +297,43 @@
       update();
     }
 
+    function populateVoiceSelect(select, selectedVoice) {
+      const choices = [...availableVoices];
+      if (selectedVoice && !choices.some((voice) => voice.id === selectedVoice)) {
+        choices.push({id: selectedVoice, label: `${selectedVoice} (reference missing)`});
+      }
+      select.replaceChildren(...choices.map((voice) => {
+        const option = document.createElement('option');
+        option.value = voice.id;
+        option.textContent = voice.label || voice.id;
+        return option;
+      }));
+      select.value = selectedVoice || '{{ default_voice }}';
+    }
+
+    async function refreshVoices() {
+      voiceStatus.textContent = 'Loading…';
+      try {
+        const response = await fetch('/api/chatterbox-voices');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Could not load voices');
+        availableVoices = data.voices;
+        document.querySelectorAll('.host-voice').forEach((select) => populateVoiceSelect(select, select.value));
+        const referenceCount = Math.max(0, availableVoices.length - 1);
+        voiceStatus.textContent = referenceCount
+          ? `${referenceCount} reference voice${referenceCount === 1 ? '' : 's'} available.`
+          : 'Only the built-in default is available; add reference WAVs for distinct voices.';
+      } catch (err) {
+        voiceStatus.textContent = err.message;
+      }
+    }
+
     function addHost(host = {}) {
       const fragment = hostTemplate.content.cloneNode(true);
       const row = fragment.querySelector('.host-row');
       row.querySelector('.host-name').value = host.name || '';
       row.querySelector('.host-role').value = host.role || '';
-      row.querySelector('.host-voice').value = host.voice || '{{ default_voice }}';
+      populateVoiceSelect(row.querySelector('.host-voice'), host.voice || '{{ default_voice }}');
       row.querySelector('.host-tempo').value = host.tempo ?? {{ default_tempo }};
       row.querySelector('.host-traits').value = Array.isArray(host.traits) ? host.traits.join(', ') : (host.traits || '');
       row.querySelector('.host-debate-style').value = host.debate_style || '';
@@ -345,6 +379,7 @@
       traits: [],
       interruption_frequency: 'medium',
     }));
+    document.getElementById('refresh-voices').addEventListener('click', refreshVoices);
 
     document.getElementById('save-cast').addEventListener('click', async () => {
       const hosts = serializeHosts();
@@ -546,6 +581,7 @@
     });
 
     initialProfiles.forEach(addHost);
+    refreshVoices();
     updateHealth();
     refreshJobs().catch(err => { document.getElementById('job-list').innerHTML = `<p class="job-error">${escapeHtml(err.message)}</p>`; });
   </script>
