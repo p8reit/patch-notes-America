@@ -120,7 +120,7 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
     assert destination.read_bytes().startswith(b"RIFF")
 
 
-def test_synthesize_chunk_uses_hangrylabs_kokoro_contract(tmp_path, monkeypatch):
+def test_synthesize_chunk_uses_chatterbox_contract(tmp_path, monkeypatch):
     import asyncio
 
     from app import main
@@ -163,6 +163,13 @@ def test_synthesize_chunk_uses_hangrylabs_kokoro_contract(tmp_path, monkeypatch)
         "response_format": "wav",
     }
     assert destination.read_bytes().startswith(b"RIFF")
+
+
+def test_chatterbox_timeout_has_a_default():
+    from app import main
+
+    assert isinstance(main.CHATTERBOX_TIMEOUT_SECONDS, float)
+    assert main.CHATTERBOX_TIMEOUT_SECONDS > 0
 
 
 def test_synthesize_chunk_rejects_json_saved_as_wav(tmp_path, monkeypatch):

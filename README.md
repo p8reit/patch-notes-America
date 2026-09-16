@@ -11,7 +11,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
 - Persistent background render queue designed for slow CPU-only generation
-- KokoroTTS generation through the image's `POST /tts/generate` API
+- Chatterbox generation through the bundled service's `POST /v1/audio/speech` API
 - Per-chunk WAV files retained for selective regeneration/debugging
 - FFmpeg assembly into a final 128 kbps MP3
 - Persistent `episodes/` source scripts and `output/` generated episodes
@@ -68,10 +68,10 @@ Notes. Start both services from the project directory:
 The app always listens on container port `8080`. Compose publishes it on the
 host using `APP_BIND_ADDRESS` and `APP_PORT`, which default to
 `127.0.0.1:8081`. The startup script rebuilds and force-recreates the app,
-starts Kokoro, removes containers orphaned by older Compose configurations,
+starts Chatterbox, removes containers orphaned by older Compose configurations,
 waits for the configured health endpoint, and prints logs from both services
 on failure. Startup is considered successful only after the app reports that
-Kokoro is online, so audio generation is ready when the script returns.
+Chatterbox is online, so audio generation is ready when the script returns.
 
 Open:
 
@@ -106,23 +106,48 @@ The first generation downloads Chatterbox model weights into the persistent
 `CHATTERBOX_DEVICE=cuda` when the container has access to a compatible NVIDIA
 GPU. The default 600-second request timeout accommodates model startup.
 
+#### Applying timeout configuration changes
+
+The application source is copied into the app image when it is built, and
+environment variables are read when the Python process starts. Consequently,
+`docker compose restart` alone does not install an updated `app/main.py` or
+apply changes made to the Compose environment. After pulling this fix or
+changing `CHATTERBOX_TIMEOUT_SECONDS` in `.env`, rebuild and recreate the app:
+
+```bash
+docker compose up -d --build --force-recreate app
+```
+
+Recreating the app container does not remove episode, output, config, or model
+data. To confirm that the new container has both the fixed source and the value
+from `.env`, run:
+
+```bash
+docker compose exec app python -c \
+  'from app.main import CHATTERBOX_TIMEOUT_SECONDS; print(CHATTERBOX_TIMEOUT_SECONDS)'
+```
+
+If that command still reports a `NameError`, force a clean app-image rebuild:
+
+```bash
+docker compose build --no-cache app
+docker compose up -d --force-recreate app
+```
+
 For voice cloning, place a clean, authorized reference recording at
 `voices/<voice-id>.wav`, then set that host's Chatterbox voice ID to the filename
 without `.wav`. The special ID `default` needs no reference recording. Do not
 clone a voice without the speaker's permission.
 
-### Repeated `chatterbox-1` LLVM errors
+### Removing containers from older versions
 
-Current releases use the Compose service named `kokoro`; they do not submit
-audio to a `chatterbox` container. If logs show `chatterbox-1` repeatedly
-failing in LLVM while `/api/health` says Kokoro is online, that container is an
-orphan left by an older Compose definition—not a failed background job. The
-recommended startup script removes it automatically. For a stack started
-manually, remove stale services once and bring up the current stack:
+The recommended startup script removes orphaned services automatically. For a
+stack started manually, remove stale services once and bring up the current
+Chatterbox-backed stack:
 
 ```bash
 docker compose down --remove-orphans
-docker compose up -d --build --remove-orphans kokoro app
+docker compose up -d --build --remove-orphans chatterbox app
 ```
 
 This cleanup does not remove the bind-mounted `episodes/`, `output/`, or
