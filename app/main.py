@@ -29,6 +29,7 @@ CHATTERBOX_PUBLIC_URL = os.getenv("CHATTERBOX_PUBLIC_URL", "").strip().rstrip("/
 CHATTERBOX_TTS_PATH = os.getenv("CHATTERBOX_TTS_PATH", "/v1/audio/speech")
 CHATTERBOX_HEALTH_PATH = os.getenv("CHATTERBOX_HEALTH_PATH", "/health")
 CHATTERBOX_PUBLIC_PORT = int(os.getenv("CHATTERBOX_PUBLIC_PORT", "8000"))
+CHATTERBOX_TIMEOUT_SECONDS = float(os.getenv("CHATTERBOX_TIMEOUT_SECONDS", "600"))
 DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "default")
 DEFAULT_TEMPO = float(os.getenv("DEFAULT_TEMPO", "1.0"))
 MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
@@ -38,7 +39,6 @@ OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com
 CONVERSATION_PROVIDER = os.getenv("CONVERSATION_PROVIDER", "openai").strip().lower()
 LOCAL_AI_URL = os.getenv("LOCAL_AI_URL", "http://ollama:11434/api/chat")
 LOCAL_AI_MODEL = os.getenv("LOCAL_AI_MODEL", "llama3.1:8b")
-KOKORO_TIMEOUT_SECONDS = float(os.getenv("KOKORO_TIMEOUT_SECONDS", "180"))
 JOB_WORKERS = max(1, int(os.getenv("JOB_WORKERS", "1")))
 TTS_MAX_ATTEMPTS = max(1, int(os.getenv("TTS_MAX_ATTEMPTS", "5")))
 TTS_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("TTS_RETRY_DELAY_SECONDS", "15")))
@@ -654,7 +654,7 @@ async def synthesize_chunk_with_retry(
             return
         except (httpx.HTTPError, OSError) as exc:
             temporary.unlink(missing_ok=True)
-            chunk["error"] = describe_kokoro_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
+            chunk["error"] = describe_chatterbox_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
             can_retry = attempt < TTS_MAX_ATTEMPTS and (
                 not isinstance(exc, httpx.HTTPError) or _retryable_tts_error(exc)
             )
