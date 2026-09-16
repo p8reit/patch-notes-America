@@ -2,6 +2,10 @@
 
 Initial podcast-production application for turning a narration script into a finished MP3 using a locally hosted Chatterbox server.
 
+> **Voice-management redesign:** The current filename-based reference selector
+> is an interim integration. See the [Chatterbox voice-management redesign](docs/chatterbox-voice-redesign.md)
+> for the planned upload, preview, assignment, revisioning, and migration work.
+
 ## MVP features
 
 - Browser-based episode editor on port `8081`
