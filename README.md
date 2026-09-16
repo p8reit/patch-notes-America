@@ -11,7 +11,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
 - Persistent background render queue designed for slow CPU-only generation
-- KokoroTTS generation through the image's `POST /tts/generate` API
+- Chatterbox generation through the bundled service's `POST /v1/audio/speech` API
 - Per-chunk WAV files retained for selective regeneration/debugging
 - FFmpeg assembly into a final 128 kbps MP3
 - Persistent `episodes/` source scripts and `output/` generated episodes
@@ -68,10 +68,10 @@ Notes. Start both services from the project directory:
 The app always listens on container port `8080`. Compose publishes it on the
 host using `APP_BIND_ADDRESS` and `APP_PORT`, which default to
 `127.0.0.1:8081`. The startup script rebuilds and force-recreates the app,
-starts Kokoro, removes containers orphaned by older Compose configurations,
+starts Chatterbox, removes containers orphaned by older Compose configurations,
 waits for the configured health endpoint, and prints logs from both services
 on failure. Startup is considered successful only after the app reports that
-Kokoro is online, so audio generation is ready when the script returns.
+Chatterbox is online, so audio generation is ready when the script returns.
 
 Open:
 
@@ -111,18 +111,15 @@ For voice cloning, place a clean, authorized reference recording at
 without `.wav`. The special ID `default` needs no reference recording. Do not
 clone a voice without the speaker's permission.
 
-### Repeated `chatterbox-1` LLVM errors
+### Removing containers from older versions
 
-Current releases use the Compose service named `kokoro`; they do not submit
-audio to a `chatterbox` container. If logs show `chatterbox-1` repeatedly
-failing in LLVM while `/api/health` says Kokoro is online, that container is an
-orphan left by an older Compose definition—not a failed background job. The
-recommended startup script removes it automatically. For a stack started
-manually, remove stale services once and bring up the current stack:
+The recommended startup script removes orphaned services automatically. For a
+stack started manually, remove stale services once and bring up the current
+Chatterbox-backed stack:
 
 ```bash
 docker compose down --remove-orphans
-docker compose up -d --build --remove-orphans kokoro app
+docker compose up -d --build --remove-orphans chatterbox app
 ```
 
 This cleanup does not remove the bind-mounted `episodes/`, `output/`, or
