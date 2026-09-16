@@ -54,6 +54,23 @@ def voice_prompt(voice: str) -> str | None:
     return str(path)
 
 
+def available_voices() -> list[dict[str, str | bool]]:
+    """Return the built-in voice and every usable reference WAV."""
+    voices: list[dict[str, str | bool]] = [
+        {"id": "default", "label": "Default (built in)", "reference": False}
+    ]
+    if not VOICE_DIR.is_dir():
+        return voices
+
+    references = sorted(VOICE_DIR.glob("*.wav"), key=lambda path: path.stem.casefold())
+    for path in references:
+        voice_id = path.stem
+        if voice_id == "default" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", voice_id):
+            continue
+        voices.append({"id": voice_id, "label": voice_id.replace("_", " ").replace("-", " ").title(), "reference": True})
+    return voices
+
+
 def encode_wav(wav: torch.Tensor, sample_rate: int, speed: float) -> bytes:
     buffer = io.BytesIO()
     torchaudio.save(buffer, wav.cpu(), sample_rate, format="wav")
@@ -77,6 +94,11 @@ def encode_wav(wav: torch.Tensor, sample_rate: int, speed: float) -> bytes:
 @app.get("/health")
 def health() -> dict[str, str | bool]:
     return {"ok": True, "provider": "chatterbox", "device": DEVICE, "model_loaded": _model is not None}
+
+
+@app.get("/voices")
+def voices() -> dict[str, list[dict[str, str | bool]]]:
+    return {"voices": available_voices()}
 
 
 @app.post("/v1/audio/speech")

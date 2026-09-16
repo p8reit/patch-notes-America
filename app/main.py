@@ -28,6 +28,7 @@ CHATTERBOX_URL = os.getenv("CHATTERBOX_URL", "http://chatterbox:8000").rstrip("/
 CHATTERBOX_PUBLIC_URL = os.getenv("CHATTERBOX_PUBLIC_URL", "").strip().rstrip("/")
 CHATTERBOX_TTS_PATH = os.getenv("CHATTERBOX_TTS_PATH", "/v1/audio/speech")
 CHATTERBOX_HEALTH_PATH = os.getenv("CHATTERBOX_HEALTH_PATH", "/health")
+CHATTERBOX_VOICES_PATH = os.getenv("CHATTERBOX_VOICES_PATH", "/voices")
 CHATTERBOX_PUBLIC_PORT = int(os.getenv("CHATTERBOX_PUBLIC_PORT", "8000"))
 CHATTERBOX_TIMEOUT_SECONDS = float(os.getenv("CHATTERBOX_TIMEOUT_SECONDS", "600"))
 DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "default")
@@ -462,6 +463,18 @@ async def chatterbox_status() -> dict:
         if response.headers.get("content-type", "").startswith("application/json"):
             return response.json()
         return {"detail": response.text[:200] or "Chatterbox is reachable"}
+
+
+async def chatterbox_voices() -> list[dict[str, Any]]:
+    """Fetch the voices that the bundled Chatterbox service can actually use."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(chatterbox_endpoint(CHATTERBOX_VOICES_PATH))
+        response.raise_for_status()
+    payload = response.json()
+    voices = payload.get("voices", [])
+    if not isinstance(voices, list):
+        raise ValueError("Chatterbox returned an invalid voice list")
+    return voices
 
 
 def describe_chatterbox_error(exc: httpx.HTTPError) -> str:
@@ -960,6 +973,15 @@ async def index(request: Request):
 @app.get("/api/host-profiles")
 async def get_host_profiles():
     return {"hosts": load_host_profiles()}
+
+
+@app.get("/api/chatterbox-voices")
+async def get_chatterbox_voices():
+    try:
+        voices = await chatterbox_voices()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Could not load Chatterbox voices: {exc}") from exc
+    return {"voices": voices}
 
 
 @app.post("/api/host-profiles")

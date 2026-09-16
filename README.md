@@ -139,6 +139,12 @@ For voice cloning, place a clean, authorized reference recording at
 without `.wav`. The special ID `default` needs no reference recording. Do not
 clone a voice without the speaker's permission.
 
+The host editor lists every valid `.wav` file in `voices/` as a selectable voice.
+After adding or removing a file, click **Refresh voices** (or reload the page) to
+update all host voice menus. Each host must select a different reference if you
+want the cast members to sound different; Chatterbox's `default` option is one
+built-in voice, not a collection of presets.
+
 ### Removing containers from older versions
 
 The recommended startup script removes orphaned services automatically. For a
