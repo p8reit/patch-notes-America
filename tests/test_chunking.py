@@ -95,11 +95,16 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
     attempts = 0
 
     async def flaky_synthesis(text, voice, tempo, destination, **settings):
+        import struct
+        import wave
+
         nonlocal attempts
         attempts += 1
         if attempts < 3:
             raise httpx.ConnectError("backend restarted")
-        destination.write_bytes(b"RIFF" + b"\x00" * 44)
+        with wave.open(str(destination), "wb") as output:
+            output.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+            output.writeframes(b"".join(struct.pack("<h", 10000) for _ in range(800)))
 
     async def no_delay(_seconds):
         return None

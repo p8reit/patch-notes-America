@@ -67,10 +67,9 @@ def test_speaker_names_are_case_sensitive():
     assert "Unknown host tag [alex]" in exc.value.detail
 
 
-def test_redundant_speaker_tag_is_rejected():
-    with pytest.raises(HTTPException) as exc:
-        parse_speaker_script("Hello.\n\n[Major Patchnotes]\nStill talking.", hosts())
-    assert "only when the speaker changes" in exc.value.detail
+def test_redundant_speaker_tag_is_ignored_without_creating_a_transition():
+    sections = parse_speaker_script("Hello.\n\n[Major Patchnotes]\nStill talking.", hosts())
+    assert sections == [{"host": "Major Patchnotes", "text": "Hello.\n\nStill talking."}]
 
 
 def test_dialogue_cannot_share_speaker_tag_line():
