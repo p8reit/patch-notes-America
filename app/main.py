@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -13,17 +14,21 @@ from typing import Any, List
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
+from starlette.background import BackgroundTask
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", APP_ROOT / "output"))
 CONFIG_DIR = Path(os.getenv("CONFIG_DIR", APP_ROOT / "config"))
+DATA_DIR = Path(os.getenv("DATA_DIR", APP_ROOT / "data"))
+VOICE_DIR = DATA_DIR / "voices"
 HOST_PROFILES_FILE = CONFIG_DIR / "host_profiles.json"
+MAX_VOICE_UPLOAD_BYTES = int(os.getenv("MAX_VOICE_UPLOAD_MB", "50")) * 1024 * 1024
 CHATTERBOX_URL = os.getenv("CHATTERBOX_URL", "http://chatterbox:8000").rstrip("/")
 CHATTERBOX_PUBLIC_URL = os.getenv("CHATTERBOX_PUBLIC_URL", "").strip().rstrip("/")
 CHATTERBOX_TTS_PATH = os.getenv("CHATTERBOX_TTS_PATH", "/v1/audio/speech")
@@ -55,6 +60,9 @@ TTS_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("TTS_RETRY_DELAY_SECONDS", "1
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+VOICE_DIR.mkdir(parents=True, exist_ok=True)
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Patch Notes: America", version="0.5.0")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
@@ -154,12 +162,18 @@ def parse_hosts(hosts_json: str) -> list[dict[str, Any]]:
 
     hosts: list[dict[str, Any]] = []
     seen: set[str] = set()
+    seen_ids: set[str] = set()
     allowed_interruptions = {"low", "medium", "high"}
     for index, item in enumerate(raw_hosts, start=1):
         if not isinstance(item, dict):
             raise HTTPException(status_code=400, detail=f"Host {index} is invalid")
 
         name = _text_field(item, "name")
+        host_id = _text_field(item, "id") or uuid4().hex
+        if not re.fullmatch(r"[a-fA-F0-9]{32}", host_id):
+            raise HTTPException(status_code=400, detail=f"Host {name or index} has an invalid ID")
+        if host_id.lower() in seen_ids:
+            raise HTTPException(status_code=400, detail="Host IDs must be unique")
         voice = _text_field(item, "voice")
         try:
             tempo = float(item.get("tempo", DEFAULT_TEMPO))
@@ -213,8 +227,10 @@ def parse_hosts(hosts_json: str) -> list[dict[str, Any]]:
             raise HTTPException(status_code=400, detail=f"Traits for {name} must be a list or comma-separated text")
 
         seen.add(name.casefold())
+        seen_ids.add(host_id.lower())
         hosts.append(
             {
+                "id": host_id.lower(),
                 "name": name,
                 "role": _text_field(item, "role"),
                 "voice": voice,
@@ -228,6 +244,15 @@ def parse_hosts(hosts_json: str) -> list[dict[str, Any]]:
                 "political_posture": _text_field(item, "political_posture"),
                 "flaws": _text_field(item, "flaws"),
                 "character_notes": _text_field(item, "character_notes"),
+                "reference_audio_path": (
+                    f"voices/{host_id.lower()}/reference.wav"
+                    if _text_field(item, "reference_audio_path") else None
+                ),
+                "reference_audio_filename": _text_field(item, "reference_audio_filename") or None,
+                "reference_audio_available": bool(
+                    _text_field(item, "reference_audio_path")
+                    and (VOICE_DIR / host_id.lower() / "reference.wav").is_file()
+                ),
             }
         )
 
@@ -245,6 +270,57 @@ def load_host_profiles() -> list[dict[str, Any]]:
 
 def save_host_profiles(hosts: list[dict[str, Any]]) -> None:
     HOST_PROFILES_FILE.write_text(json.dumps(hosts, indent=2) + "\n", encoding="utf-8")
+
+
+def find_host(host_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not re.fullmatch(r"[a-fA-F0-9]{32}", host_id):
+        raise HTTPException(status_code=404, detail="Host not found")
+    hosts = load_host_profiles()
+    host = next((item for item in hosts if item["id"] == host_id.lower()), None)
+    if host is None:
+        raise HTTPException(status_code=404, detail="Host not found")
+    return hosts, host
+
+
+def reference_path(host: dict[str, Any]) -> Path:
+    return VOICE_DIR / host["id"] / "reference.wav"
+
+
+def voice_metadata(host: dict[str, Any]) -> dict[str, Any]:
+    configured = bool(host.get("reference_audio_path"))
+    available = configured and reference_path(host).is_file()
+    return {
+        "host_id": host["id"],
+        "reference_voice": {
+            "configured": configured,
+            "available": available,
+            "filename": host.get("reference_audio_filename") or ("reference.wav" if configured else None),
+            "playback_url": f"/api/hosts/{host['id']}/voice/audio" if available else None,
+        },
+        "exaggeration": host["exaggeration"],
+        "cfg_weight": host["cfg_weight"],
+    }
+
+
+def save_host_update(hosts: list[dict[str, Any]], host: dict[str, Any]) -> None:
+    save_host_profiles([host if item["id"] == host["id"] else item for item in hosts])
+
+
+def normalize_reference_audio(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".wav.tmp")
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
+        "-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", "-f", "wav", str(temporary),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail="Audio conversion is temporarily unavailable.") from exc
+    if result.returncode or not temporary.is_file() or not _valid_wav(temporary):
+        temporary.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="The selected file could not be decoded as audio.")
+    temporary.replace(destination)
 
 
 def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -312,11 +388,23 @@ def build_speech_chunks(
 
     for section in sections:
         host = host_lookup[section["host"]]
+        voice = host["voice"]
+        if host.get("reference_audio_path"):
+            path = reference_path(host)
+            if path.is_file():
+                voice = f"host-{host['id']}"
+            else:
+                logger.warning(
+                    "Reference voice missing for host %s (%s). Falling back to default voice.",
+                    host["name"], host["id"],
+                )
+                voice = DEFAULT_VOICE
         for text_chunk in split_script(section["text"], max_chars=max_chars):
             chunks.append(
                 {
+                    "host_id": host.get("id"),
                     "host": host["name"],
-                    "voice": host["voice"],
+                    "voice": voice,
                     "tempo": host["tempo"],
                     **{field: host.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
                     "text": text_chunk,
@@ -1027,6 +1115,101 @@ async def update_host_profiles(hosts_json: str = Form(...)):
     hosts = parse_hosts(hosts_json)
     save_host_profiles(hosts)
     return {"ok": True, "hosts": hosts, "count": len(hosts)}
+
+
+@app.post("/api/hosts/{host_id}/voice")
+async def upload_host_voice(
+    host_id: str,
+    audio: UploadFile = File(...),
+    exaggeration: float = Form(0.5),
+    cfg_weight: float = Form(0.5),
+):
+    """Validate and normalize an untrusted reference recording for one host."""
+    hosts, host = find_host(host_id)
+    suffix = Path(audio.filename or "").suffix.lower()
+    allowed = {".wav", ".mp3", ".flac", ".m4a"}
+    if suffix not in allowed:
+        raise HTTPException(status_code=415, detail="Unsupported audio format. Please upload WAV, MP3, FLAC, or M4A.")
+    declared_type = (audio.content_type or "").lower()
+    if declared_type and not (
+        declared_type.startswith("audio/")
+        or declared_type in {"application/octet-stream", "application/mp4", "video/mp4"}
+    ):
+        raise HTTPException(status_code=415, detail="Unsupported audio format. Please upload WAV, MP3, FLAC, or M4A.")
+    if not 0 <= exaggeration <= 1 or not 0 <= cfg_weight <= 1:
+        raise HTTPException(status_code=400, detail="Exaggeration and CFG weight must be between 0 and 1.")
+
+    upload = VOICE_DIR / host["id"] / f"upload{suffix}"
+    upload.parent.mkdir(parents=True, exist_ok=True)
+    size = 0
+    try:
+        with upload.open("wb") as stream:
+            while chunk := await audio.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_VOICE_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Reference audio must be no larger than {MAX_VOICE_UPLOAD_BYTES // 1024 // 1024} MB.",
+                    )
+                stream.write(chunk)
+        if not size:
+            raise HTTPException(status_code=400, detail="The selected audio file is empty.")
+        normalize_reference_audio(upload, reference_path(host))
+    finally:
+        upload.unlink(missing_ok=True)
+        await audio.close()
+
+    host["reference_audio_path"] = f"voices/{host['id']}/reference.wav"
+    host["reference_audio_filename"] = Path(audio.filename or "reference.wav").name
+    host["voice"] = DEFAULT_VOICE
+    host["exaggeration"] = exaggeration
+    host["cfg_weight"] = cfg_weight
+    save_host_update(hosts, host)
+    return voice_metadata(host)
+
+
+@app.delete("/api/hosts/{host_id}/voice")
+async def remove_host_voice(host_id: str):
+    hosts, host = find_host(host_id)
+    reference_path(host).unlink(missing_ok=True)
+    host["reference_audio_path"] = None
+    host["reference_audio_filename"] = None
+    host["voice"] = DEFAULT_VOICE
+    save_host_update(hosts, host)
+    return voice_metadata(host)
+
+
+@app.get("/api/hosts/{host_id}/voice/audio")
+async def play_host_voice(host_id: str):
+    _, host = find_host(host_id)
+    path = reference_path(host)
+    if not host.get("reference_audio_path") or not path.is_file():
+        raise HTTPException(status_code=404, detail="Reference voice file is missing.")
+    return FileResponse(path, media_type="audio/wav", filename="reference.wav")
+
+
+@app.post("/api/hosts/{host_id}/voice/preview")
+async def preview_host_voice(
+    host_id: str,
+    exaggeration: float = Form(0.5),
+    cfg_weight: float = Form(0.5),
+):
+    _, host = find_host(host_id)
+    if not 0 <= exaggeration <= 1 or not 0 <= cfg_weight <= 1:
+        raise HTTPException(status_code=400, detail="Exaggeration and CFG weight must be between 0 and 1.")
+    voice = f"host-{host['id']}" if host.get("reference_audio_path") and reference_path(host).is_file() else DEFAULT_VOICE
+    preview = OUTPUT_DIR / f"voice-preview-{uuid4().hex}.wav"
+    try:
+        await synthesize_chunk(
+            "Welcome back. Let's take a closer look at what's happening today.",
+            voice, host["tempo"], preview, exaggeration=exaggeration, cfg_weight=cfg_weight,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=describe_chatterbox_error(exc)) from exc
+    return FileResponse(
+        preview, media_type="audio/wav", filename="voice-preview.wav",
+        background=BackgroundTask(preview.unlink, missing_ok=True),
+    )
 
 
 @app.get("/api/health")

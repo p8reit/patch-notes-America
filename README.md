@@ -2,10 +2,6 @@
 
 Initial podcast-production application for turning a narration script into a finished MP3 using a locally hosted Chatterbox server.
 
-> **Voice-management redesign:** The current filename-based reference selector
-> is an interim integration. See the [Chatterbox voice-management redesign](docs/chatterbox-voice-redesign.md)
-> for the planned upload, preview, assignment, revisioning, and migration work.
-
 ## MVP features
 
 - Browser-based episode editor on port `8081`
@@ -138,16 +134,13 @@ docker compose build --no-cache app
 docker compose up -d --force-recreate app
 ```
 
-For voice cloning, place a clean, authorized reference recording at
-`voices/<voice-id>.wav`, then set that host's Chatterbox voice ID to the filename
-without `.wav`. The special ID `default` needs no reference recording. Do not
-clone a voice without the speaker's permission.
-
-The host editor lists every valid `.wav` file in `voices/` as a selectable voice.
-After adding or removing a file, click **Refresh voices** (or reload the page) to
-update all host voice menus. Each host must select a different reference if you
-want the cast members to sound different; Chatterbox's `default` option is one
-built-in voice, not a collection of presets.
+For voice cloning, open a host's **Voice** section, choose an authorized WAV,
+MP3, FLAC, or M4A recording, and wait for the upload to finish. The application
+validates and converts it to 24 kHz mono 16-bit PCM WAV, stored under
+`data/voices/<host-id>/reference.wav`. Use **Play Reference**, adjust
+Exaggeration/CFG Weight, and use **Preview Voice** before saving the cast. Do not
+clone a voice without the speaker's permission. `MAX_VOICE_UPLOAD_MB` controls
+the upload limit and defaults to 50 MB.
 
 ### Removing containers from older versions
 
@@ -160,16 +153,15 @@ docker compose down --remove-orphans
 docker compose up -d --build --remove-orphans chatterbox app
 ```
 
-This cleanup does not remove the bind-mounted `episodes/`, `output/`, or
-`config/` directories, so queued job manifests and completed chunks remain
-available when the app starts again.
+This cleanup does not remove the bind-mounted `episodes/`, `output/`, `config/`,
+or `data/` directories, so queued jobs and uploaded voices remain available.
 
 ## Generate the pilot
 
 1. Open `http://127.0.0.1:8081`.
 2. The pilot script is preloaded.
-3. Start with voice `default`, or add authorized reference WAVs. Expand **Chatterbox voice controls** on each host to tune exaggeration, CFG weight, temperature, Min P, Top P, and repetition penalty; tempo remains available as output speed control
-   under `voices/` and select their filename-based voice IDs.
+3. Open each host's **Voice** section to upload, play, tune, and preview a unique
+   reference recording. Advanced sampling controls remain available below it.
 4. Click **Generate episode**.
 5. When complete, click **Download MP3**.
 
@@ -341,7 +333,8 @@ Use `--public` instead if you want the source public.
 The application supports any number of hosts in a single episode. Use **+ Add host** in the web UI to add cast members. Each host has independent settings for:
 
 - Display/name used in the script
-- Chatterbox voice
+- Stable host ID and optional uploaded reference voice
+- Exaggeration and CFG weight (plus advanced Chatterbox controls)
 - Tempo
 
 Switch speakers by putting the configured host name on its own line inside square brackets:
@@ -360,7 +353,7 @@ Starting with the story everyone is arguing about this morning.
 Oh good. Nothing ever goes wrong after a sentence like that.
 ```
 
-Speaker names are matched case-insensitively, but every configured host must have a unique name. Text appearing before the first speaker tag is assigned to the first host, which keeps older single-host scripts compatible.
+Speaker names are matched exactly and every configured host must have a unique name. Once resolved, rendering carries the stable host ID and its voice profile. Text before the first speaker tag is assigned to the first host, which keeps older single-host scripts compatible.
 
 Generated chunk filenames include the speaker name, for example:
 
@@ -386,8 +379,13 @@ Every profile supports:
 
 ```text
 name
+id
 role
 Chatterbox voice
+reference_audio_path
+reference_audio_filename
+exaggeration
+cfg_weight
 tempo
 traits
 debate style
@@ -404,6 +402,10 @@ Use **Save cast** in the web interface to persist profile edits. The API is also
 ```text
 GET  /api/host-profiles
 POST /api/host-profiles
+POST /api/hosts/{host_id}/voice
+GET  /api/hosts/{host_id}/voice/audio
+POST /api/hosts/{host_id}/voice/preview
+DELETE /api/hosts/{host_id}/voice
 ```
 
 Episode `metadata.json` includes the complete host profiles used for that episode. This is intentional: a future transcript-generation stage can consume the exact same profile objects, keeping character voice and behavior consistent with the cast used for audio rendering.

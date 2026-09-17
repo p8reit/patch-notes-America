@@ -62,6 +62,15 @@ code { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; paddi
 .voice-details { margin-top: 16px; border-top: 1px solid #30363d; padding-top: 14px; }
 .voice-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 14px; }
 .voice-grid label { margin-bottom: 0; }
+.reference-voice { display: grid; gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid #30363d; border-radius: 10px; background: #161b22; }
+.voice-empty, .voice-configured { display: grid; gap: 12px; }
+.voice-configured audio, .preview-player { width: 100%; }
+.voice-badge { display: inline-block; margin-left: 10px; padding: 4px 8px; border-radius: 999px; background: rgba(88,166,255,.13); color: #58a6ff; font-size: .75rem; font-weight: 700; }
+.primary-voice-controls { grid-template-columns: repeat(2, 1fr); }
+.primary-voice-controls output { color: #58a6ff; float: right; }
+input[type="range"] { padding: 8px 0; accent-color: #238636; }
+.voice-preview-actions { margin: 16px 0; }
+.advanced-voice-controls { margin-top: 14px; }
 .character-grid { display: grid; grid-template-columns: 1fr 190px; gap: 14px; margin-top: 16px; }
 .character-grid label { margin-bottom: 0; }
 .character-grid .wide { grid-column: 1 / -1; }

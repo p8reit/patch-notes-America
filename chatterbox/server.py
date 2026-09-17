@@ -52,7 +52,8 @@ def voice_prompt(voice: str) -> str | None:
         return None
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", voice):
         raise HTTPException(status_code=422, detail="Voice must be a filename-safe voice ID")
-    path = VOICE_DIR / f"{voice}.wav"
+    host_match = re.fullmatch(r"host-([a-f0-9]{32})", voice)
+    path = VOICE_DIR / host_match.group(1) / "reference.wav" if host_match else VOICE_DIR / f"{voice}.wav"
     if not path.is_file():
         raise HTTPException(
             status_code=422,

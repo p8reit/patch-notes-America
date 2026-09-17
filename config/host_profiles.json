@@ -24,7 +24,10 @@
     "temperature": 0.75,
     "min_p": 0.05,
     "top_p": 1.0,
-    "repetition_penalty": 1.2
+    "repetition_penalty": 1.2,
+    "id": "ac14c9cfe329571fb34dcb0edecfcf11",
+    "reference_audio_path": null,
+    "reference_audio_filename": null
   },
   {
     "name": "Marcus Reed",
@@ -51,7 +54,10 @@
     "temperature": 0.85,
     "min_p": 0.05,
     "top_p": 1.0,
-    "repetition_penalty": 1.2
+    "repetition_penalty": 1.2,
+    "id": "df5d898dc65752f7824c81a4adff521d",
+    "reference_audio_path": null,
+    "reference_audio_filename": null
   },
   {
     "name": "Julian Cross",
@@ -78,6 +84,9 @@
     "temperature": 0.72,
     "min_p": 0.05,
     "top_p": 1.0,
-    "repetition_penalty": 1.2
+    "repetition_penalty": 1.2,
+    "id": "0f4c80c769475cbf97e152ff389a8f9d",
+    "reference_audio_path": null,
+    "reference_audio_filename": null
   }
 ]
