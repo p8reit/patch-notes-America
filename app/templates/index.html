@@ -94,6 +94,21 @@
         Text before the first speaker tag is spoken by the first host.
       </p>
 
+      <section class="intro-section">
+        <div class="section-heading"><div><p class="eyebrow">SHOW OPEN</p><h2>Episode intro</h2></div></div>
+        <p class="hint">Optionally start with a music or sound-design track, then have the hosts deliver a short introduction before the main script.</p>
+        <label>
+          Intro track
+          <input id="intro-track" name="intro_track" type="file" accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,audio/*">
+          <span class="hint">WAV, MP3, FLAC, M4A, AAC, or OGG. The track plays in full before the host intro lines.</span>
+        </label>
+        <label>
+          Host intro lines
+          <textarea id="intro-lines" name="intro_lines" rows="6" placeholder="Welcome to Patch Notes: America.&#10;&#10;[Marcus Reed]&#10;Here is what we are covering today."></textarea>
+          <span class="hint">Use the same speaker-tag format as the episode script. These lines play after the intro track and before the main episode.</span>
+        </label>
+      </section>
+
       <label>
         Audio chunks per segment
         <input id="chunks-per-segment" name="chunks_per_segment" type="number" min="1" max="100" value="8">
@@ -286,6 +301,8 @@
       ['#target-minutes', 'The approximate length the conversation writer should target.'],
       ['#conversation-tone', 'Words that guide the mood, pacing, and editorial style of the generated discussion.'],
       ['#episode-script', 'The editable transcript that will be split by speaker and rendered into audio.'],
+      ['#intro-track', 'Optional music or sound design that plays in full at the very start of the finished episode.'],
+      ['#intro-lines', 'Optional spoken opening lines; use the same host tags as the main episode script.'],
       ['#chunks-per-segment', 'The number of audio chunks grouped into each checkpointed output segment.'],
       ['.host-name', 'The speaker name used in script tags and episode metadata.'],
       ['.host-role', 'A short description of this host’s place in the conversation.'],

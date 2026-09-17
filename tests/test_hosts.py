@@ -40,6 +40,20 @@ def test_build_chunks_preserves_voice_and_tempo():
     assert chunks[1]["tempo"] == 1.05
 
 
+def test_episode_chunks_put_host_intro_lines_before_main_script():
+    from app.main import build_episode_speech_chunks
+
+    chunks = build_episode_speech_chunks(
+        "Main story starts now.",
+        hosts(),
+        "Welcome to the show.\n\n[Alex]\nHere is what is ahead.",
+        max_chars=500,
+    )
+
+    assert [chunk["section"] for chunk in chunks] == ["host_intro", "host_intro", "episode"]
+    assert [chunk["host"] for chunk in chunks] == ["Major Patchnotes", "Alex", "Major Patchnotes"]
+
+
 def test_unknown_host_tag_is_rejected():
     with pytest.raises(HTTPException) as exc:
         parse_speaker_script("[Nobody]\nHello", hosts())

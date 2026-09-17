@@ -7,6 +7,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Browser-based episode editor on port `8081`
 - Preloaded pilot narration script
 - Per-host Chatterbox reference voice, tempo, exaggeration, CFG weight, temperature, Min P, Top P, and repetition penalty
+- Optional uploaded intro track and multi-host spoken intro lines before the episode script
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
@@ -164,6 +165,10 @@ or `data/` directories, so queued jobs and uploaded voices remain available.
    reference recording. Advanced sampling controls remain available below it.
 4. Click **Generate episode**.
 5. When complete, click **Download MP3**.
+
+To create a show open, select an **Intro track** and add **Host intro lines** using
+the same `[Host Name]` speaker tags as the main script. The finished MP3 plays
+the full track first, followed by the rendered host introduction and episode.
 
 Generated files are retained under:
 
