@@ -29,6 +29,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", APP_ROOT / "data"))
 VOICE_DIR = DATA_DIR / "voices"
 HOST_PROFILES_FILE = CONFIG_DIR / "host_profiles.json"
 MAX_VOICE_UPLOAD_BYTES = int(os.getenv("MAX_VOICE_UPLOAD_MB", "50")) * 1024 * 1024
+MAX_INTRO_TRACK_BYTES = int(os.getenv("MAX_INTRO_TRACK_MB", "50")) * 1024 * 1024
 CHATTERBOX_URL = os.getenv("CHATTERBOX_URL", "http://chatterbox:8000").rstrip("/")
 CHATTERBOX_PUBLIC_URL = os.getenv("CHATTERBOX_PUBLIC_URL", "").strip().rstrip("/")
 CHATTERBOX_TTS_PATH = os.getenv("CHATTERBOX_TTS_PATH", "/v1/audio/speech")
@@ -323,6 +324,24 @@ def normalize_reference_audio(source: Path, destination: Path) -> None:
     temporary.replace(destination)
 
 
+def normalize_intro_track(source: Path, destination: Path) -> None:
+    """Convert an uploaded intro into the same WAV format used by Chatterbox."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".wav.tmp")
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
+        "-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", "-f", "wav", str(temporary),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail="Intro track conversion is temporarily unavailable.") from exc
+    if result.returncode or not _valid_wav(temporary):
+        temporary.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="The intro track could not be decoded as audio.")
+    temporary.replace(destination)
+
+
 def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Split a script into ordered speaker sections.
 
@@ -411,6 +430,21 @@ def build_speech_chunks(
                 }
             )
     return chunks
+
+
+def build_episode_speech_chunks(
+    script: str,
+    hosts: list[dict[str, Any]],
+    intro_lines: str = "",
+    max_chars: int = MAX_CHARS,
+) -> list[dict[str, Any]]:
+    """Build optional host introductions followed by the main episode script."""
+    intro_chunks = build_speech_chunks(intro_lines, hosts, max_chars=max_chars) if intro_lines.strip() else []
+    episode_chunks = build_speech_chunks(script, hosts, max_chars=max_chars)
+    return [
+        *({**chunk, "section": "host_intro"} for chunk in intro_chunks),
+        *({**chunk, "section": "episode"} for chunk in episode_chunks),
+    ]
 
 
 def build_conversation_prompt(
@@ -877,6 +911,16 @@ async def process_generation_job(job_id: str) -> None:
     job["worker_pid"] = os.getpid()
     _write_job(job_dir, job)
     all_chunk_paths: list[Path] = []
+    intro_track = job.get("intro", {}).get("track")
+    if intro_track:
+        intro_path = job_dir / intro_track
+        if not _valid_wav(intro_path):
+            job["status"] = "failed"
+            job["error"] = "The saved intro track is missing or invalid"
+            job["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _write_job(job_dir, job)
+            return
+        all_chunk_paths.append(intro_path)
     chunk_number = 0
     try:
         for segment in job["segments"]:
@@ -1261,12 +1305,14 @@ async def create_generation_job(
     script: str = Form(...),
     hosts_json: str = Form(...),
     chunks_per_segment: int = Form(8),
+    intro_lines: str = Form(""),
+    intro_track: UploadFile | None = File(None),
 ):
     """Queue an episode as durable, independently checkpointed segment jobs."""
     if not script.strip():
         raise HTTPException(status_code=400, detail="Script cannot be empty")
     hosts = parse_hosts(hosts_json)
-    speech_chunks = build_speech_chunks(script, hosts)
+    speech_chunks = build_episode_speech_chunks(script, hosts, intro_lines)
     if not speech_chunks:
         raise HTTPException(status_code=400, detail="No speakable text found")
     segments = build_generation_segments(speech_chunks, chunks_per_segment)
@@ -1275,6 +1321,28 @@ async def create_generation_job(
     (job_dir / "chunks").mkdir(parents=True)
     (job_dir / "segments").mkdir()
     (job_dir / "script.txt").write_text(clean_script(script), encoding="utf-8")
+    intro: dict[str, Any] = {"lines": clean_script(intro_lines), "track": None, "track_filename": None}
+    if intro_lines.strip():
+        (job_dir / "intro-lines.txt").write_text(clean_script(intro_lines), encoding="utf-8")
+    if intro_track and intro_track.filename:
+        suffix = Path(intro_track.filename).suffix.lower()
+        if suffix not in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg"}:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="Intro track must be WAV, MP3, FLAC, M4A, AAC, or OGG")
+        uploaded = await intro_track.read(MAX_INTRO_TRACK_BYTES + 1)
+        if len(uploaded) > MAX_INTRO_TRACK_BYTES:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(status_code=413, detail="Intro track is too large")
+        source = job_dir / f"intro-upload{suffix}"
+        source.write_bytes(uploaded)
+        try:
+            normalize_intro_track(source, job_dir / "intro-track.wav")
+        except HTTPException:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
+        finally:
+            source.unlink(missing_ok=True)
+        intro.update({"track": "intro-track.wav", "track_filename": Path(intro_track.filename).name})
     job = {
         "id": job_id,
         "title": title,
@@ -1282,6 +1350,7 @@ async def create_generation_job(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "hosts": hosts,
         "media": ["audio"],
+        "intro": intro,
         "segments": segments,
         "download_url": None,
         "error": None,

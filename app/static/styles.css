@@ -52,6 +52,8 @@ button:disabled { opacity: .55; cursor: wait; }
 .section-heading h2 { margin: 2px 0 0; }
 .hint { color: #8b949e; font-size: .92rem; line-height: 1.5; }
 .script-help { margin-top: -8px; }
+.intro-section { margin: 24px 0; padding: 18px; border: 1px solid #30363d; border-radius: 12px; background: #0d1117; }
+.intro-section h2 { margin: 2px 0 0; }
 code { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 2px 6px; }
 .host-row { border: 1px solid #30363d; background: #0d1117; border-radius: 12px; padding: 16px; margin: 12px 0; }
 .host-row label { margin-bottom: 0; }
