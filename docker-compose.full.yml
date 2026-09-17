@@ -19,7 +19,7 @@ services:
     ports:
       - "${CHATTERBOX_BIND_ADDRESS:-127.0.0.1}:${CHATTERBOX_PORT:-8000}:8000"
     volumes:
-      - ./voices:/voices:ro
+      - ./data/voices:/voices:ro
       - chatterbox-models:/models
     restart: unless-stopped
 
@@ -44,6 +44,8 @@ services:
       EPISODES_DIR: /app/episodes
       OUTPUT_DIR: /app/output
       CONFIG_DIR: /app/config
+      DATA_DIR: /app/data
+      MAX_VOICE_UPLOAD_MB: ${MAX_VOICE_UPLOAD_MB:-50}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
       OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-https://api.openai.com/v1/responses}
@@ -62,6 +64,7 @@ services:
       - ./episodes:/app/episodes
       - ./output:/app/output
       - ./config:/app/config
+      - ./data:/app/data
     restart: unless-stopped
 
 volumes:

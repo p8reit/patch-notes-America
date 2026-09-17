@@ -40,7 +40,7 @@
           </div>
         </div>
         <p class="hint">Hosts are persistent characters. Audio settings drive Chatterbox; personality fields are retained for transcript generation and episode metadata.</p>
-        <p class="hint">Voice choices come from WAV reference files in <code>voices/</code>. <button id="refresh-voices" class="secondary compact-button" type="button">Refresh voices</button> <span id="voice-status"></span></p>
+        <p class="hint">Upload a unique reference recording for each host below. Legacy shared WAV choices remain available for existing profiles. <button id="refresh-voices" class="secondary compact-button" type="button">Refresh legacy voices</button> <span id="voice-status"></span></p>
         <div id="hosts"></div>
         <input id="hosts-json" name="hosts_json" type="hidden">
         <p id="cast-status" class="hint"></p>
@@ -147,6 +147,7 @@
         <div>
           <strong class="host-number">Host</strong>
           <span class="host-role-label"></span>
+          <span class="voice-badge">Voice: Default</span>
         </div>
         <button class="remove-host danger-link" type="button">Remove</button>
       </div>
@@ -161,7 +162,7 @@
           <input class="host-role" placeholder="Southern Everyman">
         </label>
         <label>
-          Chatterbox voice
+          Legacy voice fallback
           <select class="host-voice" required></select>
         </label>
         <label>
@@ -170,17 +171,45 @@
         </label>
       </div>
 
-      <details class="voice-details">
-        <summary>Chatterbox voice controls</summary>
-        <p class="hint">Tune synthesis for this host. These values are sent to Chatterbox for every spoken chunk.</p>
-        <div class="voice-grid">
-          <label>Exaggeration<input class="host-exaggeration" type="number" min="0" max="2" step="0.01" required value="0.5"></label>
-          <label>CFG weight<input class="host-cfg-weight" type="number" min="0" max="1" step="0.01" required value="0.5"></label>
+      <details class="voice-details" open>
+        <summary>Voice</summary>
+        <p class="hint">Reference audio determines this host's voice, accent, pitch, and general vocal character.</p>
+        <div class="reference-voice">
+          <strong>Reference Voice</strong>
+          <div class="voice-empty">
+            <input class="voice-file" type="file" accept=".wav,.mp3,.flac,.m4a,audio/wav,audio/mpeg,audio/flac,audio/mp4">
+            <span class="hint">No file selected</span>
+          </div>
+          <div class="voice-configured" hidden>
+            <span class="voice-filename"></span>
+            <audio class="reference-player" controls preload="none"></audio>
+            <div class="section-actions">
+              <button class="play-reference secondary" type="button">Play Reference</button>
+              <button class="replace-reference secondary" type="button">Replace</button>
+              <button class="remove-reference danger-link" type="button">Remove</button>
+            </div>
+          </div>
+          <p class="voice-missing bad" hidden>Reference voice file is missing. Upload a replacement.</p>
+          <p class="voice-upload-status hint"></p>
+        </div>
+        <div class="voice-grid primary-voice-controls">
+          <label>Exaggeration <output class="exaggeration-value">0.50</output><input class="host-exaggeration" type="range" min="0" max="1" step="0.05" required value="0.5"></label>
+          <label>CFG Weight <output class="cfg-value">0.50</output><input class="host-cfg-weight" type="range" min="0" max="1" step="0.05" required value="0.5"></label>
+        </div>
+        <div class="actions voice-preview-actions">
+          <button class="preview-voice secondary" type="button">Preview Voice</button>
+          <span class="preview-status hint"></span>
+        </div>
+        <audio class="preview-player" controls hidden></audio>
+        <details class="advanced-voice-controls">
+          <summary>Advanced Chatterbox controls</summary>
+          <div class="voice-grid">
           <label>Temperature<input class="host-temperature" type="number" min="0.05" max="5" step="0.01" required value="0.8"></label>
           <label>Min P<input class="host-min-p" type="number" min="0" max="1" step="0.01" required value="0.05"></label>
           <label>Top P<input class="host-top-p" type="number" min="0" max="1" step="0.01" required value="1.0"></label>
           <label>Repetition penalty<input class="host-repetition-penalty" type="number" min="0" max="2" step="0.01" required value="1.2"></label>
-        </div>
+          </div>
+        </details>
       </details>
 
       <details class="character-details">
@@ -341,9 +370,102 @@
       }
     }
 
+    function renderVoiceState(row) {
+      const configured = Boolean(row.dataset.referencePath);
+      const available = configured && row.dataset.referenceAvailable === 'true';
+      row.querySelector('.voice-empty').hidden = available;
+      row.querySelector('.voice-configured').hidden = !available;
+      row.querySelector('.voice-missing').hidden = !configured || available;
+      row.querySelector('.voice-filename').textContent = row.dataset.referenceFilename || 'reference.wav';
+      row.querySelector('.voice-badge').textContent = `Voice: ${available ? 'Custom' : 'Default'}`;
+      const player = row.querySelector('.reference-player');
+      player.src = available ? `/api/hosts/${row.dataset.hostId}/voice/audio` : '';
+    }
+
+    async function persistHosts() {
+      const form = new FormData();
+      form.append('hosts_json', JSON.stringify(serializeHosts()));
+      const response = await fetch('/api/host-profiles', {method: 'POST', body: form});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Could not save host');
+      return data;
+    }
+
+    function bindVoiceEditor(row) {
+      const fileInput = row.querySelector('.voice-file');
+      const status = row.querySelector('.voice-upload-status');
+      const exaggeration = row.querySelector('.host-exaggeration');
+      const cfg = row.querySelector('.host-cfg-weight');
+      const updateValues = () => {
+        row.querySelector('.exaggeration-value').textContent = Number(exaggeration.value).toFixed(2);
+        row.querySelector('.cfg-value').textContent = Number(cfg.value).toFixed(2);
+      };
+      exaggeration.addEventListener('input', updateValues);
+      cfg.addEventListener('input', updateValues);
+      updateValues();
+
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+        if (!/\.(wav|mp3|flac|m4a)$/i.test(file.name)) {
+          status.textContent = 'Unsupported audio format. Please upload WAV, MP3, FLAC, or M4A.';
+          fileInput.value = ''; return;
+        }
+        const controls = row.querySelectorAll('button, input');
+        controls.forEach(control => control.disabled = true);
+        status.textContent = 'Uploading reference voice...';
+        try {
+          await persistHosts();
+          const form = new FormData();
+          form.append('audio', file);
+          form.append('exaggeration', exaggeration.value);
+          form.append('cfg_weight', cfg.value);
+          const response = await fetch(`/api/hosts/${row.dataset.hostId}/voice`, {method: 'POST', body: form});
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || 'Could not upload reference voice');
+          row.dataset.referencePath = `voices/${row.dataset.hostId}/reference.wav`;
+          row.dataset.referenceFilename = data.reference_voice.filename;
+          row.dataset.referenceAvailable = String(data.reference_voice.available);
+          renderVoiceState(row);
+          status.textContent = 'Reference voice uploaded successfully.';
+        } catch (error) { status.textContent = error.message; }
+        finally { controls.forEach(control => control.disabled = false); fileInput.value = ''; }
+      });
+      row.querySelector('.replace-reference').addEventListener('click', () => fileInput.click());
+      row.querySelector('.play-reference').addEventListener('click', () => row.querySelector('.reference-player').play());
+      row.querySelector('.remove-reference').addEventListener('click', async () => {
+        status.textContent = 'Removing reference voice...';
+        try {
+          const response = await fetch(`/api/hosts/${row.dataset.hostId}/voice`, {method: 'DELETE'});
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || 'Could not remove reference voice');
+          row.dataset.referencePath = ''; row.dataset.referenceFilename = ''; row.dataset.referenceAvailable = 'false';
+          renderVoiceState(row); status.textContent = 'Reference voice removed. This host now uses the default voice.';
+        } catch (error) { status.textContent = error.message; }
+      });
+      row.querySelector('.preview-voice').addEventListener('click', async (event) => {
+        const button = event.currentTarget; const previewStatus = row.querySelector('.preview-status');
+        button.disabled = true; previewStatus.textContent = 'Generating voice preview...';
+        try {
+          const form = new FormData(); form.append('exaggeration', exaggeration.value); form.append('cfg_weight', cfg.value);
+          const response = await fetch(`/api/hosts/${row.dataset.hostId}/voice/preview`, {method: 'POST', body: form});
+          if (!response.ok) { const data = await response.json(); throw new Error(data.detail || 'Voice preview failed'); }
+          const player = row.querySelector('.preview-player');
+          if (player.dataset.objectUrl) URL.revokeObjectURL(player.dataset.objectUrl);
+          player.dataset.objectUrl = URL.createObjectURL(await response.blob()); player.src = player.dataset.objectUrl;
+          player.hidden = false; await player.play(); previewStatus.textContent = 'Voice preview ready.';
+        } catch (error) { previewStatus.textContent = error.message; }
+        finally { button.disabled = false; }
+      });
+    }
+
     function addHost(host = {}) {
       const fragment = hostTemplate.content.cloneNode(true);
       const row = fragment.querySelector('.host-row');
+      row.dataset.hostId = host.id || crypto.randomUUID().replaceAll('-', '');
+      row.dataset.referencePath = host.reference_audio_path || '';
+      row.dataset.referenceFilename = host.reference_audio_filename || '';
+      row.dataset.referenceAvailable = String(Boolean(host.reference_audio_available));
       row.querySelector('.host-name').value = host.name || '';
       row.querySelector('.host-role').value = host.role || '';
       populateVoiceSelect(row.querySelector('.host-voice'), host.voice || '{{ default_voice }}');
@@ -362,6 +484,8 @@
       row.querySelector('.host-political-posture').value = host.political_posture || '';
       row.querySelector('.host-flaws').value = host.flaws || '';
       row.querySelector('.host-character-notes').value = host.character_notes || '';
+      bindVoiceEditor(row);
+      renderVoiceState(row);
       row.querySelector('.remove-host').addEventListener('click', () => {
         row.remove();
         renumberHosts();
@@ -373,6 +497,7 @@
 
     function serializeHosts() {
       const hosts = [...hostsContainer.querySelectorAll('.host-row')].map((row) => ({
+        id: row.dataset.hostId,
         name: row.querySelector('.host-name').value.trim(),
         role: row.querySelector('.host-role').value.trim(),
         voice: row.querySelector('.host-voice').value.trim(),
@@ -391,6 +516,8 @@
         political_posture: row.querySelector('.host-political-posture').value.trim(),
         flaws: row.querySelector('.host-flaws').value.trim(),
         character_notes: row.querySelector('.host-character-notes').value.trim(),
+        reference_audio_path: row.dataset.referencePath || null,
+        reference_audio_filename: row.dataset.referenceFilename || null,
       }));
       hostsJson.value = JSON.stringify(hosts);
       return hosts;
