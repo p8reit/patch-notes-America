@@ -14,7 +14,7 @@ h1 { margin: 0; font-size: clamp(2.2rem, 6vw, 4.5rem); line-height: .95; }
 .status-card div { display: flex; justify-content: space-between; gap: 16px; }
 .ok { color: #3fb950; }
 .bad { color: #f85149; }
-label { display: grid; gap: 8px; margin-bottom: 18px; font-weight: 600; }
+label { display: grid; gap: 8px; margin-bottom: 18px; font-weight: 600; position: relative; padding-right: 28px; }
 input, textarea { width: 100%; border: 1px solid #30363d; background: #0d1117; color: #e8ecf2; border-radius: 10px; padding: 12px 14px; font: inherit; }
 textarea { resize: vertical; line-height: 1.5; }
 .grid { display: grid; grid-template-columns: 1fr 180px; gap: 16px; }
@@ -37,6 +37,14 @@ button:disabled { opacity: .55; cursor: wait; }
 .worker-note { margin: 4px 0 0; }
 @media (max-width: 700px) { .job-row { grid-template-columns: 1fr auto; } .job-row > :last-child { grid-column: 1 / -1; } }
 @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } .status-card div { flex-direction: column; } }
+
+/* Contextual setting help */
+.setting-info { position: absolute; top: -2px; right: 0; z-index: 2; }
+.setting-info-button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 1px solid #58a6ff; border-radius: 50%; background: transparent; color: #58a6ff; font-size: .75rem; font-weight: 800; line-height: 1; }
+.setting-info-button:hover, .setting-info-button:focus-visible, .setting-info.is-open .setting-info-button { color: #fff; background: #1f6feb; outline: none; }
+.setting-info-button:focus-visible { box-shadow: 0 0 0 3px rgba(88,166,255,.3); }
+.setting-tooltip { position: absolute; top: 28px; right: 0; display: none; width: min(280px, 75vw); padding: 10px 12px; border: 1px solid #484f58; border-radius: 8px; background: #21262d; box-shadow: 0 8px 24px rgba(0,0,0,.4); color: #e8ecf2; font-size: .8rem; font-weight: 400; line-height: 1.4; }
+.setting-info:hover .setting-tooltip, .setting-info:focus-within .setting-tooltip, .setting-info.is-open .setting-tooltip { display: block; }
 
 /* Multi-host controls */
 .hosts-section { margin: 8px 0 22px; }
