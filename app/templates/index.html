@@ -273,6 +273,68 @@
       return element.innerHTML;
     }
 
+    const settingHelp = [
+      ['input[name="title"]', 'The episode name used in the render queue, saved files, and episode metadata.'],
+      ['#packet-angle', 'The common theme that should connect every story in this research packet.'],
+      ['.story-headline', 'A short name that identifies this story in the research packet.'],
+      ['.story-importance', 'Controls how much attention the conversation draft gives this story.'],
+      ['.story-sources', 'One source or URL per line for facts the draft should rely on.'],
+      ['.story-facts', 'Confirmed details the conversation can present as fact.'],
+      ['.story-uncertain', 'Claims, open questions, or context that the hosts should qualify rather than state as fact.'],
+      ['.story-angles', 'Questions and perspectives the hosts should explore while discussing this story.'],
+      ['#story-notes', 'Source material for quickly drafting a single-story conversation.'],
+      ['#target-minutes', 'The approximate length the conversation writer should target.'],
+      ['#conversation-tone', 'Words that guide the mood, pacing, and editorial style of the generated discussion.'],
+      ['#episode-script', 'The editable transcript that will be split by speaker and rendered into audio.'],
+      ['#chunks-per-segment', 'The number of audio chunks grouped into each checkpointed output segment.'],
+      ['.host-name', 'The speaker name used in script tags and episode metadata.'],
+      ['.host-role', 'A short description of this host’s place in the conversation.'],
+      ['.host-voice', 'The saved Chatterbox voice used when this host has no uploaded reference recording.'],
+      ['.host-tempo', 'Playback speed for this host; 1.0 is normal, lower is slower, and higher is faster.'],
+      ['.voice-file', 'A clean recording used by Chatterbox to reproduce this host’s voice.'],
+      ['.host-exaggeration', 'Controls emotional expressiveness; higher values produce a more animated delivery.'],
+      ['.host-cfg-weight', 'Controls how closely delivery follows the reference voice; lower values can sound more natural.'],
+      ['.host-temperature', 'Controls generation variation; higher values are less predictable.'],
+      ['.host-min-p', 'Filters unlikely speech choices relative to the most likely choice.'],
+      ['.host-top-p', 'Limits speech choices to the most likely cumulative probability range.'],
+      ['.host-repetition-penalty', 'Discourages repeated sounds or phrases; higher values apply a stronger penalty.'],
+      ['.host-traits', 'Comma-separated personality traits used when writing this host’s dialogue.'],
+      ['.host-interruption', 'How often this host should jump into another speaker’s turn.'],
+      ['.host-debate-style', 'How this host makes arguments, challenges claims, and handles disagreement.'],
+      ['.host-humor-style', 'The kind of jokes, wit, or comic timing associated with this host.'],
+      ['.host-sentence-style', 'Typical vocabulary, sentence length, rhythm, and verbal habits for this host.'],
+      ['.host-political-posture', 'The host’s political perspective and the boundaries of that viewpoint.'],
+      ['.host-flaws', 'Biases, blind spots, or weaknesses that keep the character believable.'],
+      ['.host-character-notes', 'Additional background and continuity details for writing this character.'],
+      ['#clip-start', 'The timestamp where the social clip begins.'],
+      ['#clip-end', 'The timestamp where the social clip ends.'],
+      ['#clip-aspect', 'The video dimensions used for the rendered social clip.'],
+      ['#clip-title', 'The headline displayed on the rendered social clip.'],
+    ];
+
+    function addSettingInfo(root = document) {
+      root.querySelectorAll('label').forEach((label) => {
+        if (label.querySelector('.setting-info')) return;
+        const control = label.querySelector('input, textarea, select');
+        if (!control) return;
+        const match = settingHelp.find(([selector]) => control.matches(selector));
+        const labelText = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+        const settingName = labelText?.textContent.trim() || control.name || 'setting';
+        const helpText = match?.[1] || `Choose the ${settingName.toLowerCase()} for this item.`;
+        const helpId = `setting-help-${crypto.randomUUID()}`;
+        const info = document.createElement('span');
+        info.className = 'setting-info';
+        info.innerHTML = `<button type="button" class="setting-info-button" aria-label="About ${escapeHtml(settingName)}" aria-describedby="${helpId}" aria-expanded="false">?</button><span id="${helpId}" class="setting-tooltip" role="tooltip">${escapeHtml(helpText)}</span>`;
+        info.querySelector('button').addEventListener('click', (event) => {
+          event.preventDefault();
+          const button = event.currentTarget;
+          const isOpen = info.classList.toggle('is-open');
+          button.setAttribute('aria-expanded', String(isOpen));
+        });
+        label.insertBefore(info, control);
+      });
+    }
+
     function renderJobs(jobs, workers = 1) {
       const list = document.getElementById('job-list');
       if (!jobs.length) { list.innerHTML = '<p class="hint">No audio jobs have been submitted yet.</p>'; return; }
@@ -492,6 +554,7 @@
       });
       bindRoleLabel(row);
       hostsContainer.appendChild(fragment);
+      addSettingInfo(row);
       renumberHosts();
     }
 
@@ -582,6 +645,7 @@
       wrap.querySelector('.story-importance').value = data.importance || 'medium';
       wrap.querySelector('.remove-story').onclick = () => wrap.remove();
       document.getElementById('packet-stories').appendChild(wrap);
+      addSettingInfo(wrap);
     }
 
     function serializePacket() {
@@ -733,6 +797,7 @@
     });
 
     initialProfiles.forEach(addHost);
+    addSettingInfo();
     refreshVoices();
     updateHealth();
     refreshJobs().catch(err => { document.getElementById('job-list').innerHTML = `<p class="job-error">${escapeHtml(err.message)}</p>`; });
