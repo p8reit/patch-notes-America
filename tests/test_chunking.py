@@ -95,11 +95,16 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
     attempts = 0
 
     async def flaky_synthesis(text, voice, tempo, destination, **settings):
+        import struct
+        import wave
+
         nonlocal attempts
         attempts += 1
         if attempts < 3:
             raise httpx.ConnectError("backend restarted")
-        destination.write_bytes(b"RIFF" + b"\x00" * 44)
+        with wave.open(str(destination), "wb") as output:
+            output.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+            output.writeframes(b"".join(struct.pack("<h", 10000) for _ in range(800)))
 
     async def no_delay(_seconds):
         return None
@@ -117,7 +122,9 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
     assert chunk["status"] == "complete"
     assert chunk["attempt"] == 3
     assert chunk["output"] == "chunk.wav"
+    assert chunk["normalized_output"] == "normalized/chunk.wav"
     assert destination.read_bytes().startswith(b"RIFF")
+    assert (tmp_path / chunk["normalized_output"]).is_file()
 
 
 def test_synthesize_chunk_uses_chatterbox_contract(tmp_path, monkeypatch):
