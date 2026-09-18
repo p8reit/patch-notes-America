@@ -799,6 +799,11 @@ def _valid_wav(path: Path) -> bool:
         return False
 
 
+def normalized_chunk_path(path: Path) -> Path:
+    """Keep processed audio separate so a good Chatterbox render is never overwritten."""
+    return path.parent / "normalized" / path.name
+
+
 def _retryable_tts_error(exc: httpx.HTTPError) -> bool:
     if not isinstance(exc, httpx.HTTPStatusError):
         return True
@@ -825,17 +830,19 @@ async def synthesize_chunk_with_retry(
                 **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
             )
             temporary.replace(destination)
-            metrics = normalize_audio_segment(destination)
-            valid, reason = validate_audio_segment(destination)
+            normalized = normalized_chunk_path(destination)
+            metrics = normalize_audio_segment(destination, normalized)
+            valid, reason = validate_audio_segment(normalized)
             if not valid:
-                destination.unlink(missing_ok=True)
+                normalized.unlink(missing_ok=True)
                 raise OSError(reason)
             chunk["audio_metrics"] = metrics
+            chunk["normalized_output"] = normalized.relative_to(job_dir).as_posix()
             chunk["status"] = "complete"
             chunk["output"] = destination.relative_to(job_dir).as_posix()
             _write_job(job_dir, job)
             return
-        except (httpx.HTTPError, OSError) as exc:
+        except (httpx.HTTPError, OSError, ValueError) as exc:
             temporary.unlink(missing_ok=True)
             chunk["error"] = describe_chatterbox_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
             can_retry = attempt < TTS_MAX_ATTEMPTS and (
@@ -945,14 +952,18 @@ async def process_generation_job(job_id: str) -> None:
                 saved_output = chunk.get("output")
                 saved_path = job_dir / saved_output if saved_output else path
                 if chunk.get("status") == "complete" and _valid_wav(saved_path):
-                    path = saved_path
-                    if "audio_metrics" not in chunk:
-                        chunk["audio_metrics"] = normalize_audio_segment(path)
+                    raw_path = saved_path
+                    saved_normalized = chunk.get("normalized_output")
+                    path = job_dir / saved_normalized if saved_normalized else normalized_chunk_path(raw_path)
+                    if not _valid_wav(path) or "audio_metrics" not in chunk:
+                        chunk["audio_metrics"] = normalize_audio_segment(raw_path, path)
+                        chunk["normalized_output"] = path.relative_to(job_dir).as_posix()
                     valid, reason = validate_audio_segment(path)
                     if not valid:
                         raise OSError(reason)
                 else:
                     await synthesize_chunk_with_retry(job_dir, job, chunk, path)
+                    path = job_dir / chunk["normalized_output"]
                 segment_paths.append(path)
                 all_chunk_paths.append(path)
                 all_chunks.append(chunk)
@@ -1487,13 +1498,15 @@ async def generate(
                 chunk["text"], chunk["voice"], chunk["tempo"], chunk_path,
                 **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
             )
-            metrics = normalize_audio_segment(chunk_path)
-            valid, reason = validate_audio_segment(chunk_path)
+            normalized_path = normalized_chunk_path(chunk_path)
+            metrics = normalize_audio_segment(chunk_path, normalized_path)
+            valid, reason = validate_audio_segment(normalized_path)
             if not valid:
-                chunk_path.unlink(missing_ok=True)
+                normalized_path.unlink(missing_ok=True)
                 raise OSError(reason)
             chunk["audio_metrics"] = metrics
-            chunk_paths.append(chunk_path)
+            chunk["normalized_output"] = normalized_path.relative_to(episode_dir).as_posix()
+            chunk_paths.append(normalized_path)
 
         final_path = episode_dir / f"{slugify(title)}.mp3"
         timeline_wav = episode_dir / "final-audio-qa.wav"

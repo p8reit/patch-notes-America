@@ -11,6 +11,7 @@ from app.audio_utils import (
     calculate_transition_pause,
     detect_boundary_silence,
     is_speakable_text,
+    normalize_audio_segment,
     trim_boundary_silence,
     validate_audio_segment,
 )
@@ -54,6 +55,18 @@ def test_keeps_normal_boundary_silence(tmp_path):
     write_wav(source, [(0.2, False), (0.5, True), (0.2, False)])
     trim_boundary_silence(source, output)
     assert detect_boundary_silence(output)["duration"] == pytest.approx(0.9, abs=0.002)
+
+
+def test_normalization_preserves_original_generated_audio(tmp_path):
+    source, output = tmp_path / "generated.wav", tmp_path / "normalized" / "generated.wav"
+    write_wav(source, [(2, False), (0.5, True), (3, False)])
+    original = source.read_bytes()
+
+    normalize_audio_segment(source, output)
+
+    assert source.read_bytes() == original
+    assert detect_boundary_silence(source)["duration"] == pytest.approx(5.5, abs=0.002)
+    assert detect_boundary_silence(output)["duration"] == pytest.approx(1.1, abs=0.002)
 
 
 def test_rejects_empty_wav(tmp_path):

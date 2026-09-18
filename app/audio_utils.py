@@ -129,12 +129,14 @@ def validate_audio_segment(path: Path) -> tuple[bool, str]:
     return True, ""
 
 
-def normalize_audio_segment(path: Path) -> dict[str, float | bool]:
-    """Normalize a synthesized segment in place and return boundary metrics."""
-    temporary = path.with_suffix(".normalized.wav")
+def normalize_audio_segment(source: Path, destination: Path) -> dict[str, float | bool]:
+    """Write an assembly-ready copy without modifying the original TTS render."""
+    if source.resolve() == destination.resolve():
+        raise ValueError("normalized audio destination must differ from its source")
+    temporary = destination.with_suffix(".wav.tmp")
     try:
-        metrics = trim_boundary_silence(path, temporary)
-        temporary.replace(path)
+        metrics = trim_boundary_silence(source, temporary)
+        temporary.replace(destination)
         return metrics
     finally:
         temporary.unlink(missing_ok=True)

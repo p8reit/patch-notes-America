@@ -122,7 +122,9 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
     assert chunk["status"] == "complete"
     assert chunk["attempt"] == 3
     assert chunk["output"] == "chunk.wav"
+    assert chunk["normalized_output"] == "normalized/chunk.wav"
     assert destination.read_bytes().startswith(b"RIFF")
+    assert (tmp_path / chunk["normalized_output"]).is_file()
 
 
 def test_synthesize_chunk_uses_chatterbox_contract(tmp_path, monkeypatch):
