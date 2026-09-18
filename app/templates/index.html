@@ -96,16 +96,25 @@
 
       <section class="intro-section">
         <div class="section-heading"><div><p class="eyebrow">SHOW OPEN</p><h2>Episode intro</h2></div></div>
-        <p class="hint">Optionally start with a music or sound-design track, then have the hosts deliver a short introduction before the main script.</p>
+        <p class="hint">Optionally start with a music or sound-design track and choose whether the hosts speak over it or after it.</p>
         <label>
           Intro track
           <input id="intro-track" name="intro_track" type="file" accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,audio/*">
-          <span class="hint">WAV, MP3, FLAC, M4A, AAC, or OGG. The track plays in full before the host intro lines.</span>
+          <span class="hint">WAV, MP3, FLAC, M4A, AAC, or OGG.</span>
+        </label>
+        <label class="checkbox-label">
+          <input id="intro-overlap" name="intro_overlap" type="checkbox" checked>
+          Play the host intro over the music
+        </label>
+        <label>
+          Music volume under voice <output id="intro-music-volume-value">25%</output>
+          <input id="intro-music-volume" name="intro_music_volume" type="range" min="0" max="1" step="0.05" value="0.25">
+          <span class="hint">The full track is kept; the episode begins after both the track and spoken intro finish.</span>
         </label>
         <label>
           Host intro lines
           <textarea id="intro-lines" name="intro_lines" rows="6" placeholder="Welcome to Patch Notes: America.&#10;&#10;[Marcus Reed]&#10;Here is what we are covering today."></textarea>
-          <span class="hint">Use the same speaker-tag format as the episode script. These lines play after the intro track and before the main episode.</span>
+          <span class="hint">Use the same speaker-tag format as the episode script.</span>
         </label>
       </section>
 
@@ -281,6 +290,10 @@
     let availableVoices = [{id: '{{ default_voice }}', label: 'Default (built in)'}];
     let currentEpisode = null;
     const activeJobPollers = new Map();
+    const introMusicVolume = document.getElementById('intro-music-volume');
+    introMusicVolume.addEventListener('input', () => {
+      document.getElementById('intro-music-volume-value').textContent = `${Math.round(Number(introMusicVolume.value) * 100)}%`;
+    });
 
     function escapeHtml(value) {
       const element = document.createElement('span');
@@ -302,6 +315,8 @@
       ['#conversation-tone', 'Words that guide the mood, pacing, and editorial style of the generated discussion.'],
       ['#episode-script', 'The editable transcript that will be split by speaker and rendered into audio.'],
       ['#intro-track', 'Optional music or sound design that plays in full at the very start of the finished episode.'],
+      ['#intro-overlap', 'When selected, the spoken host introduction starts with the music instead of waiting for it to finish.'],
+      ['#intro-music-volume', 'Sets the music level only while building the mixed show open.'],
       ['#intro-lines', 'Optional spoken opening lines; use the same host tags as the main episode script.'],
       ['#chunks-per-segment', 'The number of audio chunks grouped into each checkpointed output segment.'],
       ['.host-name', 'The speaker name used in script tags and episode metadata.'],

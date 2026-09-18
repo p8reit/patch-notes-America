@@ -395,6 +395,34 @@ def normalize_intro_track(source: Path, destination: Path) -> None:
     temporary.replace(destination)
 
 
+def mix_intro_track_and_voice(
+    track: Path, voice: Path, destination: Path, music_volume: float = 0.25
+) -> None:
+    """Mix intro speech over a ducked music track, keeping the longer input."""
+    if not 0.0 <= music_volume <= 1.0:
+        raise ValueError("intro music volume must be between 0 and 1")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".wav.tmp")
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(track), "-i", str(voice),
+        "-filter_complex",
+        f"[0:a]volume={music_volume:.3f}[music];"
+        "[music][1:a]amix=inputs=2:duration=longest:dropout_transition=0,alimiter=limit=0.95[mixed]",
+        "-map", "[mixed]", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le",
+        "-f", "wav", str(temporary),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg is not installed in the application container") from exc
+    if result.returncode or not _valid_wav(temporary):
+        temporary.unlink(missing_ok=True)
+        detail = result.stderr.decode(errors="replace").strip() if result.stderr else ""
+        raise RuntimeError(f"Could not mix the intro music and voice{': ' + detail if detail else ''}")
+    temporary.replace(destination)
+
+
 def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Split a script into ordered speaker sections.
 
@@ -1020,10 +1048,39 @@ async def process_generation_job(job_id: str) -> None:
             segment["status"] = "complete"
             _write_job(job_dir, job)
 
+        final_paths = all_chunk_paths
+        final_chunks = all_chunks
+        intro = job.get("intro", {})
+        chunks_after_track = all_chunks[1:] if intro_track else all_chunks
+        intro_chunk_count = next(
+            (index for index, chunk in enumerate(chunks_after_track) if chunk.get("section") != "host_intro"),
+            len(chunks_after_track),
+        )
+        if intro.get("overlap") and intro_track and intro_chunk_count:
+            intro_voice_wav = job_dir / "intro-voice.wav"
+            mixed_intro_wav = job_dir / "intro-mixed.wav"
+            concatenate_wav_segments(
+                all_chunk_paths[1:1 + intro_chunk_count],
+                all_chunks[1:1 + intro_chunk_count],
+                intro_voice_wav,
+            )
+            mix_intro_track_and_voice(
+                job_dir / intro_track,
+                intro_voice_wav,
+                mixed_intro_wav,
+                float(intro.get("music_volume", 0.25)),
+            )
+            intro_voice_wav.unlink(missing_ok=True)
+            final_paths = [mixed_intro_wav, *all_chunk_paths[1 + intro_chunk_count:]]
+            final_chunks = [
+                {"host": "intro", "text": intro.get("lines", ""), "section": "intro", "dramatic_pause_after": True},
+                *all_chunks[1 + intro_chunk_count:],
+            ]
+
         final_path = job_dir / f"{slugify(job['title'])}.mp3"
         timeline_wav = job_dir / "final-audio-qa.wav"
-        timeline = concatenate_wav_segments(all_chunk_paths, all_chunks, timeline_wav)
-        for item, chunk in zip(timeline[-len(all_chunks):], all_chunks):
+        timeline = concatenate_wav_segments(final_paths, final_chunks, timeline_wav)
+        for item, chunk in zip(timeline[-len(final_chunks):], final_chunks):
             metrics = chunk.get("audio_metrics", {})
             logger.info(
                 "Segment %s | Speaker: %s | Text length: %s | Raw duration: %.3fs | "
@@ -1041,7 +1098,7 @@ async def process_generation_job(job_id: str) -> None:
         for region in qa:
             logger.warning("Audio QA: %.3f - %.3f | Silence: %.3f seconds",
                            region["start"], region["end"], region["duration"])
-        assemble_mp3(all_chunk_paths, final_path, all_chunks)
+        assemble_mp3(final_paths, final_path, final_chunks)
         job["audio_qa"] = qa
         job["timeline"] = timeline
         timeline_wav.unlink(missing_ok=True)
@@ -1405,6 +1462,8 @@ async def create_generation_job(
     hosts_json: str = Form(...),
     chunks_per_segment: int = Form(8),
     intro_lines: str = Form(""),
+    intro_overlap: bool = Form(False),
+    intro_music_volume: float = Form(0.25),
     intro_track: UploadFile | None = File(None),
 ):
     """Queue an episode as durable, independently checkpointed segment jobs."""
@@ -1416,13 +1475,21 @@ async def create_generation_job(
     speech_chunks = build_episode_speech_chunks(script, hosts, intro_lines)
     if not speech_chunks:
         raise HTTPException(status_code=400, detail="No speakable text found")
+    if not 0.0 <= intro_music_volume <= 1.0:
+        raise HTTPException(status_code=400, detail="Intro music volume must be between 0 and 1")
     segments = build_generation_segments(speech_chunks, chunks_per_segment)
     job_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{slugify(title)}-{uuid4().hex[:8]}"
     job_dir = OUTPUT_DIR / job_id
     (job_dir / "chunks").mkdir(parents=True)
     (job_dir / "segments").mkdir()
     (job_dir / "script.txt").write_text(clean_script(script), encoding="utf-8")
-    intro: dict[str, Any] = {"lines": clean_script(intro_lines), "track": None, "track_filename": None}
+    intro: dict[str, Any] = {
+        "lines": clean_script(intro_lines),
+        "track": None,
+        "track_filename": None,
+        "overlap": intro_overlap,
+        "music_volume": intro_music_volume,
+    }
     if intro_lines.strip():
         (job_dir / "intro-lines.txt").write_text(clean_script(intro_lines), encoding="utf-8")
     if intro_track and intro_track.filename:
