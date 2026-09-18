@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.main import build_speech_chunks, parse_hosts, parse_speaker_script
+from app.main import (
+    build_speech_chunks,
+    parse_hosts,
+    parse_speaker_script,
+    remove_accidental_transcript_repetition,
+)
 
 
 def hosts():
@@ -52,6 +57,43 @@ def test_episode_chunks_put_host_intro_lines_before_main_script():
 
     assert [chunk["section"] for chunk in chunks] == ["host_intro", "host_intro", "episode"]
     assert [chunk["host"] for chunk in chunks] == ["Major Patchnotes", "Alex", "Major Patchnotes"]
+
+
+def test_exact_long_script_repetition_is_rendered_only_once():
+    passage = "\n\n".join(f"Paragraph {number}: " + ("history " * 20).strip() for number in range(6))
+
+    cleaned = remove_accidental_transcript_repetition(f"{passage}\n\n{passage}")
+
+    assert cleaned == passage.strip()
+
+
+def test_short_intentional_repetition_is_preserved():
+    assert remove_accidental_transcript_repetition("Patch it.\n\nPatch it.") == "Patch it.\n\nPatch it."
+
+
+def test_full_script_accidentally_used_as_intro_is_not_rendered_twice():
+    from app.main import build_episode_speech_chunks
+
+    passage = "\n\n".join(f"Paragraph {number}: " + ("history " * 20).strip() for number in range(6))
+    chunks = build_episode_speech_chunks(passage, hosts(), passage, max_chars=10_000)
+
+    assert len(chunks) == 1
+    assert chunks[0]["section"] == "episode"
+    assert chunks[0]["text"] == passage.strip()
+
+
+def test_long_intro_suffix_overlapping_episode_start_is_removed():
+    from app.main import build_episode_speech_chunks
+
+    overlap = "\n\n".join(f"Shared paragraph {number}: " + ("context " * 20).strip() for number in range(4))
+    script = f"{overlap}\n\nThe episode continues with new material."
+    intro = f"Welcome to the show.\n\n{overlap}"
+
+    chunks = build_episode_speech_chunks(script, hosts(), intro, max_chars=10_000)
+
+    assert [chunk["section"] for chunk in chunks] == ["host_intro", "episode"]
+    assert chunks[0]["text"] == "Welcome to the show."
+    assert chunks[1]["text"] == script
 
 
 def test_unknown_host_tag_is_rejected():

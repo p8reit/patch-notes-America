@@ -56,6 +56,7 @@ CHATTERBOX_DEFAULTS = {
     "repetition_penalty": 1.2,
 }
 MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
+MIN_DUPLICATE_TRANSCRIPT_CHARS = int(os.getenv("MIN_DUPLICATE_TRANSCRIPT_CHARS", "500"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com/v1/responses")
@@ -93,6 +94,50 @@ def clean_script(text: str) -> str:
     text = text.replace("**", "").replace("__", "")
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def remove_accidental_transcript_repetition(text: str) -> str:
+    """Collapse an exact, long transcript repeated two or more times in full.
+
+    Paragraph-level matching deliberately avoids fuzzy deduplication: repeated
+    catchphrases and intentional callbacks remain part of the performance.
+    """
+    cleaned = clean_script(text)
+    paragraphs = [paragraph.strip() for paragraph in cleaned.split("\n\n")] if cleaned else []
+    for unit_size in range(1, len(paragraphs) // 2 + 1):
+        if len(paragraphs) % unit_size:
+            continue
+        unit = paragraphs[:unit_size]
+        repetitions = len(paragraphs) // unit_size
+        if repetitions < 2 or len("\n\n".join(unit)) < MIN_DUPLICATE_TRANSCRIPT_CHARS:
+            continue
+        if unit * repetitions == paragraphs:
+            logger.warning(
+                "Removed %s accidental full-script repetitions (%s paragraphs each)",
+                repetitions - 1, unit_size,
+            )
+            return "\n\n".join(unit)
+    return cleaned
+
+
+def remove_intro_episode_overlap(intro_lines: str, script: str) -> str:
+    """Remove only a long exact suffix/prefix overlap between intro and episode."""
+    intro = clean_script(intro_lines)
+    episode = remove_accidental_transcript_repetition(script)
+    intro_paragraphs = [paragraph.strip() for paragraph in intro.split("\n\n")] if intro else []
+    episode_paragraphs = [paragraph.strip() for paragraph in episode.split("\n\n")] if episode else []
+    for overlap_size in range(min(len(intro_paragraphs), len(episode_paragraphs)), 0, -1):
+        overlap = intro_paragraphs[-overlap_size:]
+        if overlap != episode_paragraphs[:overlap_size]:
+            continue
+        if len("\n\n".join(overlap)) < MIN_DUPLICATE_TRANSCRIPT_CHARS:
+            continue
+        logger.warning(
+            "Removed %s intro paragraphs duplicated at the start of the episode",
+            overlap_size,
+        )
+        return "\n\n".join(intro_paragraphs[:-overlap_size])
+    return intro
 
 
 def split_script(text: str, max_chars: int = MAX_CHARS) -> List[str]:
@@ -408,7 +453,7 @@ def build_speech_chunks(
     script: str, hosts: list[dict[str, Any]], max_chars: int = MAX_CHARS
 ) -> list[dict[str, Any]]:
     host_lookup = {host["name"]: host for host in hosts}
-    sections = parse_speaker_script(script, hosts)
+    sections = parse_speaker_script(remove_accidental_transcript_repetition(script), hosts)
     chunks: list[dict[str, Any]] = []
 
     for section in sections:
@@ -448,8 +493,10 @@ def build_episode_speech_chunks(
     max_chars: int = MAX_CHARS,
 ) -> list[dict[str, Any]]:
     """Build optional host introductions followed by the main episode script."""
-    intro_chunks = build_speech_chunks(intro_lines, hosts, max_chars=max_chars) if intro_lines.strip() else []
-    episode_chunks = build_speech_chunks(script, hosts, max_chars=max_chars)
+    canonical_script = remove_accidental_transcript_repetition(script)
+    canonical_intro = remove_intro_episode_overlap(intro_lines, canonical_script)
+    intro_chunks = build_speech_chunks(canonical_intro, hosts, max_chars=max_chars) if canonical_intro else []
+    episode_chunks = build_speech_chunks(canonical_script, hosts, max_chars=max_chars)
     return [
         *({**chunk, "section": "host_intro"} for chunk in intro_chunks),
         *({**chunk, "section": "episode"} for chunk in episode_chunks),
@@ -1364,6 +1411,8 @@ async def create_generation_job(
     if not script.strip():
         raise HTTPException(status_code=400, detail="Script cannot be empty")
     hosts = parse_hosts(hosts_json)
+    script = remove_accidental_transcript_repetition(script)
+    intro_lines = remove_intro_episode_overlap(intro_lines, script)
     speech_chunks = build_episode_speech_chunks(script, hosts, intro_lines)
     if not speech_chunks:
         raise HTTPException(status_code=400, detail="No speakable text found")
@@ -1468,7 +1517,7 @@ async def generate(
     chunks_dir = episode_dir / "chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
-    cleaned = clean_script(script)
+    cleaned = remove_accidental_transcript_repetition(script)
     (episode_dir / "script.txt").write_text(cleaned, encoding="utf-8")
     metadata = {
         "title": title,
