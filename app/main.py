@@ -21,6 +21,14 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 from starlette.background import BackgroundTask
 
+from app.audio_utils import (
+    analyze_final_audio_silence,
+    concatenate_wav_segments,
+    is_speakable_text,
+    normalize_audio_segment,
+    validate_audio_segment,
+)
+
 APP_ROOT = Path(__file__).resolve().parent.parent
 EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", APP_ROOT / "output"))
@@ -376,10 +384,8 @@ def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[
                     detail=f"Unknown host tag [{requested}]. Configured hosts: {available}",
                 )
             if requested == active_host:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Redundant host tag [{requested}]. Add a tag only when the speaker changes",
-                )
+                logger.info("Ignoring redundant speaker tag [%s]", requested)
+                continue
             flush()
             active_host = requested
             continue
@@ -419,6 +425,9 @@ def build_speech_chunks(
                 )
                 voice = DEFAULT_VOICE
         for text_chunk in split_script(section["text"], max_chars=max_chars):
+            if not is_speakable_text(text_chunk):
+                logger.warning("Skipping non-speaking chunk for %s: %r", host["name"], text_chunk)
+                continue
             chunks.append(
                 {
                     "host_id": host.get("id"),
@@ -677,23 +686,16 @@ async def synthesize_chunk(
     destination.write_bytes(response.content)
 
 
-def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
+def assemble_mp3(
+    chunk_paths: List[Path], output_file: Path, chunks: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Build a zero-based WAV timeline, then encode it; pauses are added only here."""
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg is not installed in the application container")
 
-    manifest = output_file.parent / "concat.txt"
-    # FFmpeg resolves concat entries relative to the manifest, not the process's
-    # working directory. Segment MP3s live under ``segments/`` while their input
-    # WAVs live under the sibling ``chunks/`` directory, so ``Path.relative_to``
-    # cannot represent the required ``../chunks/...`` path.
-    input_paths = [
-        Path(os.path.relpath(path, start=output_file.parent)).as_posix()
-        for path in chunk_paths
-    ]
-    manifest.write_text(
-        "\n".join(f"file '{path}'" for path in input_paths) + "\n",
-        encoding="utf-8",
-    )
+    chunks = chunks or [{"host": "unknown", "text": ""} for _ in chunk_paths]
+    timeline_wav = output_file.with_suffix(".timeline.wav")
+    timeline = concatenate_wav_segments(chunk_paths, chunks, timeline_wav)
 
     cmd = [
         "ffmpeg",
@@ -701,12 +703,10 @@ def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
         "-hide_banner",
         "-loglevel",
         "error",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
         "-i",
-        manifest.name,
+        timeline_wav.name,
+        "-af",
+        "asetpts=PTS-STARTPTS",
         "-c:a",
         "libmp3lame",
         "-b:a",
@@ -717,7 +717,11 @@ def assemble_mp3(chunk_paths: List[Path], output_file: Path) -> None:
         "2",
         output_file.name,
     ]
-    subprocess.run(cmd, cwd=output_file.parent, check=True)
+    try:
+        subprocess.run(cmd, cwd=output_file.parent, check=True)
+    finally:
+        timeline_wav.unlink(missing_ok=True)
+    return timeline
 
 
 def build_generation_segments(
@@ -795,6 +799,11 @@ def _valid_wav(path: Path) -> bool:
         return False
 
 
+def normalized_chunk_path(path: Path) -> Path:
+    """Keep processed audio separate so a good Chatterbox render is never overwritten."""
+    return path.parent / "normalized" / path.name
+
+
 def _retryable_tts_error(exc: httpx.HTTPError) -> bool:
     if not isinstance(exc, httpx.HTTPStatusError):
         return True
@@ -821,11 +830,19 @@ async def synthesize_chunk_with_retry(
                 **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
             )
             temporary.replace(destination)
+            normalized = normalized_chunk_path(destination)
+            metrics = normalize_audio_segment(destination, normalized)
+            valid, reason = validate_audio_segment(normalized)
+            if not valid:
+                normalized.unlink(missing_ok=True)
+                raise OSError(reason)
+            chunk["audio_metrics"] = metrics
+            chunk["normalized_output"] = normalized.relative_to(job_dir).as_posix()
             chunk["status"] = "complete"
             chunk["output"] = destination.relative_to(job_dir).as_posix()
             _write_job(job_dir, job)
             return
-        except (httpx.HTTPError, OSError) as exc:
+        except (httpx.HTTPError, OSError, ValueError) as exc:
             temporary.unlink(missing_ok=True)
             chunk["error"] = describe_chatterbox_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
             can_retry = attempt < TTS_MAX_ATTEMPTS and (
@@ -911,6 +928,7 @@ async def process_generation_job(job_id: str) -> None:
     job["worker_pid"] = os.getpid()
     _write_job(job_dir, job)
     all_chunk_paths: list[Path] = []
+    all_chunks: list[dict[str, Any]] = []
     intro_track = job.get("intro", {}).get("track")
     if intro_track:
         intro_path = job_dir / intro_track
@@ -921,6 +939,7 @@ async def process_generation_job(job_id: str) -> None:
             _write_job(job_dir, job)
             return
         all_chunk_paths.append(intro_path)
+        all_chunks.append({"host": "intro", "text": "", "section": "intro", "dramatic_pause_after": True})
     chunk_number = 0
     try:
         for segment in job["segments"]:
@@ -933,19 +952,52 @@ async def process_generation_job(job_id: str) -> None:
                 saved_output = chunk.get("output")
                 saved_path = job_dir / saved_output if saved_output else path
                 if chunk.get("status") == "complete" and _valid_wav(saved_path):
-                    path = saved_path
+                    raw_path = saved_path
+                    saved_normalized = chunk.get("normalized_output")
+                    path = job_dir / saved_normalized if saved_normalized else normalized_chunk_path(raw_path)
+                    if not _valid_wav(path) or "audio_metrics" not in chunk:
+                        chunk["audio_metrics"] = normalize_audio_segment(raw_path, path)
+                        chunk["normalized_output"] = path.relative_to(job_dir).as_posix()
+                    valid, reason = validate_audio_segment(path)
+                    if not valid:
+                        raise OSError(reason)
                 else:
                     await synthesize_chunk_with_retry(job_dir, job, chunk, path)
+                    path = job_dir / chunk["normalized_output"]
                 segment_paths.append(path)
                 all_chunk_paths.append(path)
+                all_chunks.append(chunk)
             segment_audio = job_dir / "segments" / f"{segment['id']}.mp3"
-            assemble_mp3(segment_paths, segment_audio)
+            assemble_mp3(segment_paths, segment_audio, segment["chunks"])
             segment["outputs"]["audio"] = segment_audio.relative_to(job_dir).as_posix()
             segment["status"] = "complete"
             _write_job(job_dir, job)
 
         final_path = job_dir / f"{slugify(job['title'])}.mp3"
-        assemble_mp3(all_chunk_paths, final_path)
+        timeline_wav = job_dir / "final-audio-qa.wav"
+        timeline = concatenate_wav_segments(all_chunk_paths, all_chunks, timeline_wav)
+        for item, chunk in zip(timeline[-len(all_chunks):], all_chunks):
+            metrics = chunk.get("audio_metrics", {})
+            logger.info(
+                "Segment %s | Speaker: %s | Text length: %s | Raw duration: %.3fs | "
+                "Leading silence: %.3fs | Trailing silence: %.3fs | Configured pause: %.3fs | "
+                "Final segment duration: %.3fs | Effective gap before next speech: %.3fs | "
+                "Timeline: %.3f-%.3fs",
+                item["index"], item["speaker"], item["text_length"],
+                float(metrics.get("raw_duration", item["duration"])),
+                float(metrics.get("raw_leading_silence", 0)),
+                float(metrics.get("raw_trailing_silence", 0)), item["pause_after_ms"] / 1000,
+                item["duration"], float(metrics.get("trailing_silence", 0)) + item["pause_after_ms"] / 1000,
+                item["start"], item["end"],
+            )
+        qa = analyze_final_audio_silence(timeline_wav)
+        for region in qa:
+            logger.warning("Audio QA: %.3f - %.3f | Silence: %.3f seconds",
+                           region["start"], region["end"], region["duration"])
+        assemble_mp3(all_chunk_paths, final_path, all_chunks)
+        job["audio_qa"] = qa
+        job["timeline"] = timeline
+        timeline_wav.unlink(missing_ok=True)
         job["status"] = "complete"
         job["download_url"] = f"/api/episodes/{job_id}/download"
     except Exception as exc:  # Persist failures so polling clients never hang.
@@ -1446,11 +1498,43 @@ async def generate(
                 chunk["text"], chunk["voice"], chunk["tempo"], chunk_path,
                 **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
             )
-            chunk_paths.append(chunk_path)
+            normalized_path = normalized_chunk_path(chunk_path)
+            metrics = normalize_audio_segment(chunk_path, normalized_path)
+            valid, reason = validate_audio_segment(normalized_path)
+            if not valid:
+                normalized_path.unlink(missing_ok=True)
+                raise OSError(reason)
+            chunk["audio_metrics"] = metrics
+            chunk["normalized_output"] = normalized_path.relative_to(episode_dir).as_posix()
+            chunk_paths.append(normalized_path)
 
         final_path = episode_dir / f"{slugify(title)}.mp3"
-        assemble_mp3(chunk_paths, final_path)
-        metadata = enrich_chunk_timeline(metadata, episode_dir)
+        timeline_wav = episode_dir / "final-audio-qa.wav"
+        timeline = concatenate_wav_segments(chunk_paths, speech_chunks, timeline_wav)
+        qa = analyze_final_audio_silence(timeline_wav)
+        for item, chunk in zip(timeline, speech_chunks):
+            metrics = chunk["audio_metrics"]
+            logger.info(
+                "Segment %s | Speaker: %s | Text length: %s | Raw duration: %.3fs | "
+                "Leading silence: %.3fs | Trailing silence: %.3fs | Configured pause: %.3fs | "
+                "Final segment duration: %.3fs | Effective gap before next speech: %.3fs | "
+                "Timeline: %.3f-%.3fs",
+                item["index"], item["speaker"], item["text_length"], metrics["raw_duration"],
+                metrics["raw_leading_silence"], metrics["raw_trailing_silence"],
+                item["pause_after_ms"] / 1000, item["duration"],
+                float(metrics.get("trailing_silence", 0)) + item["pause_after_ms"] / 1000,
+                item["start"], item["end"],
+            )
+        for region in qa:
+            logger.warning("Audio QA: %.3f - %.3f | Silence: %.3f seconds",
+                           region["start"], region["end"], region["duration"])
+        assemble_mp3(chunk_paths, final_path, speech_chunks)
+        for target, item in zip(metadata["chunks"], timeline):
+            target.update({key: round(float(item[key]), 3) for key in ("duration", "start", "end")})
+            target["pause_after_ms"] = item["pause_after_ms"]
+        metadata["duration"] = round(timeline[-1]["end"] + timeline[-1]["pause_after_ms"] / 1000, 3)
+        metadata["audio_qa"] = qa
+        timeline_wav.unlink(missing_ok=True)
         (episode_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     except httpx.HTTPError as exc:
         failed_chunk = len(chunk_paths) + 1
