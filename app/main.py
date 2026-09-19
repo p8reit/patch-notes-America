@@ -56,6 +56,7 @@ CHATTERBOX_DEFAULTS = {
     "repetition_penalty": 1.2,
 }
 MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
+MIN_DUPLICATE_TRANSCRIPT_CHARS = int(os.getenv("MIN_DUPLICATE_TRANSCRIPT_CHARS", "500"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com/v1/responses")
@@ -93,6 +94,50 @@ def clean_script(text: str) -> str:
     text = text.replace("**", "").replace("__", "")
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def remove_accidental_transcript_repetition(text: str) -> str:
+    """Collapse an exact, long transcript repeated two or more times in full.
+
+    Paragraph-level matching deliberately avoids fuzzy deduplication: repeated
+    catchphrases and intentional callbacks remain part of the performance.
+    """
+    cleaned = clean_script(text)
+    paragraphs = [paragraph.strip() for paragraph in cleaned.split("\n\n")] if cleaned else []
+    for unit_size in range(1, len(paragraphs) // 2 + 1):
+        if len(paragraphs) % unit_size:
+            continue
+        unit = paragraphs[:unit_size]
+        repetitions = len(paragraphs) // unit_size
+        if repetitions < 2 or len("\n\n".join(unit)) < MIN_DUPLICATE_TRANSCRIPT_CHARS:
+            continue
+        if unit * repetitions == paragraphs:
+            logger.warning(
+                "Removed %s accidental full-script repetitions (%s paragraphs each)",
+                repetitions - 1, unit_size,
+            )
+            return "\n\n".join(unit)
+    return cleaned
+
+
+def remove_intro_episode_overlap(intro_lines: str, script: str) -> str:
+    """Remove only a long exact suffix/prefix overlap between intro and episode."""
+    intro = clean_script(intro_lines)
+    episode = remove_accidental_transcript_repetition(script)
+    intro_paragraphs = [paragraph.strip() for paragraph in intro.split("\n\n")] if intro else []
+    episode_paragraphs = [paragraph.strip() for paragraph in episode.split("\n\n")] if episode else []
+    for overlap_size in range(min(len(intro_paragraphs), len(episode_paragraphs)), 0, -1):
+        overlap = intro_paragraphs[-overlap_size:]
+        if overlap != episode_paragraphs[:overlap_size]:
+            continue
+        if len("\n\n".join(overlap)) < MIN_DUPLICATE_TRANSCRIPT_CHARS:
+            continue
+        logger.warning(
+            "Removed %s intro paragraphs duplicated at the start of the episode",
+            overlap_size,
+        )
+        return "\n\n".join(intro_paragraphs[:-overlap_size])
+    return intro
 
 
 def split_script(text: str, max_chars: int = MAX_CHARS) -> List[str]:
@@ -350,6 +395,34 @@ def normalize_intro_track(source: Path, destination: Path) -> None:
     temporary.replace(destination)
 
 
+def mix_intro_track_and_voice(
+    track: Path, voice: Path, destination: Path, music_volume: float = 0.25
+) -> None:
+    """Mix intro speech over a ducked music track, keeping the longer input."""
+    if not 0.0 <= music_volume <= 1.0:
+        raise ValueError("intro music volume must be between 0 and 1")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".wav.tmp")
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(track), "-i", str(voice),
+        "-filter_complex",
+        f"[0:a]volume={music_volume:.3f}[music];"
+        "[music][1:a]amix=inputs=2:duration=longest:dropout_transition=0,alimiter=limit=0.95[mixed]",
+        "-map", "[mixed]", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le",
+        "-f", "wav", str(temporary),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg is not installed in the application container") from exc
+    if result.returncode or not _valid_wav(temporary):
+        temporary.unlink(missing_ok=True)
+        detail = result.stderr.decode(errors="replace").strip() if result.stderr else ""
+        raise RuntimeError(f"Could not mix the intro music and voice{': ' + detail if detail else ''}")
+    temporary.replace(destination)
+
+
 def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Split a script into ordered speaker sections.
 
@@ -408,7 +481,7 @@ def build_speech_chunks(
     script: str, hosts: list[dict[str, Any]], max_chars: int = MAX_CHARS
 ) -> list[dict[str, Any]]:
     host_lookup = {host["name"]: host for host in hosts}
-    sections = parse_speaker_script(script, hosts)
+    sections = parse_speaker_script(remove_accidental_transcript_repetition(script), hosts)
     chunks: list[dict[str, Any]] = []
 
     for section in sections:
@@ -448,8 +521,10 @@ def build_episode_speech_chunks(
     max_chars: int = MAX_CHARS,
 ) -> list[dict[str, Any]]:
     """Build optional host introductions followed by the main episode script."""
-    intro_chunks = build_speech_chunks(intro_lines, hosts, max_chars=max_chars) if intro_lines.strip() else []
-    episode_chunks = build_speech_chunks(script, hosts, max_chars=max_chars)
+    canonical_script = remove_accidental_transcript_repetition(script)
+    canonical_intro = remove_intro_episode_overlap(intro_lines, canonical_script)
+    intro_chunks = build_speech_chunks(canonical_intro, hosts, max_chars=max_chars) if canonical_intro else []
+    episode_chunks = build_speech_chunks(canonical_script, hosts, max_chars=max_chars)
     return [
         *({**chunk, "section": "host_intro"} for chunk in intro_chunks),
         *({**chunk, "section": "episode"} for chunk in episode_chunks),
@@ -973,6 +1048,35 @@ async def process_generation_job(job_id: str) -> None:
             segment["status"] = "complete"
             _write_job(job_dir, job)
 
+        final_paths = all_chunk_paths
+        final_chunks = all_chunks
+        intro = job.get("intro", {})
+        chunks_after_track = all_chunks[1:] if intro_track else all_chunks
+        intro_chunk_count = next(
+            (index for index, chunk in enumerate(chunks_after_track) if chunk.get("section") != "host_intro"),
+            len(chunks_after_track),
+        )
+        if intro.get("overlap") and intro_track and intro_chunk_count:
+            intro_voice_wav = job_dir / "intro-voice.wav"
+            mixed_intro_wav = job_dir / "intro-mixed.wav"
+            concatenate_wav_segments(
+                all_chunk_paths[1:1 + intro_chunk_count],
+                all_chunks[1:1 + intro_chunk_count],
+                intro_voice_wav,
+            )
+            mix_intro_track_and_voice(
+                job_dir / intro_track,
+                intro_voice_wav,
+                mixed_intro_wav,
+                float(intro.get("music_volume", 0.25)),
+            )
+            intro_voice_wav.unlink(missing_ok=True)
+            final_paths = [mixed_intro_wav, *all_chunk_paths[1 + intro_chunk_count:]]
+            final_chunks = [
+                {"host": "intro", "text": intro.get("lines", ""), "section": "intro", "dramatic_pause_after": True},
+                *all_chunks[1 + intro_chunk_count:],
+            ]
+
         final_path = job_dir / f"{slugify(job['title'])}.mp3"
         timeline_wav = job_dir / "final-audio-qa.wav"
         timeline = concatenate_wav_segments(all_chunk_paths, all_chunks, timeline_wav)
@@ -1358,22 +1462,34 @@ async def create_generation_job(
     hosts_json: str = Form(...),
     chunks_per_segment: int = Form(8),
     intro_lines: str = Form(""),
+    intro_overlap: bool = Form(False),
+    intro_music_volume: float = Form(0.25),
     intro_track: UploadFile | None = File(None),
 ):
     """Queue an episode as durable, independently checkpointed segment jobs."""
     if not script.strip():
         raise HTTPException(status_code=400, detail="Script cannot be empty")
     hosts = parse_hosts(hosts_json)
+    script = remove_accidental_transcript_repetition(script)
+    intro_lines = remove_intro_episode_overlap(intro_lines, script)
     speech_chunks = build_episode_speech_chunks(script, hosts, intro_lines)
     if not speech_chunks:
         raise HTTPException(status_code=400, detail="No speakable text found")
+    if not 0.0 <= intro_music_volume <= 1.0:
+        raise HTTPException(status_code=400, detail="Intro music volume must be between 0 and 1")
     segments = build_generation_segments(speech_chunks, chunks_per_segment)
     job_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{slugify(title)}-{uuid4().hex[:8]}"
     job_dir = OUTPUT_DIR / job_id
     (job_dir / "chunks").mkdir(parents=True)
     (job_dir / "segments").mkdir()
     (job_dir / "script.txt").write_text(clean_script(script), encoding="utf-8")
-    intro: dict[str, Any] = {"lines": clean_script(intro_lines), "track": None, "track_filename": None}
+    intro: dict[str, Any] = {
+        "lines": clean_script(intro_lines),
+        "track": None,
+        "track_filename": None,
+        "overlap": intro_overlap,
+        "music_volume": intro_music_volume,
+    }
     if intro_lines.strip():
         (job_dir / "intro-lines.txt").write_text(clean_script(intro_lines), encoding="utf-8")
     if intro_track and intro_track.filename:
@@ -1468,7 +1584,7 @@ async def generate(
     chunks_dir = episode_dir / "chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
-    cleaned = clean_script(script)
+    cleaned = remove_accidental_transcript_repetition(script)
     (episode_dir / "script.txt").write_text(cleaned, encoding="utf-8")
     metadata = {
         "title": title,
