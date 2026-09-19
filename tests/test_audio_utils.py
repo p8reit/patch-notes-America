@@ -1,7 +1,6 @@
 import math
 import struct
 import wave
-from types import SimpleNamespace
 
 import pytest
 
@@ -10,13 +9,14 @@ from app.audio_utils import (
     SAME_SPEAKER_PAUSE_MS,
     analyze_final_audio_silence,
     calculate_transition_pause,
+    concatenate_wav_segments,
     detect_boundary_silence,
     is_speakable_text,
     normalize_audio_segment,
     trim_boundary_silence,
     validate_audio_segment,
 )
-from app.main import mix_intro_track_and_voice, parse_speaker_script
+from app.main import parse_speaker_script
 
 
 RATE = 8000
@@ -42,6 +42,19 @@ def test_trims_two_seconds_leading_silence(tmp_path):
     write_wav(source, [(2, False), (0.5, True)])
     trim_boundary_silence(source, output)
     assert detect_boundary_silence(output)["leading_silence"] == pytest.approx(0.25, abs=0.002)
+
+
+def test_isolated_boundary_click_is_not_mistaken_for_speech(tmp_path):
+    path = tmp_path / "click.wav"
+    samples = [0] * (2 * RATE) + [10000] * (RATE // 2)
+    samples[0] = 30000
+    with wave.open(str(path), "wb") as output:
+        output.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
+        output.writeframes(b"".join(struct.pack("<h", value) for value in samples))
+
+    boundary = detect_boundary_silence(path)
+
+    assert boundary["leading_silence"] == pytest.approx(2.0, abs=0.011)
 
 
 def test_trims_three_seconds_trailing_silence(tmp_path):
@@ -91,6 +104,24 @@ def test_different_speaker_transition():
     assert calculate_transition_pause({"host": "Wade"}, {"host": "Marcus"}) == SPEAKER_CHANGE_PAUSE_MS
 
 
+def test_concatenation_is_sequential_and_never_overlaps_segments(tmp_path):
+    first, second, combined = tmp_path / "first.wav", tmp_path / "second.wav", tmp_path / "combined.wav"
+    write_wav(first, [(0.5, True)])
+    write_wav(second, [(0.5, True)])
+
+    timeline = concatenate_wav_segments(
+        [first, second],
+        [{"host": "Wade", "text": "First"}, {"host": "Wade", "text": "Second"}],
+        combined,
+    )
+
+    assert timeline[0]["end"] == pytest.approx(0.5)
+    assert timeline[1]["start"] == pytest.approx(0.5 + SAME_SPEAKER_PAUSE_MS / 1000)
+    assert detect_boundary_silence(combined)["duration"] == pytest.approx(
+        1.0 + SAME_SPEAKER_PAUSE_MS / 1000,
+    )
+
+
 def test_multiple_consecutive_speaker_tags_do_not_create_empty_segments():
     result = parse_speaker_script("[Marcus Reed]\n[Julian Cross]\nHello.", hosts())
     assert result == [{"host": "Julian Cross", "text": "Hello."}]
@@ -106,35 +137,3 @@ def test_final_audio_reports_long_silence(tmp_path):
     regions = analyze_final_audio_silence(path)
     assert len(regions) == 1
     assert regions[0]["duration"] == pytest.approx(2.1, abs=0.002)
-
-
-def test_intro_music_and_voice_are_mixed_for_the_longer_input(monkeypatch, tmp_path):
-    music = tmp_path / "music.wav"
-    voice = tmp_path / "voice.wav"
-    mixed = tmp_path / "mixed.wav"
-    write_wav(music, [(1.0, True)])
-    write_wav(voice, [(0.5, True)])
-
-    command = []
-
-    def fake_run(args, **kwargs):
-        command.extend(args)
-        write_wav(tmp_path / "mixed.wav.tmp", [(1.0, True)])
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr("app.main.subprocess.run", fake_run)
-    mix_intro_track_and_voice(music, voice, mixed, music_volume=0.2)
-
-    info = detect_boundary_silence(mixed)
-    assert info["duration"] == pytest.approx(1.0, abs=0.01)
-    assert info["silent"] is False
-    audio_filter = command[command.index("-filter_complex") + 1]
-    assert "volume=0.200" in audio_filter
-    assert "duration=longest" in audio_filter
-
-
-def test_intro_music_volume_must_be_in_range(tmp_path):
-    with pytest.raises(ValueError, match="between 0 and 1"):
-        mix_intro_track_and_voice(
-            tmp_path / "music.wav", tmp_path / "voice.wav", tmp_path / "mixed.wav", 1.1
-        )

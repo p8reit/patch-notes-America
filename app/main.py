@@ -1079,8 +1079,8 @@ async def process_generation_job(job_id: str) -> None:
 
         final_path = job_dir / f"{slugify(job['title'])}.mp3"
         timeline_wav = job_dir / "final-audio-qa.wav"
-        timeline = concatenate_wav_segments(final_paths, final_chunks, timeline_wav)
-        for item, chunk in zip(timeline[-len(final_chunks):], final_chunks):
+        timeline = concatenate_wav_segments(all_chunk_paths, all_chunks, timeline_wav)
+        for item, chunk in zip(timeline[-len(all_chunks):], all_chunks):
             metrics = chunk.get("audio_metrics", {})
             logger.info(
                 "Segment %s | Speaker: %s | Text length: %s | Raw duration: %.3fs | "
@@ -1098,7 +1098,7 @@ async def process_generation_job(job_id: str) -> None:
         for region in qa:
             logger.warning("Audio QA: %.3f - %.3f | Silence: %.3f seconds",
                            region["start"], region["end"], region["duration"])
-        assemble_mp3(final_paths, final_path, final_chunks)
+        assemble_mp3(all_chunk_paths, final_path, all_chunks)
         job["audio_qa"] = qa
         job["timeline"] = timeline
         timeline_wav.unlink(missing_ok=True)
