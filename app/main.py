@@ -490,15 +490,22 @@ def build_speech_chunks(
     script: str,
     hosts: list[dict[str, Any]],
     max_chars: int = MAX_CHARS,
-    *,
-    turn_id_prefix: str = "turn",
+    section_id: str = "episode",
 ) -> list[dict[str, Any]]:
+    """Build the ordered utterance manifest used by synthesis and editing.
+
+    IDs are opaque manifest identities: unlike sequence numbers and filenames they
+    do not change when an utterance is moved.  A long turn may produce multiple
+    utterances, all linked by one ``parent_turn_id``.  Each utterance is exactly
+    one Chatterbox request and can therefore never contain multiple speakers.
+    """
     host_lookup = {host["name"]: host for host in hosts}
     sections = parse_speaker_script(remove_accidental_transcript_repetition(script), hosts)
     chunks: list[dict[str, Any]] = []
 
     for turn_number, section in enumerate(sections, start=1):
         host = host_lookup[section["host"]]
+        parent_turn_id = uuid4().hex
         voice = host["voice"]
         if host.get("reference_audio_path"):
             path = reference_path(host)
@@ -510,20 +517,43 @@ def build_speech_chunks(
                     host["name"], host["id"],
                 )
                 voice = DEFAULT_VOICE
-        for chunk_in_turn, split_chunk in enumerate(
-            _split_script_with_boundaries(section["text"], max_chars=max_chars)
-        ):
-            text_chunk = str(split_chunk["text"])
+        fragments = [
+            text for text in split_script(section["text"], max_chars=max_chars)
+            if is_speakable_text(text)
+        ]
+        for fragment_index, text_chunk in enumerate(fragments, start=1):
             if not is_speakable_text(text_chunk):
                 logger.warning("Skipping non-speaking chunk for %s: %r", host["name"], text_chunk)
                 continue
+            utterance_id = uuid4().hex
+            settings = {
+                "tempo": host["tempo"],
+                **{field: host.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
+            }
             chunks.append(
                 {
+                    "id": utterance_id,
+                    "sequence": len(chunks) + 1,
+                    "section_id": section_id,
+                    "parent_turn_id": parent_turn_id,
+                    "fragment_index": fragment_index,
+                    "fragment_count": len(fragments),
                     "host_id": host.get("id"),
+                    "display_name": host["name"],
+                    "normalized_text": text_chunk,
+                    "voice_revision": {
+                        "voice": voice,
+                        "reference": host.get("reference_audio_path"),
+                    },
+                    "synthesis_settings": settings,
+                    "raw_output": None,
+                    "normalized_output": None,
+                    "timing": {},
+                    "transition": {"dramatic_pause_after": False},
+                    # Compatibility fields for the renderer and older manifests.
                     "host": host["name"],
                     "voice": voice,
-                    "tempo": host["tempo"],
-                    **{field: host.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
+                    **settings,
                     "text": text_chunk,
                     "parent_turn_id": f"{turn_id_prefix}-{turn_number:03d}",
                     "boundary_reason": (
@@ -544,22 +574,13 @@ def build_episode_speech_chunks(
     """Build optional host introductions followed by the main episode script."""
     canonical_script = remove_accidental_transcript_repetition(script)
     canonical_intro = remove_intro_episode_overlap(intro_lines, canonical_script)
-    intro_chunks = (
-        build_speech_chunks(
-            canonical_intro, hosts, max_chars=max_chars, turn_id_prefix="host-intro-turn"
-        )
-        if canonical_intro else []
-    )
-    episode_chunks = build_speech_chunks(
-        canonical_script, hosts, max_chars=max_chars, turn_id_prefix="episode-turn"
-    )
-    combined = [
-        *({**chunk, "section": "host_intro"} for chunk in intro_chunks),
-        *({**chunk, "section": "episode"} for chunk in episode_chunks),
-    ]
-    if intro_chunks and episode_chunks:
-        combined[len(intro_chunks)]["boundary_reason"] = "section_break"
-    return combined
+    intro_chunks = build_speech_chunks(canonical_intro, hosts, max_chars, "host_intro") if canonical_intro else []
+    episode_chunks = build_speech_chunks(canonical_script, hosts, max_chars, "episode")
+    utterances = [*intro_chunks, *episode_chunks]
+    for sequence, utterance in enumerate(utterances, start=1):
+        utterance["sequence"] = sequence
+        utterance["section"] = utterance["section_id"]
+    return utterances
 
 
 def build_conversation_prompt(
@@ -843,10 +864,8 @@ def build_generation_segments(speech_chunks: list[dict[str, Any]]) -> list[dict[
             "id": f"chunk-{number:03d}",
             "number": number,
             "status": "queued",
-            "attempt": 0,
-            "output": None,
-            "normalized_output": None,
-            "audio_metrics": None,
+            "utterances": items,
+            "outputs": {"audio": None},
             "error": None,
         }
         for number, chunk in enumerate(speech_chunks, start=1)
@@ -895,8 +914,8 @@ def _load_job(job_id: str) -> tuple[Path, dict[str, Any]]:
 
 
 def _job_progress(job: dict[str, Any]) -> dict[str, int]:
-    _migrate_job_manifest(job)
-    chunks = job["chunks"]
+    segments = job.get("segments", [])
+    chunks = [item for segment in segments for item in segment.get("utterances", segment.get("chunks", []))]
     return {
         "complete": sum(chunk.get("status") == "complete" for chunk in chunks),
         "total": len(chunks),
@@ -962,6 +981,7 @@ async def synthesize_chunk_with_retry(
             chunk["normalized_output"] = normalized.relative_to(job_dir).as_posix()
             chunk["status"] = "complete"
             chunk["output"] = destination.relative_to(job_dir).as_posix()
+            chunk["raw_output"] = chunk["output"]
             _write_job(job_dir, job)
             return
         except (httpx.HTTPError, OSError, ValueError) as exc:
@@ -1003,15 +1023,20 @@ async def start_generation_workers() -> None:
         job["error"] = None
         job.pop("started_at", None)
         job.pop("finished_at", None)
-        for chunk in job["chunks"]:
-            output = chunk.get("output")
-            if chunk.get("status") == "complete" and output and _valid_wav(manifest.parent / output):
-                continue
-            chunk["status"] = "queued"
-            chunk["output"] = None
-            chunk["normalized_output"] = None
-            chunk["audio_metrics"] = None
-            chunk["error"] = None
+        for segment in job.get("segments", []):
+            segment["error"] = None
+            reusable = True
+            for chunk in segment.get("utterances", segment.get("chunks", [])):
+                output = chunk.get("output")
+                if chunk.get("status") == "complete" and output and _valid_wav(manifest.parent / output):
+                    continue
+                reusable = False
+                chunk["status"] = "queued"
+                chunk["output"] = None
+                chunk["error"] = None
+            if not reusable:
+                segment["status"] = "queued"
+                segment.setdefault("outputs", {})["audio"] = None
         _write_job(manifest.parent, job)
         await generation_queue.put(job["id"])
 
@@ -1059,25 +1084,35 @@ async def process_generation_job(job_id: str) -> None:
         all_chunk_paths.append(intro_path)
         all_chunks.append({"host": "intro", "text": "", "section": "intro", "dramatic_pause_after": True})
     try:
-        for chunk_number, chunk in enumerate(job["chunks"], start=1):
-            path = job_dir / "chunks" / f"chunk-{chunk_number:03d}-{slugify(chunk['host'])}.wav"
-            saved_output = chunk.get("output")
-            saved_path = job_dir / saved_output if saved_output else path
-            if chunk.get("status") == "complete" and _valid_wav(saved_path):
-                raw_path = saved_path
-                saved_normalized = chunk.get("normalized_output")
-                path = job_dir / saved_normalized if saved_normalized else normalized_chunk_path(raw_path)
-                if not _valid_wav(path) or not chunk.get("audio_metrics"):
-                    chunk["audio_metrics"] = normalize_audio_segment(raw_path, path)
-                    chunk["normalized_output"] = path.relative_to(job_dir).as_posix()
-                valid, reason = validate_audio_segment(path)
-                if not valid:
-                    raise OSError(reason)
-            else:
-                await synthesize_chunk_with_retry(job_dir, job, chunk, path)
-                path = job_dir / chunk["normalized_output"]
-            all_chunk_paths.append(path)
-            all_chunks.append(chunk)
+        for segment in job["segments"]:
+            segment["status"] = "running"
+            _write_job(job_dir, job)
+            segment_paths: list[Path] = []
+            utterances = segment.get("utterances", segment.get("chunks", []))
+            for chunk in utterances:
+                path = job_dir / "chunks" / f"utterance-{chunk['id']}.wav"
+                saved_output = chunk.get("output")
+                saved_path = job_dir / saved_output if saved_output else path
+                if chunk.get("status") == "complete" and _valid_wav(saved_path):
+                    raw_path = saved_path
+                    saved_normalized = chunk.get("normalized_output")
+                    path = job_dir / saved_normalized if saved_normalized else normalized_chunk_path(raw_path)
+                    if not _valid_wav(path) or "audio_metrics" not in chunk:
+                        chunk["audio_metrics"] = normalize_audio_segment(raw_path, path)
+                        chunk["normalized_output"] = path.relative_to(job_dir).as_posix()
+                    valid, reason = validate_audio_segment(path)
+                    if not valid:
+                        raise OSError(reason)
+                else:
+                    await synthesize_chunk_with_retry(job_dir, job, chunk, path)
+                    path = job_dir / chunk["normalized_output"]
+                segment_paths.append(path)
+                all_chunk_paths.append(path)
+                all_chunks.append(chunk)
+            segment_audio = job_dir / "segments" / f"{segment['id']}.mp3"
+            assemble_mp3(segment_paths, segment_audio, utterances)
+            segment["outputs"]["audio"] = segment_audio.relative_to(job_dir).as_posix()
+            segment["status"] = "complete"
             _write_job(job_dir, job)
 
         final_paths = all_chunk_paths
@@ -1115,6 +1150,11 @@ async def process_generation_job(job_id: str) -> None:
         timeline_wav = job_dir / "final-audio-qa.wav"
         timeline = concatenate_wav_segments(final_paths, final_chunks, timeline_wav)
         for item, chunk in zip(timeline[-len(final_chunks):], final_chunks):
+            if chunk.get("id"):
+                chunk["timing"] = {
+                    key: round(float(item[key]), 3) for key in ("duration", "start", "end")
+                }
+                chunk.setdefault("transition", {})["pause_after_ms"] = item["pause_after_ms"]
             metrics = chunk.get("audio_metrics", {})
             logger.info(
                 "Chunk %s | Speaker: %s | Text length: %s | Raw duration: %.3fs | "
@@ -1165,20 +1205,34 @@ def media_duration(path: Path) -> float:
 
 
 def enrich_chunk_timeline(metadata: dict[str, Any], episode_dir: Path) -> dict[str, Any]:
-    """Measure rendered chunks and add deterministic episode start/end timestamps."""
+    """Measure ordered utterances without deriving identity from file ordering."""
     cursor = 0.0
-    chunk_files = sorted((episode_dir / "chunks").glob("chunk-*.wav"))
-    chunks = metadata.get("chunks", [])
-    if len(chunk_files) != len(chunks):
-        return metadata
-    for item, chunk_file in zip(chunks, chunk_files):
+    utterances = metadata.get("utterances", metadata.get("chunks", []))
+    for item in sorted(utterances, key=lambda value: value.get("sequence", 0)):
+        output = item.get("normalized_output") or item.get("raw_output") or item.get("output")
+        if not output:
+            return metadata
+        chunk_file = episode_dir / output
+        if not chunk_file.is_file():
+            return metadata
         duration = media_duration(chunk_file)
-        item["duration"] = duration
-        item["start"] = round(cursor, 3)
+        timing = item.setdefault("timing", {})
+        timing["duration"] = duration
+        timing["start"] = round(cursor, 3)
         cursor += duration
-        item["end"] = round(cursor, 3)
+        timing["end"] = round(cursor, 3)
+        # Temporary aliases keep existing clients readable during migration.
+        item.update(timing)
     metadata["duration"] = round(cursor, 3)
     return metadata
+
+
+def ordered_utterances(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return manifest utterances in editorial order (with legacy fallback)."""
+    return sorted(
+        metadata.get("utterances", metadata.get("chunks", [])),
+        key=lambda item: item.get("sequence", item.get("number", 0)),
+    )
 
 
 def _clip_score(text: str, speakers: int, duration: float) -> float:
@@ -1198,22 +1252,22 @@ def _clip_score(text: str, speakers: int, duration: float) -> float:
 
 
 def suggest_clip_windows(metadata: dict[str, Any], min_seconds: float = 20, max_seconds: float = 60, limit: int = 5) -> list[dict[str, Any]]:
-    chunks = metadata.get("chunks", [])
-    if not chunks or any("start" not in c or "end" not in c for c in chunks):
+    chunks = ordered_utterances(metadata)
+    if not chunks or any("start" not in c.get("timing", c) or "end" not in c.get("timing", c) for c in chunks):
         return []
     candidates: list[dict[str, Any]] = []
     for start_idx in range(len(chunks)):
         speakers: set[str] = set()
         texts: list[str] = []
-        start = float(chunks[start_idx]["start"])
+        start = float(chunks[start_idx].get("timing", chunks[start_idx])["start"])
         for end_idx in range(start_idx, len(chunks)):
             c = chunks[end_idx]
-            end = float(c["end"])
+            end = float(c.get("timing", c)["end"])
             duration = end - start
             if duration > max_seconds:
                 break
-            speakers.add(str(c.get("host", "Host")))
-            texts.append(str(c.get("text", "")))
+            speakers.add(str(c.get("display_name", c.get("host", "Host"))))
+            texts.append(str(c.get("normalized_text", c.get("text", ""))))
             if duration >= min_seconds:
                 text = " ".join(texts)
                 candidates.append({
@@ -1256,15 +1310,16 @@ def build_clip_ass(metadata: dict[str, Any], start: float, end: float, destinati
     margin_v = int(height * 0.18)
     header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,{font_size},&H00FFFFFF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,{margin_v},1\nStyle: Speaker,DejaVu Sans,{max(30, int(font_size*.52))},&H0058A6FF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,{max(60, int(margin_v*.62))},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
     events: list[str] = []
-    for chunk in metadata.get("chunks", []):
-        c_start = float(chunk.get("start", 0))
-        c_end = float(chunk.get("end", 0))
+    for chunk in ordered_utterances(metadata):
+        timing = chunk.get("timing", chunk)
+        c_start = float(timing.get("start", 0))
+        c_end = float(timing.get("end", 0))
         if c_end <= start or c_start >= end:
             continue
         rel_start = max(c_start, start) - start
         rel_end = min(c_end, end) - start
-        host = _ass_escape(str(chunk.get("host", "")))
-        text = _ass_escape(str(chunk.get("text", "")))
+        host = _ass_escape(str(chunk.get("display_name", chunk.get("host", ""))))
+        text = _ass_escape(str(chunk.get("normalized_text", chunk.get("text", ""))))
         # Split very long TTS chunks into visual sentences while keeping timing proportional.
         sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+", text) if x.strip()] or [text]
         total_chars = max(sum(len(x) for x in sentences), 1)
@@ -1483,7 +1538,7 @@ async def chunk_preview(
 ):
     hosts = parse_hosts(hosts_json)
     chunks = build_speech_chunks(script, hosts)
-    return {"count": len(chunks), "hosts": hosts, "chunks": chunks}
+    return {"count": len(chunks), "hosts": hosts, "utterances": chunks}
 
 
 @app.post("/api/generation-jobs", status_code=202)
@@ -1620,29 +1675,16 @@ async def generate(
     metadata = {
         "title": title,
         "hosts": hosts,
-        "chunk_count": len(speech_chunks),
+        "utterance_count": len(speech_chunks),
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "chunks": [
-            {
-                "number": index,
-                "host": chunk["host"],
-                "voice": chunk["voice"],
-                "tempo": chunk["tempo"],
-                **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
-                "text": chunk["text"],
-                "parent_turn_id": chunk["parent_turn_id"],
-                "boundary_reason": chunk["boundary_reason"],
-            }
-            for index, chunk in enumerate(speech_chunks, start=1)
-        ],
+        "utterances": speech_chunks,
     }
     (episode_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     chunk_paths: list[Path] = []
     try:
-        for index, chunk in enumerate(speech_chunks, start=1):
-            speaker_slug = slugify(chunk["host"])
-            chunk_path = chunks_dir / f"chunk-{index:03d}-{speaker_slug}.wav"
+        for chunk in speech_chunks:
+            chunk_path = chunks_dir / f"utterance-{chunk['id']}.wav"
             await synthesize_chunk(
                 chunk["text"], chunk["voice"], chunk["tempo"], chunk_path,
                 **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
@@ -1654,6 +1696,7 @@ async def generate(
                 normalized_path.unlink(missing_ok=True)
                 raise OSError(reason)
             chunk["audio_metrics"] = metrics
+            chunk["raw_output"] = chunk_path.relative_to(episode_dir).as_posix()
             chunk["normalized_output"] = normalized_path.relative_to(episode_dir).as_posix()
             chunk_paths.append(normalized_path)
 
@@ -1678,9 +1721,9 @@ async def generate(
             logger.warning("Audio QA: %.3f - %.3f | Silence: %.3f seconds",
                            region["start"], region["end"], region["duration"])
         assemble_mp3(chunk_paths, final_path, speech_chunks)
-        for target, item in zip(metadata["chunks"], timeline):
-            target.update({key: round(float(item[key]), 3) for key in ("duration", "start", "end")})
-            target["pause_after_ms"] = item["pause_after_ms"]
+        for target, item in zip(metadata["utterances"], timeline):
+            target["timing"] = {key: round(float(item[key]), 3) for key in ("duration", "start", "end")}
+            target["transition"]["pause_after_ms"] = item["pause_after_ms"]
         metadata["duration"] = round(timeline[-1]["end"] + timeline[-1]["pause_after_ms"] / 1000, 3)
         metadata["audio_qa"] = qa
         timeline_wav.unlink(missing_ok=True)
@@ -1717,7 +1760,7 @@ async def clip_suggestions(episode_slug: str):
     if not metadata_file.exists():
         raise HTTPException(status_code=404, detail="Episode not found")
     metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-    if any("start" not in c for c in metadata.get("chunks", [])):
+    if any("start" not in c.get("timing", c) for c in ordered_utterances(metadata)):
         metadata = enrich_chunk_timeline(metadata, episode_dir)
         metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return {"episode": episode_slug, "duration": metadata.get("duration"), "suggestions": suggest_clip_windows(metadata)}
@@ -1738,7 +1781,7 @@ async def create_clip(
     if not metadata_file.exists():
         raise HTTPException(status_code=404, detail="Episode not found")
     metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-    if any("start" not in c for c in metadata.get("chunks", [])):
+    if any("start" not in c.get("timing", c) for c in ordered_utterances(metadata)):
         metadata = enrich_chunk_timeline(metadata, episode_dir)
         metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     duration = float(metadata.get("duration") or 0)
