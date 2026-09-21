@@ -170,7 +170,8 @@ def test_conversation_prompt_contains_cast_and_source_notes():
     assert "Do not invent factual details" in prompt
     assert "Begin directly with Major Patchnotes's dialogue" in prompt
     assert "Insert a speaker tag only when the active speaker changes" in prompt
-    assert "HOST_SOUTHERN, HOST_CITY, or HOST_WORLDLY" in prompt
+    assert "Never emit role labels or invented speaker names" in prompt
+    assert "Patch Notes: America" not in prompt
 
 
 def test_conversation_prompt_rejects_bad_length():

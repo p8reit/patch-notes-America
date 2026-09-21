@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Patch Notes: America</title>
+  <title>Podcast Builder</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <main class="shell">
     <header>
       <p class="eyebrow">PODCAST BUILDER</p>
-      <h1>Patch Notes: America</h1>
-      <p class="lede">Build character-driven, multi-host Chatterbox podcasts with a persistent cast.</p>
+      <h1>Podcast Builder</h1>
+      <p class="lede">Build any character-driven, multi-host Chatterbox podcast with a persistent cast.</p>
     </header>
 
     <section class="card status-card">
@@ -25,7 +25,7 @@
     <form id="episode-form" class="card">
       <label>
         Episode title
-        <input name="title" value="Patch Notes America Pilot" required>
+        <input name="title" placeholder="My next great episode" required>
       </label>
 
       <section class="hosts-section">
@@ -87,10 +87,10 @@
 
       <label>
         Episode script
-        <textarea id="episode-script" name="script" rows="24" required>{{ pilot }}</textarea>
+        <textarea id="episode-script" name="script" rows="24" placeholder="Write or generate your episode script here." required></textarea>
       </label>
       <p class="hint script-help">
-        Switch speakers with the exact host name on its own line, such as <code>[Wade Mercer]</code>, <code>[Marcus Reed]</code>, or <code>[Julian Cross]</code>.
+        Switch speakers with the exact host name on its own line, such as <code>[Alex Rivera]</code> or <code>[Jordan Lee]</code>.
         Text before the first speaker tag is spoken by the first host.
       </p>
 
@@ -113,7 +113,7 @@
         </label>
         <label>
           Host intro lines
-          <textarea id="intro-lines" name="intro_lines" rows="6" placeholder="Welcome to Patch Notes: America.&#10;&#10;[Marcus Reed]&#10;Here is what we are covering today."></textarea>
+          <textarea id="intro-lines" name="intro_lines" rows="6" placeholder="Welcome to the show.&#10;&#10;[Jordan Lee]&#10;Here is what we are covering today."></textarea>
           <span class="hint">Use the same speaker-tag format as the episode script.</span>
         </label>
       </section>
@@ -135,7 +135,10 @@
     <section class="card jobs-card">
       <div class="section-heading"><div><p class="eyebrow">BACKGROUND AUDIO</p><h2>Render queue</h2>
         <p class="hint">Submitted episodes keep rendering after this page is closed. Return later to download completed audio.</p>
-      </div><button id="refresh-jobs" class="secondary" type="button">Refresh jobs</button></div>
+      </div><div class="queue-actions">
+        <label class="checkbox-label queue-filter"><input id="hide-completed" type="checkbox"> Hide completed runs</label>
+        <button id="refresh-jobs" class="secondary" type="button">Refresh jobs</button>
+      </div></div>
       <div id="job-list" class="job-list"><p class="hint">Loading audio jobs...</p></div>
     </section>
 
@@ -179,7 +182,7 @@
       <div class="host-grid host-grid-primary">
         <label>
           Name
-          <input class="host-name" required placeholder="Wade Mercer">
+          <input class="host-name" required placeholder="Alex Rivera">
         </label>
         <label>
           Role
@@ -290,6 +293,8 @@
     let availableVoices = [{id: '{{ default_voice }}', label: 'Default (built in)'}];
     let currentEpisode = null;
     const activeJobPollers = new Map();
+    let latestJobs = [];
+    let configuredWorkers = 1;
     const introMusicVolume = document.getElementById('intro-music-volume');
     introMusicVolume.addEventListener('input', () => {
       document.getElementById('intro-music-volume-value').textContent = `${Math.round(Number(introMusicVolume.value) * 100)}%`;
@@ -367,16 +372,33 @@
       });
     }
 
+    function formatElapsed(startedAt) {
+      const started = Date.parse(startedAt || '');
+      if (!Number.isFinite(started)) return 'Starting…';
+      const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const remainder = seconds % 60;
+      return `${hours ? `${hours}:` : ''}${String(minutes).padStart(hours ? 2 : 1, '0')}:${String(remainder).padStart(2, '0')}`;
+    }
+
     function renderJobs(jobs, workers = 1) {
       const list = document.getElementById('job-list');
-      if (!jobs.length) { list.innerHTML = '<p class="hint">No audio jobs have been submitted yet.</p>'; return; }
-      list.innerHTML = jobs.map(job => {
+      const hideCompleted = document.getElementById('hide-completed').checked;
+      const visibleJobs = hideCompleted ? jobs.filter(job => job.status !== 'complete') : jobs;
+      if (!visibleJobs.length) {
+        list.innerHTML = `<p class="hint">${jobs.length ? 'All completed runs are hidden.' : 'No audio jobs have been submitted yet.'}</p>`;
+        return;
+      }
+      list.innerHTML = visibleJobs.map(job => {
         const progress = job.progress || {complete: 0, total: 0};
         const detail = job.status === 'complete'
           ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>`
           : job.status === 'failed' ? `<span class="job-error">${escapeHtml(job.error || 'Rendering failed')}</span>`
           : `<span class="hint">${progress.complete}/${progress.total} segments · ${progress.chunks_complete || 0}/${progress.chunks_total || 0} chunks · safe to close this page</span>`;
-        return `<article class="job-row"><div><strong>${escapeHtml(job.title)}</strong><small>${escapeHtml(job.created_at || '')}</small></div>
+        const timer = job.status === 'running'
+          ? `<small class="job-timer" data-started-at="${escapeHtml(job.started_at || '')}">Running for ${formatElapsed(job.started_at)}</small>` : '';
+        return `<article class="job-row"><div><strong>${escapeHtml(job.title)}</strong><small>${escapeHtml(job.created_at || '')}</small>${timer}</div>
           <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${detail}</article>`;
       }).join('');
       list.insertAdjacentHTML('beforeend', `<p class="hint worker-note">${workers} audio worker${workers === 1 ? '' : 's'} configured. CPU-only systems should normally use one.</p>`);
@@ -385,6 +407,8 @@
     async function refreshJobs() {
       const res = await fetch('/api/generation-jobs'); const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Could not load audio jobs');
+      latestJobs = data.jobs;
+      configuredWorkers = data.workers;
       renderJobs(data.jobs, data.workers);
       data.jobs.filter(job => ['queued', 'running'].includes(job.status)).forEach(job => monitorJob(job.id));
       const latestComplete = data.jobs.find(job => job.status === 'complete');
@@ -416,6 +440,17 @@
     }
 
     document.getElementById('refresh-jobs').addEventListener('click', () => refreshJobs());
+    const hideCompleted = document.getElementById('hide-completed');
+    hideCompleted.checked = localStorage.getItem('podcast-builder-hide-completed') === 'true';
+    hideCompleted.addEventListener('change', () => {
+      localStorage.setItem('podcast-builder-hide-completed', String(hideCompleted.checked));
+      renderJobs(latestJobs, configuredWorkers);
+    });
+    window.setInterval(() => {
+      document.querySelectorAll('.job-timer').forEach(timer => {
+        timer.textContent = `Running for ${formatElapsed(timer.dataset.startedAt)}`;
+      });
+    }, 1000);
 
     function renumberHosts() {
       const rows = [...hostsContainer.querySelectorAll('.host-row')];

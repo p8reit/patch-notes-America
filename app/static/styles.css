@@ -35,6 +35,10 @@ button:disabled { opacity: .55; cursor: wait; }
 .job-status.failed, .job-error { color: #f85149; }
 .download.compact { padding: 8px 12px; font-size: .86rem; text-align: center; }
 .worker-note { margin: 4px 0 0; }
+.queue-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.queue-filter { display: flex; align-items: center; gap: 8px; margin: 0; padding: 0; color: #c9d1d9; font-size: .9rem; white-space: nowrap; }
+.queue-filter input { width: auto; accent-color: #238636; }
+.job-timer { color: #58a6ff !important; font-variant-numeric: tabular-nums; }
 @media (max-width: 700px) { .job-row { grid-template-columns: 1fr auto; } .job-row > :last-child { grid-column: 1 / -1; } }
 @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } .status-card div { flex-direction: column; } }
 
