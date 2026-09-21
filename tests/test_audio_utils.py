@@ -6,8 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from app.audio_utils import (
+    DRAMATIC_PAUSE_MS,
+    NORMAL_TRANSITION_PAUSE_MS,
+    SECTION_CHANGE_PAUSE_MS,
     SPEAKER_CHANGE_PAUSE_MS,
     SAME_SPEAKER_PAUSE_MS,
+    TECHNICAL_CONTINUATION_PAUSE_MS,
     analyze_final_audio_silence,
     calculate_transition_pause,
     concatenate_wav_segments,
@@ -110,11 +114,24 @@ def test_accepts_quiet_speech_below_configured_silence_threshold(tmp_path):
 
 
 def test_same_speaker_transition():
-    assert calculate_transition_pause({"host": "Wade"}, {"host": "Wade"}) == SAME_SPEAKER_PAUSE_MS
+    assert calculate_transition_pause({}, {"boundary_reason": "sentence_break"}) == SAME_SPEAKER_PAUSE_MS
+
+
+def test_technical_continuation_has_no_conversational_pause():
+    assert calculate_transition_pause({}, {"boundary_reason": "technical_continuation"}) == TECHNICAL_CONTINUATION_PAUSE_MS
+
+
+def test_paragraph_and_section_transitions_use_declared_spacing():
+    assert calculate_transition_pause({}, {"boundary_reason": "paragraph_break"}) == NORMAL_TRANSITION_PAUSE_MS
+    assert calculate_transition_pause({}, {"boundary_reason": "section_break"}) == SECTION_CHANGE_PAUSE_MS
 
 
 def test_different_speaker_transition():
-    assert calculate_transition_pause({"host": "Wade"}, {"host": "Marcus"}) == SPEAKER_CHANGE_PAUSE_MS
+    assert calculate_transition_pause({}, {"boundary_reason": "speaker_change"}) == SPEAKER_CHANGE_PAUSE_MS
+
+
+def test_explicit_dramatic_pause_uses_dramatic_spacing():
+    assert calculate_transition_pause({}, {"boundary_reason": "explicit_dramatic_pause"}) == DRAMATIC_PAUSE_MS
 
 
 def test_concatenation_is_sequential_and_never_overlaps_segments(tmp_path):
@@ -124,7 +141,10 @@ def test_concatenation_is_sequential_and_never_overlaps_segments(tmp_path):
 
     timeline = concatenate_wav_segments(
         [first, second],
-        [{"host": "Wade", "text": "First"}, {"host": "Wade", "text": "Second"}],
+        [
+            {"host": "Wade", "text": "First", "boundary_reason": None},
+            {"host": "Wade", "text": "Second", "boundary_reason": "sentence_break"},
+        ],
         combined,
     )
 

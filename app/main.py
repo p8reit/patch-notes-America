@@ -141,61 +141,70 @@ def remove_intro_episode_overlap(intro_lines: str, script: str) -> str:
 
 
 def split_script(text: str, max_chars: int = MAX_CHARS) -> List[str]:
+    return [chunk["text"] for chunk in _split_script_with_boundaries(text, max_chars)]
+
+
+def _split_script_with_boundaries(text: str, max_chars: int) -> list[dict[str, str | None]]:
+    """Split text at natural boundaries and describe every resulting boundary."""
+    if max_chars < 1:
+        raise ValueError("max_chars must be positive")
     text = clean_script(text)
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    chunks: list[str] = []
+    chunks: list[dict[str, str | None]] = []
     current = ""
+    current_boundary: str | None = None
 
     def flush() -> None:
-        nonlocal current
+        nonlocal current, current_boundary
         if current.strip():
-            chunks.append(current.strip())
+            chunks.append({"text": current.strip(), "boundary_reason": current_boundary})
             current = ""
+            current_boundary = None
 
-    for paragraph in paragraphs:
-        if len(paragraph) <= max_chars:
-            candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
-            if len(candidate) <= max_chars:
-                current = candidate
-            else:
-                flush()
-                current = paragraph
-            continue
-
-        flush()
+    for paragraph_index, paragraph in enumerate(paragraphs):
         sentences = re.split(r"(?<=[.!?])\s+", paragraph)
-        sentence_buffer = ""
-        for sentence in sentences:
+        for sentence_index, sentence in enumerate(sentences):
             sentence = sentence.strip()
             if not sentence:
                 continue
-            candidate = f"{sentence_buffer} {sentence}".strip()
+            separator = "\n\n" if sentence_index == 0 and paragraph_index > 0 else " "
+            natural_boundary = "paragraph_break" if separator == "\n\n" else "sentence_break"
+            candidate = f"{current}{separator}{sentence}".strip() if current else sentence
             if len(candidate) <= max_chars:
-                sentence_buffer = candidate
+                current = candidate
                 continue
 
-            if sentence_buffer:
-                chunks.append(sentence_buffer)
-                sentence_buffer = ""
+            if current:
+                flush()
+                current_boundary = natural_boundary
 
             if len(sentence) <= max_chars:
-                sentence_buffer = sentence
+                current = sentence
                 continue
 
+            # Only sentences without a usable punctuation boundary are split by
+            # words. These fragments are one utterance and receive virtually no
+            # assembly pause between them.
             words = sentence.split()
             hard = ""
             for word in words:
                 candidate = f"{hard} {word}".strip()
                 if len(candidate) > max_chars and hard:
-                    chunks.append(hard)
+                    current = hard
+                    flush()
+                    current_boundary = "technical_continuation"
                     hard = word
                 else:
                     hard = candidate
             if hard:
-                sentence_buffer = hard
-
-        if sentence_buffer:
-            chunks.append(sentence_buffer)
+                # Extremely long tokens still need a final character-level
+                # fallback to honor the Chatterbox input contract.
+                while len(hard) > max_chars:
+                    current = hard[:max_chars]
+                    flush()
+                    current_boundary = "technical_continuation"
+                    hard = hard[max_chars:]
+                current = hard
 
     flush()
     return chunks
@@ -478,13 +487,17 @@ def parse_speaker_script(script: str, hosts: list[dict[str, Any]]) -> list[dict[
 
 
 def build_speech_chunks(
-    script: str, hosts: list[dict[str, Any]], max_chars: int = MAX_CHARS
+    script: str,
+    hosts: list[dict[str, Any]],
+    max_chars: int = MAX_CHARS,
+    *,
+    turn_id_prefix: str = "turn",
 ) -> list[dict[str, Any]]:
     host_lookup = {host["name"]: host for host in hosts}
     sections = parse_speaker_script(remove_accidental_transcript_repetition(script), hosts)
     chunks: list[dict[str, Any]] = []
 
-    for section in sections:
+    for turn_number, section in enumerate(sections, start=1):
         host = host_lookup[section["host"]]
         voice = host["voice"]
         if host.get("reference_audio_path"):
@@ -497,7 +510,10 @@ def build_speech_chunks(
                     host["name"], host["id"],
                 )
                 voice = DEFAULT_VOICE
-        for text_chunk in split_script(section["text"], max_chars=max_chars):
+        for chunk_in_turn, split_chunk in enumerate(
+            _split_script_with_boundaries(section["text"], max_chars=max_chars)
+        ):
+            text_chunk = str(split_chunk["text"])
             if not is_speakable_text(text_chunk):
                 logger.warning("Skipping non-speaking chunk for %s: %r", host["name"], text_chunk)
                 continue
@@ -509,6 +525,11 @@ def build_speech_chunks(
                     "tempo": host["tempo"],
                     **{field: host.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
                     "text": text_chunk,
+                    "parent_turn_id": f"{turn_id_prefix}-{turn_number:03d}",
+                    "boundary_reason": (
+                        "speaker_change" if turn_number > 1 and chunk_in_turn == 0
+                        else split_chunk["boundary_reason"]
+                    ),
                 }
             )
     return chunks
@@ -523,12 +544,22 @@ def build_episode_speech_chunks(
     """Build optional host introductions followed by the main episode script."""
     canonical_script = remove_accidental_transcript_repetition(script)
     canonical_intro = remove_intro_episode_overlap(intro_lines, canonical_script)
-    intro_chunks = build_speech_chunks(canonical_intro, hosts, max_chars=max_chars) if canonical_intro else []
-    episode_chunks = build_speech_chunks(canonical_script, hosts, max_chars=max_chars)
-    return [
+    intro_chunks = (
+        build_speech_chunks(
+            canonical_intro, hosts, max_chars=max_chars, turn_id_prefix="host-intro-turn"
+        )
+        if canonical_intro else []
+    )
+    episode_chunks = build_speech_chunks(
+        canonical_script, hosts, max_chars=max_chars, turn_id_prefix="episode-turn"
+    )
+    combined = [
         *({**chunk, "section": "host_intro"} for chunk in intro_chunks),
         *({**chunk, "section": "episode"} for chunk in episode_chunks),
     ]
+    if intro_chunks and episode_chunks:
+        combined[len(intro_chunks)]["boundary_reason"] = "section_break"
+    return combined
 
 
 def build_conversation_prompt(
@@ -1014,7 +1045,7 @@ async def process_generation_job(job_id: str) -> None:
             _write_job(job_dir, job)
             return
         all_chunk_paths.append(intro_path)
-        all_chunks.append({"host": "intro", "text": "", "section": "intro", "dramatic_pause_after": True})
+        all_chunks.append({"host": "intro", "text": "", "section": "intro", "boundary_reason": None})
     chunk_number = 0
     try:
         for segment in job["segments"]:
@@ -1041,6 +1072,8 @@ async def process_generation_job(job_id: str) -> None:
                     path = job_dir / chunk["normalized_output"]
                 segment_paths.append(path)
                 all_chunk_paths.append(path)
+                if intro_track and len(all_chunks) == 1:
+                    chunk = {**chunk, "boundary_reason": "explicit_dramatic_pause"}
                 all_chunks.append(chunk)
             segment_audio = job_dir / "segments" / f"{segment['id']}.mp3"
             assemble_mp3(segment_paths, segment_audio, segment["chunks"])
@@ -1073,9 +1106,11 @@ async def process_generation_job(job_id: str) -> None:
             intro_voice_wav.unlink(missing_ok=True)
             final_paths = [mixed_intro_wav, *all_chunk_paths[1 + intro_chunk_count:]]
             final_chunks = [
-                {"host": "intro", "text": intro.get("lines", ""), "section": "intro", "dramatic_pause_after": True},
+                {"host": "intro", "text": intro.get("lines", ""), "section": "intro", "boundary_reason": None},
                 *all_chunks[1 + intro_chunk_count:],
             ]
+            if len(final_chunks) > 1:
+                final_chunks[1] = {**final_chunks[1], "boundary_reason": "explicit_dramatic_pause"}
 
         final_path = job_dir / f"{slugify(job['title'])}.mp3"
         timeline_wav = job_dir / "final-audio-qa.wav"
@@ -1597,6 +1632,8 @@ async def generate(
                 "tempo": chunk["tempo"],
                 **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
                 "text": chunk["text"],
+                "parent_turn_id": chunk["parent_turn_id"],
+                "boundary_reason": chunk["boundary_reason"],
             }
             for index, chunk in enumerate(speech_chunks, start=1)
         ],

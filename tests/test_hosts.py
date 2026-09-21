@@ -45,6 +45,33 @@ def test_build_chunks_preserves_voice_and_tempo():
     assert chunks[1]["tempo"] == 1.05
 
 
+def test_long_same_speaker_turn_prefers_sentences_then_marks_hard_splits():
+    script = "A natural sentence ends here. " + " ".join(["unbroken"] * 30)
+    chunks = build_speech_chunks(script, hosts(), max_chars=40)
+
+    assert len({chunk["parent_turn_id"] for chunk in chunks}) == 1
+    assert chunks[1]["boundary_reason"] == "sentence_break"
+    assert all(
+        chunk["boundary_reason"] == "technical_continuation"
+        for chunk in chunks[2:]
+    )
+    assert all(len(chunk["text"]) <= 40 for chunk in chunks)
+
+
+def test_paragraph_boundary_is_recorded_when_it_requires_a_new_chunk():
+    chunks = build_speech_chunks("First paragraph.\n\nSecond paragraph.", hosts(), max_chars=20)
+
+    assert [chunk["boundary_reason"] for chunk in chunks] == [None, "paragraph_break"]
+    assert chunks[0]["parent_turn_id"] == chunks[1]["parent_turn_id"]
+
+
+def test_speaker_change_starts_a_new_parent_turn_and_boundary():
+    chunks = build_speech_chunks("Hello.\n[Alex]\nHi.", hosts(), max_chars=100)
+
+    assert chunks[1]["boundary_reason"] == "speaker_change"
+    assert chunks[0]["parent_turn_id"] != chunks[1]["parent_turn_id"]
+
+
 def test_episode_chunks_put_host_intro_lines_before_main_script():
     from app.main import build_episode_speech_chunks
 
