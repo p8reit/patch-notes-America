@@ -195,7 +195,10 @@ If quiet speech is being reported as `WAV contains no audible speech`, make
 If background noise is being treated as speech, move it in the other direction,
 such as `-45` to `-40`. `MAX_LEADING_SILENCE_MS` and
 `MAX_TRAILING_SILENCE_MS` change how much silence is retained after speech has
-been detected; they do not change detection sensitivity.
+been detected; they do not change detection sensitivity. When a TTS response
+contains a valid but unusually quiet waveform, detection automatically falls
+back to a threshold relative to that recording's peak. Completely silent
+(all-zero) WAV files are still rejected and retried.
 
 The pauses deliberately inserted between chunks can be adjusted separately:
 

@@ -105,15 +105,32 @@ def _speech_window_bounds(
 def detect_boundary_silence(
     path: Path, threshold_db: float = SILENCE_THRESHOLD_DB
 ) -> dict[str, float | bool]:
-    """Measure only leading/trailing silence; internal performance is untouched."""
+    """Measure boundary silence, adapting when a valid recording is unusually quiet.
+
+    ``threshold_db`` remains the preferred absolute threshold.  Some TTS backends,
+    however, return correctly formed speech at a very low gain.  Treating that as
+    an entirely silent file makes retrying useless, so in that case detection falls
+    back to ten percent of the recording's peak.  An all-zero PCM file is still
+    considered silent.
+    """
     try:
         audio = _read_wav(path)
     except (OSError, EOFError, wave.Error, ValueError):
         return {"duration": 0.0, "leading_silence": 0.0, "trailing_silence": 0.0, "silent": True}
     if not audio.frames or not audio.sample_rate:
         return {"duration": 0.0, "leading_silence": 0.0, "trailing_silence": 0.0, "silent": True}
-    bounds = _speech_window_bounds(audio, threshold_db)
-    if bounds is None:
+    frame_size = audio.channels * audio.sample_width
+    maximum = (1 << (audio.sample_width * 8 - 1)) - 1 if audio.sample_width > 1 else 127
+    peaks = [_frame_peak(audio.frames[i:i + frame_size], audio.sample_width)
+             for i in range(0, len(audio.frames), frame_size)]
+    recording_peak = max(peaks, default=0)
+    if recording_peak == 0:
+        return {"duration": audio.duration_seconds, "leading_silence": audio.duration_seconds,
+                "trailing_silence": audio.duration_seconds, "silent": True}
+    configured_threshold = maximum * math.pow(10.0, threshold_db / 20.0)
+    threshold = min(configured_threshold, recording_peak * 0.1)
+    speaking = [index for index, peak in enumerate(peaks) if peak > threshold]
+    if not speaking:
         return {"duration": audio.duration_seconds, "leading_silence": audio.duration_seconds,
                 "trailing_silence": audio.duration_seconds, "silent": True}
     first, speech_end = bounds

@@ -23,11 +23,11 @@ from app.main import mix_intro_track_and_voice, parse_speaker_script
 RATE = 8000
 
 
-def write_wav(path, parts):
+def write_wav(path, parts, amplitude=12000):
     samples = []
     for duration, audible in parts:
         for index in range(round(duration * RATE)):
-            value = int(12000 * math.sin(2 * math.pi * 220 * index / RATE)) if audible else 0
+            value = int(amplitude * math.sin(2 * math.pi * 220 * index / RATE)) if audible else 0
             samples.append(value)
     with wave.open(str(path), "wb") as output:
         output.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
@@ -95,6 +95,18 @@ def test_rejects_silent_wav(tmp_path):
     path = tmp_path / "silent.wav"
     write_wav(path, [(1, False)])
     assert validate_audio_segment(path) == (False, "WAV contains no audible speech")
+
+
+def test_accepts_quiet_speech_below_configured_silence_threshold(tmp_path):
+    source, output = tmp_path / "quiet.wav", tmp_path / "normalized" / "quiet.wav"
+    # A peak of 100 in 16-bit PCM is about -50 dBFS, below the -45 dB default.
+    write_wav(source, [(0.5, False), (0.5, True), (0.5, False)], amplitude=100)
+
+    metrics = normalize_audio_segment(source, output)
+
+    assert metrics["silent"] is False
+    assert metrics["raw_leading_silence"] == pytest.approx(0.5, abs=0.002)
+    assert validate_audio_segment(output) == (True, "")
 
 
 def test_same_speaker_transition():
