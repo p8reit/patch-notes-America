@@ -118,12 +118,6 @@
         </label>
       </section>
 
-      <label>
-        Audio chunks per segment
-        <input id="chunks-per-segment" name="chunks_per_segment" type="number" min="1" max="100" value="8">
-        <span class="hint">Each segment is checkpointed as a separate batch output, ready for additional media renderers later.</span>
-      </label>
-
       <div class="actions">
         <button type="submit">Generate episode</button>
         <span id="progress"></span>
@@ -323,7 +317,6 @@
       ['#intro-overlap', 'When selected, the spoken host introduction starts with the music instead of waiting for it to finish.'],
       ['#intro-music-volume', 'Sets the music level only while building the mixed show open.'],
       ['#intro-lines', 'Optional spoken opening lines; use the same host tags as the main episode script.'],
-      ['#chunks-per-segment', 'The number of audio chunks grouped into each checkpointed output segment.'],
       ['.host-name', 'The speaker name used in script tags and episode metadata.'],
       ['.host-role', 'A short description of this host’s place in the conversation.'],
       ['.host-voice', 'The saved Chatterbox voice used when this host has no uploaded reference recording.'],
@@ -395,7 +388,7 @@
         const detail = job.status === 'complete'
           ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>`
           : job.status === 'failed' ? `<span class="job-error">${escapeHtml(job.error || 'Rendering failed')}</span>`
-          : `<span class="hint">${progress.complete}/${progress.total} segments · ${progress.chunks_complete || 0}/${progress.chunks_total || 0} chunks · safe to close this page</span>`;
+          : `<span class="hint">${progress.complete}/${progress.total} chunks · safe to close this page</span>`;
         const timer = job.status === 'running'
           ? `<small class="job-timer" data-started-at="${escapeHtml(job.started_at || '')}">Running for ${formatElapsed(job.started_at)}</small>` : '';
         return `<article class="job-row"><div><strong>${escapeHtml(job.title)}</strong><small>${escapeHtml(job.created_at || '')}</small>${timer}</div>
@@ -801,7 +794,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Generation failed');
         currentEpisode = data.job_id;
-        progress.textContent = `Submitted ${data.segments} segment${data.segments === 1 ? '' : 's'}. You may close this page.`;
+        progress.textContent = `Submitted ${data.chunks} speech chunk${data.chunks === 1 ? '' : 's'}. You may close this page.`;
         await refreshJobs();
         monitorJob(data.job_id);
       } catch (err) {
