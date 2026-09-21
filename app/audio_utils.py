@@ -66,15 +66,26 @@ def _window_rms(frames: bytes, sample_width: int) -> float:
     return math.sqrt(sum(sample * sample for sample in samples) / max(count, 1))
 
 
+def _frame_peak(frame: bytes, sample_width: int) -> int:
+    """Return the greatest absolute PCM sample amplitude in one audio frame."""
+    if sample_width == 1:
+        return max((abs(value - 128) for value in frame), default=0)
+    return max(
+        (
+            abs(int.from_bytes(frame[index:index + sample_width], "little", signed=True))
+            for index in range(0, len(frame), sample_width)
+        ),
+        default=0,
+    )
+
+
 def _speech_window_bounds(
-    audio: WavData, threshold_db: float
+    audio: WavData, threshold: float
 ) -> tuple[int, int] | None:
     """Find sustained speech using short RMS windows, ignoring isolated clicks/noise."""
     frame_size = audio.channels * audio.sample_width
     window_frames = max(1, round(audio.sample_rate * SILENCE_WINDOW_MS / 1000))
     minimum_windows = max(1, math.ceil(MIN_SPEECH_ACTIVITY_MS / SILENCE_WINDOW_MS))
-    maximum = (1 << (audio.sample_width * 8 - 1)) - 1 if audio.sample_width > 1 else 127
-    threshold = maximum * math.pow(10.0, threshold_db / 20.0)
     active: list[bool] = []
     for start in range(0, audio.frame_count, window_frames):
         end = min(start + window_frames, audio.frame_count)
@@ -129,8 +140,8 @@ def detect_boundary_silence(
                 "trailing_silence": audio.duration_seconds, "silent": True}
     configured_threshold = maximum * math.pow(10.0, threshold_db / 20.0)
     threshold = min(configured_threshold, recording_peak * 0.1)
-    speaking = [index for index, peak in enumerate(peaks) if peak > threshold]
-    if not speaking:
+    bounds = _speech_window_bounds(audio, threshold)
+    if bounds is None:
         return {"duration": audio.duration_seconds, "leading_silence": audio.duration_seconds,
                 "trailing_silence": audio.duration_seconds, "silent": True}
     first, speech_end = bounds
