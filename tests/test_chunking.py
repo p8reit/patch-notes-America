@@ -51,18 +51,9 @@ def test_generation_chunks_are_ordered_durable_units():
 
     durable_chunks = build_generation_segments(chunks)
 
-    assert [len(segment["utterances"]) for segment in segments] == [2, 2, 1]
-    assert [segment["id"] for segment in segments] == ["segment-001", "segment-002", "segment-003"]
-    assert all(segment["status"] == "queued" for segment in segments)
-    assert all(segment["outputs"] == {"audio": None} for segment in segments)
-
-
-def test_generation_segment_size_is_validated():
-    import pytest
-    from fastapi import HTTPException
-
-    with pytest.raises(HTTPException):
-        build_generation_segments([{"text": "hello"}], chunks_per_segment=0)
+    assert [chunk["id"] for chunk in durable_chunks] == [f"chunk-{number:03d}" for number in range(1, 6)]
+    assert [chunk["number"] for chunk in durable_chunks] == list(range(1, 6))
+    assert all(chunk["status"] == "queued" for chunk in durable_chunks)
 
 
 def test_job_progress_counts_completed_chunks():
@@ -99,8 +90,11 @@ def test_legacy_segment_manifest_is_migrated_in_order():
         ]
     }
 
-    assert segment["utterances"][0]["status"] == "queued"
-    assert segment["utterances"][0]["output"] is None
+    assert _migrate_job_manifest(job) is True
+    assert job["chunks"][0]["status"] == "complete"
+    assert job["chunks"][0]["output"] == "one.wav"
+    assert job["chunks"][1]["status"] == "queued"
+    assert job["chunks"][1]["output"] is None
 
 
 def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypatch):
