@@ -12,6 +12,8 @@ from typing import Any, Sequence
 
 
 SILENCE_THRESHOLD_DB = float(os.getenv("SILENCE_THRESHOLD_DB", "-45"))
+SILENCE_WINDOW_MS = int(os.getenv("SILENCE_WINDOW_MS", "10"))
+MIN_SPEECH_ACTIVITY_MS = int(os.getenv("MIN_SPEECH_ACTIVITY_MS", "30"))
 MAX_LEADING_SILENCE_MS = int(os.getenv("MAX_LEADING_SILENCE_MS", "250"))
 MAX_TRAILING_SILENCE_MS = int(os.getenv("MAX_TRAILING_SILENCE_MS", "350"))
 SPEECH_SAFETY_BUFFER_MS = int(os.getenv("SPEECH_SAFETY_BUFFER_MS", "40"))
@@ -48,14 +50,56 @@ def _read_wav(path: Path) -> WavData:
         )
 
 
-def _frame_peak(frame: bytes, sample_width: int) -> int:
+def _window_rms(frames: bytes, sample_width: int) -> float:
+    """Return RMS amplitude for an interleaved PCM window."""
+    if not frames:
+        return 0.0
     if sample_width == 1:
-        return max((abs(value - 128) for value in frame), default=0)
-    return max(
-        (abs(int.from_bytes(frame[i:i + sample_width], "little", signed=True))
-         for i in range(0, len(frame), sample_width)),
-        default=0,
-    )
+        samples = (value - 128 for value in frames)
+        count = len(frames)
+    else:
+        samples = (
+            int.from_bytes(frames[index:index + sample_width], "little", signed=True)
+            for index in range(0, len(frames), sample_width)
+        )
+        count = len(frames) // sample_width
+    return math.sqrt(sum(sample * sample for sample in samples) / max(count, 1))
+
+
+def _speech_window_bounds(
+    audio: WavData, threshold_db: float
+) -> tuple[int, int] | None:
+    """Find sustained speech using short RMS windows, ignoring isolated clicks/noise."""
+    frame_size = audio.channels * audio.sample_width
+    window_frames = max(1, round(audio.sample_rate * SILENCE_WINDOW_MS / 1000))
+    minimum_windows = max(1, math.ceil(MIN_SPEECH_ACTIVITY_MS / SILENCE_WINDOW_MS))
+    maximum = (1 << (audio.sample_width * 8 - 1)) - 1 if audio.sample_width > 1 else 127
+    threshold = maximum * math.pow(10.0, threshold_db / 20.0)
+    active: list[bool] = []
+    for start in range(0, audio.frame_count, window_frames):
+        end = min(start + window_frames, audio.frame_count)
+        window = audio.frames[start * frame_size:end * frame_size]
+        active.append(_window_rms(window, audio.sample_width) > threshold)
+
+    first: int | None = None
+    run = 0
+    for index, is_active in enumerate(active):
+        run = run + 1 if is_active else 0
+        if run >= minimum_windows:
+            first = index - run + 1
+            break
+    if first is None:
+        return None
+
+    last: int | None = None
+    run = 0
+    for index in range(len(active) - 1, -1, -1):
+        run = run + 1 if active[index] else 0
+        if run >= minimum_windows:
+            last = index + run
+            break
+    assert last is not None
+    return first * window_frames, min(last * window_frames, audio.frame_count)
 
 
 def detect_boundary_silence(
@@ -89,11 +133,11 @@ def detect_boundary_silence(
     if not speaking:
         return {"duration": audio.duration_seconds, "leading_silence": audio.duration_seconds,
                 "trailing_silence": audio.duration_seconds, "silent": True}
-    first, last = speaking[0], speaking[-1]
+    first, speech_end = bounds
     return {
         "duration": audio.duration_seconds,
         "leading_silence": first / audio.sample_rate,
-        "trailing_silence": (audio.frame_count - last - 1) / audio.sample_rate,
+        "trailing_silence": (audio.frame_count - speech_end) / audio.sample_rate,
         "silent": False,
     }
 
@@ -207,20 +251,26 @@ def analyze_final_audio_silence(
     """Report (but never alter) silent regions in a PCM WAV QA artifact."""
     audio = _read_wav(path)
     frame_size = audio.channels * audio.sample_width
+    window_frames = max(1, round(audio.sample_rate * SILENCE_WINDOW_MS / 1000))
     maximum = (1 << (audio.sample_width * 8 - 1)) - 1 if audio.sample_width > 1 else 127
     threshold = maximum * math.pow(10.0, threshold_db / 20.0)
     regions: list[dict[str, float]] = []
     start: int | None = None
-    for index in range(audio.frame_count + 1):
-        quiet = index < audio.frame_count and _frame_peak(
-            audio.frames[index * frame_size:(index + 1) * frame_size], audio.sample_width
+    window_count = math.ceil(audio.frame_count / window_frames)
+    for index in range(window_count + 1):
+        frame_start = index * window_frames
+        frame_end = min(frame_start + window_frames, audio.frame_count)
+        quiet = index < window_count and _window_rms(
+            audio.frames[frame_start * frame_size:frame_end * frame_size], audio.sample_width
         ) <= threshold
         if quiet and start is None:
             start = index
         elif not quiet and start is not None:
-            duration = (index - start) / audio.sample_rate
+            start_frame = start * window_frames
+            end_frame = min(index * window_frames, audio.frame_count)
+            duration = (end_frame - start_frame) / audio.sample_rate
             if duration > minimum_seconds:
-                regions.append({"start": start / audio.sample_rate, "end": index / audio.sample_rate,
+                regions.append({"start": start_frame / audio.sample_rate, "end": end_frame / audio.sample_rate,
                                 "duration": duration})
             start = None
     return regions
