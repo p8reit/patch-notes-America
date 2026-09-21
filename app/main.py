@@ -517,11 +517,10 @@ def build_speech_chunks(
                     host["name"], host["id"],
                 )
                 voice = DEFAULT_VOICE
-        fragments = [
-            text for text in split_script(section["text"], max_chars=max_chars)
-            if is_speakable_text(text)
-        ]
-        for fragment_index, text_chunk in enumerate(fragments, start=1):
+        fragments = _split_script_with_boundaries(section["text"], max_chars=max_chars)
+        fragments = [fragment for fragment in fragments if is_speakable_text(str(fragment["text"]))]
+        for fragment_index, fragment in enumerate(fragments, start=1):
+            text_chunk = str(fragment["text"])
             if not is_speakable_text(text_chunk):
                 logger.warning("Skipping non-speaking chunk for %s: %r", host["name"], text_chunk)
                 continue
@@ -555,10 +554,9 @@ def build_speech_chunks(
                     "voice": voice,
                     **settings,
                     "text": text_chunk,
-                    "parent_turn_id": f"{turn_id_prefix}-{turn_number:03d}",
                     "boundary_reason": (
-                        "speaker_change" if turn_number > 1 and chunk_in_turn == 0
-                        else split_chunk["boundary_reason"]
+                        "speaker_change" if turn_number > 1 and fragment_index == 1
+                        else fragment["boundary_reason"]
                     ),
                 }
             )
@@ -667,6 +665,21 @@ def extract_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def parse_model_json(response: httpx.Response, provider: str) -> dict[str, Any]:
+    """Decode a model response while preserving a useful upstream error."""
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        detail = response.text.strip().replace("\n", " ")[:500]
+        message = f"{provider} returned an invalid JSON response"
+        if detail:
+            message = f"{message}: {detail}"
+        raise HTTPException(status_code=502, detail=message) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail=f"{provider} returned an invalid JSON response")
+    return payload
+
+
 async def generate_conversation_with_openai(prompt: str) -> str:
     if not OPENAI_API_KEY:
         raise HTTPException(
@@ -685,7 +698,7 @@ async def generate_conversation_with_openai(prompt: str) -> str:
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(OPENAI_RESPONSES_URL, headers=headers, json=payload)
             response.raise_for_status()
-            text = extract_response_text(response.json())
+            text = extract_response_text(parse_model_json(response, "Conversation model"))
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text[:500]
         raise HTTPException(status_code=502, detail=f"Conversation model request failed: {detail}") from exc
@@ -712,7 +725,7 @@ async def generate_conversation_locally(prompt: str) -> str:
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(LOCAL_AI_URL, json=payload)
             response.raise_for_status()
-            body = response.json()
+            body = parse_model_json(response, "Local conversation model")
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
@@ -864,8 +877,10 @@ def build_generation_segments(speech_chunks: list[dict[str, Any]]) -> list[dict[
             "id": f"chunk-{number:03d}",
             "number": number,
             "status": "queued",
-            "utterances": items,
-            "outputs": {"audio": None},
+            "attempt": 0,
+            "output": None,
+            "normalized_output": None,
+            "audio_metrics": None,
             "error": None,
         }
         for number, chunk in enumerate(speech_chunks, start=1)
@@ -914,8 +929,8 @@ def _load_job(job_id: str) -> tuple[Path, dict[str, Any]]:
 
 
 def _job_progress(job: dict[str, Any]) -> dict[str, int]:
-    segments = job.get("segments", [])
-    chunks = [item for segment in segments for item in segment.get("utterances", segment.get("chunks", []))]
+    _migrate_job_manifest(job)
+    chunks = job["chunks"]
     return {
         "complete": sum(chunk.get("status") == "complete" for chunk in chunks),
         "total": len(chunks),
@@ -1023,20 +1038,15 @@ async def start_generation_workers() -> None:
         job["error"] = None
         job.pop("started_at", None)
         job.pop("finished_at", None)
-        for segment in job.get("segments", []):
-            segment["error"] = None
-            reusable = True
-            for chunk in segment.get("utterances", segment.get("chunks", [])):
-                output = chunk.get("output")
-                if chunk.get("status") == "complete" and output and _valid_wav(manifest.parent / output):
-                    continue
-                reusable = False
-                chunk["status"] = "queued"
-                chunk["output"] = None
-                chunk["error"] = None
-            if not reusable:
-                segment["status"] = "queued"
-                segment.setdefault("outputs", {})["audio"] = None
+        for chunk in job["chunks"]:
+            output = chunk.get("output")
+            if chunk.get("status") == "complete" and output and _valid_wav(manifest.parent / output):
+                continue
+            chunk["status"] = "queued"
+            chunk["output"] = None
+            chunk["normalized_output"] = None
+            chunk["audio_metrics"] = None
+            chunk["error"] = None
         _write_job(manifest.parent, job)
         await generation_queue.put(job["id"])
 
@@ -1084,35 +1094,25 @@ async def process_generation_job(job_id: str) -> None:
         all_chunk_paths.append(intro_path)
         all_chunks.append({"host": "intro", "text": "", "section": "intro", "dramatic_pause_after": True})
     try:
-        for segment in job["segments"]:
-            segment["status"] = "running"
-            _write_job(job_dir, job)
-            segment_paths: list[Path] = []
-            utterances = segment.get("utterances", segment.get("chunks", []))
-            for chunk in utterances:
-                path = job_dir / "chunks" / f"utterance-{chunk['id']}.wav"
-                saved_output = chunk.get("output")
-                saved_path = job_dir / saved_output if saved_output else path
-                if chunk.get("status") == "complete" and _valid_wav(saved_path):
-                    raw_path = saved_path
-                    saved_normalized = chunk.get("normalized_output")
-                    path = job_dir / saved_normalized if saved_normalized else normalized_chunk_path(raw_path)
-                    if not _valid_wav(path) or "audio_metrics" not in chunk:
-                        chunk["audio_metrics"] = normalize_audio_segment(raw_path, path)
-                        chunk["normalized_output"] = path.relative_to(job_dir).as_posix()
-                    valid, reason = validate_audio_segment(path)
-                    if not valid:
-                        raise OSError(reason)
-                else:
-                    await synthesize_chunk_with_retry(job_dir, job, chunk, path)
-                    path = job_dir / chunk["normalized_output"]
-                segment_paths.append(path)
-                all_chunk_paths.append(path)
-                all_chunks.append(chunk)
-            segment_audio = job_dir / "segments" / f"{segment['id']}.mp3"
-            assemble_mp3(segment_paths, segment_audio, utterances)
-            segment["outputs"]["audio"] = segment_audio.relative_to(job_dir).as_posix()
-            segment["status"] = "complete"
+        for chunk in job["chunks"]:
+            path = job_dir / "chunks" / f"utterance-{chunk['id']}.wav"
+            saved_output = chunk.get("output")
+            saved_path = job_dir / saved_output if saved_output else path
+            if chunk.get("status") == "complete" and _valid_wav(saved_path):
+                raw_path = saved_path
+                saved_normalized = chunk.get("normalized_output")
+                path = job_dir / saved_normalized if saved_normalized else normalized_chunk_path(raw_path)
+                if not _valid_wav(path) or not chunk.get("audio_metrics"):
+                    chunk["audio_metrics"] = normalize_audio_segment(raw_path, path)
+                    chunk["normalized_output"] = path.relative_to(job_dir).as_posix()
+                valid, reason = validate_audio_segment(path)
+                if not valid:
+                    raise OSError(reason)
+            else:
+                await synthesize_chunk_with_retry(job_dir, job, chunk, path)
+                path = job_dir / chunk["normalized_output"]
+            all_chunk_paths.append(path)
+            all_chunks.append(chunk)
             _write_job(job_dir, job)
 
         final_paths = all_chunk_paths
