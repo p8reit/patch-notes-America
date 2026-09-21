@@ -19,7 +19,9 @@ MAX_TRAILING_SILENCE_MS = int(os.getenv("MAX_TRAILING_SILENCE_MS", "350"))
 SPEECH_SAFETY_BUFFER_MS = int(os.getenv("SPEECH_SAFETY_BUFFER_MS", "40"))
 SAME_SPEAKER_PAUSE_MS = int(os.getenv("SAME_SPEAKER_PAUSE_MS", "225"))
 NORMAL_TRANSITION_PAUSE_MS = int(os.getenv("NORMAL_TRANSITION_PAUSE_MS", "400"))
+TECHNICAL_CONTINUATION_PAUSE_MS = int(os.getenv("TECHNICAL_CONTINUATION_PAUSE_MS", "0"))
 SPEAKER_CHANGE_PAUSE_MS = int(os.getenv("SPEAKER_CHANGE_PAUSE_MS", "500"))
+SECTION_CHANGE_PAUSE_MS = int(os.getenv("SECTION_CHANGE_PAUSE_MS", "600"))
 DRAMATIC_PAUSE_MS = int(os.getenv("DRAMATIC_PAUSE_MS", "1000"))
 
 
@@ -214,14 +216,19 @@ def is_speakable_text(text: str) -> bool:
 
 
 def calculate_transition_pause(previous: dict[str, Any], current: dict[str, Any]) -> int:
-    """Return the sole authoritative inter-segment pause in milliseconds."""
-    if previous.get("dramatic_pause_after"):
-        return DRAMATIC_PAUSE_MS
-    if previous.get("host") != current.get("host"):
-        return SPEAKER_CHANGE_PAUSE_MS
-    if previous.get("section") != current.get("section"):
-        return NORMAL_TRANSITION_PAUSE_MS
-    return SAME_SPEAKER_PAUSE_MS
+    """Return the pause declared by the current utterance's boundary metadata."""
+    pauses = {
+        "technical_continuation": TECHNICAL_CONTINUATION_PAUSE_MS,
+        "sentence_break": SAME_SPEAKER_PAUSE_MS,
+        "paragraph_break": NORMAL_TRANSITION_PAUSE_MS,
+        "speaker_change": SPEAKER_CHANGE_PAUSE_MS,
+        "section_break": SECTION_CHANGE_PAUSE_MS,
+        "explicit_dramatic_pause": DRAMATIC_PAUSE_MS,
+    }
+    reason = current.get("boundary_reason")
+    if reason not in pauses:
+        raise ValueError(f"Missing or unknown transition boundary reason: {reason!r}")
+    return pauses[reason]
 
 
 def concatenate_wav_segments(

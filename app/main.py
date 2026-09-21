@@ -141,61 +141,70 @@ def remove_intro_episode_overlap(intro_lines: str, script: str) -> str:
 
 
 def split_script(text: str, max_chars: int = MAX_CHARS) -> List[str]:
+    return [chunk["text"] for chunk in _split_script_with_boundaries(text, max_chars)]
+
+
+def _split_script_with_boundaries(text: str, max_chars: int) -> list[dict[str, str | None]]:
+    """Split text at natural boundaries and describe every resulting boundary."""
+    if max_chars < 1:
+        raise ValueError("max_chars must be positive")
     text = clean_script(text)
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    chunks: list[str] = []
+    chunks: list[dict[str, str | None]] = []
     current = ""
+    current_boundary: str | None = None
 
     def flush() -> None:
-        nonlocal current
+        nonlocal current, current_boundary
         if current.strip():
-            chunks.append(current.strip())
+            chunks.append({"text": current.strip(), "boundary_reason": current_boundary})
             current = ""
+            current_boundary = None
 
-    for paragraph in paragraphs:
-        if len(paragraph) <= max_chars:
-            candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
-            if len(candidate) <= max_chars:
-                current = candidate
-            else:
-                flush()
-                current = paragraph
-            continue
-
-        flush()
+    for paragraph_index, paragraph in enumerate(paragraphs):
         sentences = re.split(r"(?<=[.!?])\s+", paragraph)
-        sentence_buffer = ""
-        for sentence in sentences:
+        for sentence_index, sentence in enumerate(sentences):
             sentence = sentence.strip()
             if not sentence:
                 continue
-            candidate = f"{sentence_buffer} {sentence}".strip()
+            separator = "\n\n" if sentence_index == 0 and paragraph_index > 0 else " "
+            natural_boundary = "paragraph_break" if separator == "\n\n" else "sentence_break"
+            candidate = f"{current}{separator}{sentence}".strip() if current else sentence
             if len(candidate) <= max_chars:
-                sentence_buffer = candidate
+                current = candidate
                 continue
 
-            if sentence_buffer:
-                chunks.append(sentence_buffer)
-                sentence_buffer = ""
+            if current:
+                flush()
+                current_boundary = natural_boundary
 
             if len(sentence) <= max_chars:
-                sentence_buffer = sentence
+                current = sentence
                 continue
 
+            # Only sentences without a usable punctuation boundary are split by
+            # words. These fragments are one utterance and receive virtually no
+            # assembly pause between them.
             words = sentence.split()
             hard = ""
             for word in words:
                 candidate = f"{hard} {word}".strip()
                 if len(candidate) > max_chars and hard:
-                    chunks.append(hard)
+                    current = hard
+                    flush()
+                    current_boundary = "technical_continuation"
                     hard = word
                 else:
                     hard = candidate
             if hard:
-                sentence_buffer = hard
-
-        if sentence_buffer:
-            chunks.append(sentence_buffer)
+                # Extremely long tokens still need a final character-level
+                # fallback to honor the Chatterbox input contract.
+                while len(hard) > max_chars:
+                    current = hard[:max_chars]
+                    flush()
+                    current_boundary = "technical_continuation"
+                    hard = hard[max_chars:]
+                current = hard
 
     flush()
     return chunks
@@ -494,7 +503,7 @@ def build_speech_chunks(
     sections = parse_speaker_script(remove_accidental_transcript_repetition(script), hosts)
     chunks: list[dict[str, Any]] = []
 
-    for section in sections:
+    for turn_number, section in enumerate(sections, start=1):
         host = host_lookup[section["host"]]
         parent_turn_id = uuid4().hex
         voice = host["voice"]
@@ -546,6 +555,11 @@ def build_speech_chunks(
                     "voice": voice,
                     **settings,
                     "text": text_chunk,
+                    "parent_turn_id": f"{turn_id_prefix}-{turn_number:03d}",
+                    "boundary_reason": (
+                        "speaker_change" if turn_number > 1 and chunk_in_turn == 0
+                        else split_chunk["boundary_reason"]
+                    ),
                 }
             )
     return chunks
@@ -837,34 +851,47 @@ def assemble_mp3(
     return timeline
 
 
-def build_generation_segments(
-    speech_chunks: list[dict[str, Any]], chunks_per_segment: int = 8
-) -> list[dict[str, Any]]:
-    """Group render units into independently trackable media jobs.
+def build_generation_segments(speech_chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the ordered, durable speech chunks stored by a generation job.
 
-    A segment owns its inputs and output contract. Today the only renderer is
-    audio, while ``outputs`` intentionally leaves room for a future video
-    renderer without changing the episode/job representation.
+    The historical name is retained for callers, but this function no longer
+    creates arbitrary fixed-size segments. Each speech chunk is independently
+    resumable and is the unit from which the final episode is assembled.
     """
-    if chunks_per_segment < 1 or chunks_per_segment > 100:
-        raise HTTPException(status_code=400, detail="Chunks per segment must be between 1 and 100")
-    segments = []
-    for offset in range(0, len(speech_chunks), chunks_per_segment):
-        items = speech_chunks[offset : offset + chunks_per_segment]
-        items = [
-            {**item, "status": "queued", "output": None, "error": None}
-            for item in items
-        ]
-        number = len(segments) + 1
-        segments.append({
-            "id": f"segment-{number:03d}",
+    return [
+        {
+            **chunk,
+            "id": f"chunk-{number:03d}",
             "number": number,
             "status": "queued",
             "utterances": items,
             "outputs": {"audio": None},
             "error": None,
-        })
-    return segments
+        }
+        for number, chunk in enumerate(speech_chunks, start=1)
+    ]
+
+
+def _migrate_job_manifest(job: dict[str, Any]) -> bool:
+    """Read legacy segment manifests as an ordered top-level chunk manifest."""
+    if isinstance(job.get("chunks"), list):
+        return False
+    segments = job.pop("segments", None)
+    if not isinstance(segments, list):
+        job["chunks"] = []
+        return True
+    chunks = [chunk for segment in segments for chunk in segment.get("chunks", [])]
+    for number, chunk in enumerate(chunks, start=1):
+        chunk.setdefault("id", f"chunk-{number:03d}")
+        chunk.setdefault("number", number)
+        chunk.setdefault("status", "queued")
+        chunk.setdefault("attempt", 0)
+        chunk.setdefault("output", None)
+        chunk.setdefault("normalized_output", None)
+        chunk.setdefault("audio_metrics", None)
+        chunk.setdefault("error", None)
+    job["chunks"] = chunks
+    return True
 
 
 def _write_job(job_dir: Path, job: dict[str, Any]) -> None:
@@ -880,17 +907,18 @@ def _load_job(job_id: str) -> tuple[Path, dict[str, Any]]:
     job_file = job_dir / "job.json"
     if not job_file.exists():
         raise HTTPException(status_code=404, detail="Generation job not found")
-    return job_dir, json.loads(job_file.read_text(encoding="utf-8"))
+    job = json.loads(job_file.read_text(encoding="utf-8"))
+    if _migrate_job_manifest(job):
+        _write_job(job_dir, job)
+    return job_dir, job
 
 
 def _job_progress(job: dict[str, Any]) -> dict[str, int]:
     segments = job.get("segments", [])
     chunks = [item for segment in segments for item in segment.get("utterances", segment.get("chunks", []))]
     return {
-        "complete": sum(segment.get("status") == "complete" for segment in segments),
-        "total": len(segments),
-        "chunks_complete": sum(chunk.get("status") == "complete" for chunk in chunks),
-        "chunks_total": len(chunks),
+        "complete": sum(chunk.get("status") == "complete" for chunk in chunks),
+        "total": len(chunks),
     }
 
 
@@ -987,6 +1015,7 @@ async def start_generation_workers() -> None:
             job = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        _migrate_job_manifest(job)
         if job.get("status") not in {"queued", "running"}:
             continue
         # Keep valid completed chunks: CPU renders may represent hours of work.
@@ -1035,7 +1064,7 @@ app.router.lifespan_context = application_lifespan
 
 
 async def process_generation_job(job_id: str) -> None:
-    """Render queued segments and checkpoint progress after every state change."""
+    """Render durable speech chunks and assemble the final episode from them."""
     job_dir, job = _load_job(job_id)
     job["status"] = "running"
     job["started_at"] = datetime.now(timezone.utc).isoformat()
@@ -1111,9 +1140,11 @@ async def process_generation_job(job_id: str) -> None:
             intro_voice_wav.unlink(missing_ok=True)
             final_paths = [mixed_intro_wav, *all_chunk_paths[1 + intro_chunk_count:]]
             final_chunks = [
-                {"host": "intro", "text": intro.get("lines", ""), "section": "intro", "dramatic_pause_after": True},
+                {"host": "intro", "text": intro.get("lines", ""), "section": "intro", "boundary_reason": None},
                 *all_chunks[1 + intro_chunk_count:],
             ]
+            if len(final_chunks) > 1:
+                final_chunks[1] = {**final_chunks[1], "boundary_reason": "explicit_dramatic_pause"}
 
         final_path = job_dir / f"{slugify(job['title'])}.mp3"
         timeline_wav = job_dir / "final-audio-qa.wav"
@@ -1126,9 +1157,9 @@ async def process_generation_job(job_id: str) -> None:
                 chunk.setdefault("transition", {})["pause_after_ms"] = item["pause_after_ms"]
             metrics = chunk.get("audio_metrics", {})
             logger.info(
-                "Segment %s | Speaker: %s | Text length: %s | Raw duration: %.3fs | "
+                "Chunk %s | Speaker: %s | Text length: %s | Raw duration: %.3fs | "
                 "Leading silence: %.3fs | Trailing silence: %.3fs | Configured pause: %.3fs | "
-                "Final segment duration: %.3fs | Effective gap before next speech: %.3fs | "
+                "Final chunk duration: %.3fs | Effective gap before next speech: %.3fs | "
                 "Timeline: %.3f-%.3fs",
                 item["index"], item["speaker"], item["text_length"],
                 float(metrics.get("raw_duration", item["duration"])),
@@ -1150,10 +1181,10 @@ async def process_generation_job(job_id: str) -> None:
     except Exception as exc:  # Persist failures so polling clients never hang.
         job["status"] = "failed"
         job["error"] = describe_chatterbox_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
-        for segment in job["segments"]:
-            if segment["status"] == "running":
-                segment["status"] = "failed"
-                segment["error"] = job["error"]
+        for chunk in job["chunks"]:
+            if chunk["status"] == "running":
+                chunk["status"] = "failed"
+                chunk["error"] = job["error"]
                 break
     finally:
         job["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -1515,13 +1546,12 @@ async def create_generation_job(
     title: str = Form(...),
     script: str = Form(...),
     hosts_json: str = Form(...),
-    chunks_per_segment: int = Form(8),
     intro_lines: str = Form(""),
     intro_overlap: bool = Form(False),
     intro_music_volume: float = Form(0.25),
     intro_track: UploadFile | None = File(None),
 ):
-    """Queue an episode as durable, independently checkpointed segment jobs."""
+    """Queue an episode whose ordered speech chunks are durable render units."""
     if not script.strip():
         raise HTTPException(status_code=400, detail="Script cannot be empty")
     hosts = parse_hosts(hosts_json)
@@ -1532,11 +1562,10 @@ async def create_generation_job(
         raise HTTPException(status_code=400, detail="No speakable text found")
     if not 0.0 <= intro_music_volume <= 1.0:
         raise HTTPException(status_code=400, detail="Intro music volume must be between 0 and 1")
-    segments = build_generation_segments(speech_chunks, chunks_per_segment)
+    chunks = build_generation_segments(speech_chunks)
     job_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{slugify(title)}-{uuid4().hex[:8]}"
     job_dir = OUTPUT_DIR / job_id
     (job_dir / "chunks").mkdir(parents=True)
-    (job_dir / "segments").mkdir()
     (job_dir / "script.txt").write_text(clean_script(script), encoding="utf-8")
     intro: dict[str, Any] = {
         "lines": clean_script(intro_lines),
@@ -1574,7 +1603,7 @@ async def create_generation_job(
         "hosts": hosts,
         "media": ["audio"],
         "intro": intro,
-        "segments": segments,
+        "chunks": chunks,
         "download_url": None,
         "error": None,
     }
@@ -1584,7 +1613,7 @@ async def create_generation_job(
         "ok": True,
         "job_id": job_id,
         "status": "queued",
-        "segments": len(segments),
+        "chunks": len(chunks),
         "status_url": f"/api/generation-jobs/{job_id}",
     }
 
@@ -1598,6 +1627,7 @@ async def list_generation_jobs():
             job = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        _migrate_job_manifest(job)
         jobs.append({
             "id": job.get("id"),
             "title": job.get("title", "Untitled episode"),

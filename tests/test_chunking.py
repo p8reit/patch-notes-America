@@ -43,13 +43,13 @@ def test_chatterbox_http_error_includes_status_and_response_detail():
     assert "voice is not supported" in detail
 
 
-def test_generation_segments_have_independent_media_contracts():
+def test_generation_chunks_are_ordered_durable_units():
     chunks = [
         {"host": "Wade", "voice": "am_michael", "tempo": 1.0, "text": f"Part {number}"}
         for number in range(5)
     ]
 
-    segments = build_generation_segments(chunks, chunks_per_segment=2)
+    durable_chunks = build_generation_segments(chunks)
 
     assert [len(segment["utterances"]) for segment in segments] == [2, 2, 1]
     assert [segment["id"] for segment in segments] == ["segment-001", "segment-002", "segment-003"]
@@ -65,23 +65,39 @@ def test_generation_segment_size_is_validated():
         build_generation_segments([{"text": "hello"}], chunks_per_segment=0)
 
 
-def test_job_progress_counts_completed_segments():
+def test_job_progress_counts_completed_chunks():
     from app.main import _job_progress
 
-    job = {"segments": [{"status": "complete"}, {"status": "running"}, {"status": "queued"}]}
+    job = {"chunks": [{"status": "complete"}, {"status": "running"}, {"status": "queued"}]}
 
     assert _job_progress(job) == {
         "complete": 1,
         "total": 3,
-        "chunks_complete": 0,
-        "chunks_total": 0,
     }
 
 
-def test_generation_segments_initialize_durable_chunk_state():
+def test_generation_chunks_initialize_all_durable_state():
     chunks = [{"host": "Wade", "voice": "am_michael", "tempo": 1.0, "text": "Hello"}]
 
-    segment = build_generation_segments(chunks)[0]
+    chunk = build_generation_segments(chunks)[0]
+
+    assert chunk["status"] == "queued"
+    assert chunk["attempt"] == 0
+    assert chunk["output"] is None
+    assert chunk["normalized_output"] is None
+    assert chunk["audio_metrics"] is None
+    assert chunk["error"] is None
+
+
+def test_legacy_segment_manifest_is_migrated_in_order():
+    from app.main import _migrate_job_manifest
+
+    job = {
+        "segments": [
+            {"chunks": [{"text": "one", "status": "complete", "attempt": 2, "output": "one.wav"}]},
+            {"chunks": [{"text": "two", "error": "interrupted"}]},
+        ]
+    }
 
     assert segment["utterances"][0]["status"] == "queued"
     assert segment["utterances"][0]["output"] is None
@@ -112,7 +128,7 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
     monkeypatch.setattr(main, "synthesize_chunk", flaky_synthesis)
     monkeypatch.setattr(main.asyncio, "sleep", no_delay)
     monkeypatch.setattr(main, "TTS_MAX_ATTEMPTS", 3)
-    job = {"segments": []}
+    job = {"chunks": []}
     chunk = {"text": "Hello", "voice": "am_michael", "tempo": 1.0}
     destination = tmp_path / "chunk.wav"
 

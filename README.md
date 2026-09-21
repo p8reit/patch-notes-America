@@ -10,7 +10,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Optional uploaded intro track with multi-host spoken lines mixed over the music or played after it
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
-- Durable segment batch jobs with progress polling and per-segment audio
+- Durable speech-chunk jobs with progress polling and resumable audio
 - Persistent background render queue designed for slow CPU-only generation
 - Chatterbox generation through the bundled service's `POST /v1/audio/speech` API
 - Per-chunk WAV files retained for selective regeneration/debugging
@@ -231,14 +231,14 @@ output/<timestamp>-<episode-title>/
 └── <episode-title>.mp3
 ```
 
-## Segmented generation jobs
+## Durable generation jobs
 
 The browser now submits episode renders to `POST /api/generation-jobs` instead
-of holding one request open for an entire episode. Speech chunks are grouped
-into configurable segments (eight chunks by default). Each segment moves
-through `queued`, `running`, `complete`, or `failed`, and writes its own MP3
-before the final episode is assembled. Progress survives page/API timeouts in
-`output/<job-id>/job.json`.
+of holding one request open for an entire episode. Each natural speech chunk
+moves through `queued`, `running`, `retrying`, `complete`, or `failed` and is
+checkpointed in the manifest. The final MP3 is assembled directly from the
+ordered completed chunks. Progress survives page/API timeouts in
+`output/<job-id>/job.json`; no arbitrary fixed-size render batches are used.
 
 The queue uses one worker by default so concurrent episodes do not compete for
 all CPU and memory. After submitting an episode, it is safe to close the
@@ -265,9 +265,13 @@ GET  /api/generation-jobs
 GET  /api/generation-jobs/{job_id}
 ```
 
-The job manifest has a media output map per segment. It currently contains
-`audio`; a video worker can later add `video` without changing how episodes,
-segments, status polling, or retries are represented.
+The job manifest owns an ordered top-level `chunks` array. Every chunk retains
+its status, attempt count, raw and normalized outputs, audio metrics, and last
+error. Older manifests with chunks nested under `segments` are migrated when
+read. If editorial grouping is needed later, use named chapters or explicit
+export ranges that refer to chunks rather than changing synthesis durability.
+See [Chatterbox audio editing and stitching](docs/chatterbox-audio-editing-and-stitching.md)
+for the manifest and assembly model.
 
 ## Useful commands
 
