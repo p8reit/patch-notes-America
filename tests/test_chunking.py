@@ -51,7 +51,7 @@ def test_generation_segments_have_independent_media_contracts():
 
     segments = build_generation_segments(chunks, chunks_per_segment=2)
 
-    assert [len(segment["chunks"]) for segment in segments] == [2, 2, 1]
+    assert [len(segment["utterances"]) for segment in segments] == [2, 2, 1]
     assert [segment["id"] for segment in segments] == ["segment-001", "segment-002", "segment-003"]
     assert all(segment["status"] == "queued" for segment in segments)
     assert all(segment["outputs"] == {"audio": None} for segment in segments)
@@ -83,8 +83,8 @@ def test_generation_segments_initialize_durable_chunk_state():
 
     segment = build_generation_segments(chunks)[0]
 
-    assert segment["chunks"][0]["status"] == "queued"
-    assert segment["chunks"][0]["output"] is None
+    assert segment["utterances"][0]["status"] == "queued"
+    assert segment["utterances"][0]["output"] is None
 
 
 def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypatch):

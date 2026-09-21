@@ -45,6 +45,19 @@ def test_build_chunks_preserves_voice_and_tempo():
     assert chunks[1]["tempo"] == 1.05
 
 
+def test_utterances_have_stable_manifest_identity_and_order_fields():
+    chunks = build_speech_chunks("One sentence. Another sentence. Third sentence.", hosts(), max_chars=20)
+
+    assert [chunk["sequence"] for chunk in chunks] == list(range(1, len(chunks) + 1))
+    assert len({chunk["id"] for chunk in chunks}) == len(chunks)
+    assert len({chunk["parent_turn_id"] for chunk in chunks}) == 1
+    assert [chunk["fragment_index"] for chunk in chunks] == list(range(1, len(chunks) + 1))
+    assert all(chunk["section_id"] == "episode" for chunk in chunks)
+    assert all(chunk["display_name"] == "Major Patchnotes" for chunk in chunks)
+    assert all(chunk["normalized_text"] == chunk["text"] for chunk in chunks)
+    assert all(chunk["raw_output"] is None and chunk["timing"] == {} for chunk in chunks)
+
+
 def test_episode_chunks_put_host_intro_lines_before_main_script():
     from app.main import build_episode_speech_chunks
 
@@ -216,11 +229,11 @@ def test_research_packet_requires_story_facts():
 
 def test_clip_suggestions_prefer_multi_speaker_windows():
     from app.main import suggest_clip_windows
-    metadata = {"chunks": [
-        {"host": "Wade", "text": "Here is the problem and why it matters.", "start": 0.0, "end": 12.0},
-        {"host": "Marcus", "text": "But wait, that's the point. What happens next?", "start": 12.0, "end": 25.0},
-        {"host": "Julian", "text": "Actually, there is a bigger context because the rest of the world reacts too.", "start": 25.0, "end": 39.0},
-        {"host": "Wade", "text": "And normal people still have to pay for it.", "start": 39.0, "end": 50.0},
+    metadata = {"utterances": [
+        {"sequence": 1, "display_name": "Wade", "normalized_text": "Here is the problem and why it matters.", "timing": {"start": 0.0, "end": 12.0}},
+        {"sequence": 2, "display_name": "Marcus", "normalized_text": "But wait, that's the point. What happens next?", "timing": {"start": 12.0, "end": 25.0}},
+        {"sequence": 3, "display_name": "Julian", "normalized_text": "Actually, there is a bigger context because the rest of the world reacts too.", "timing": {"start": 25.0, "end": 39.0}},
+        {"sequence": 4, "display_name": "Wade", "normalized_text": "And normal people still have to pay for it.", "timing": {"start": 39.0, "end": 50.0}},
     ]}
     suggestions = suggest_clip_windows(metadata, limit=3)
     assert suggestions
@@ -230,8 +243,8 @@ def test_clip_suggestions_prefer_multi_speaker_windows():
 
 def test_build_clip_ass_contains_speaker_and_text(tmp_path):
     from app.main import build_clip_ass
-    metadata = {"chunks": [
-        {"host": "Wade Mercer", "text": "Now hold on a minute. This is the useful part.", "start": 5.0, "end": 12.0},
+    metadata = {"utterances": [
+        {"sequence": 1, "display_name": "Wade Mercer", "normalized_text": "Now hold on a minute. This is the useful part.", "timing": {"start": 5.0, "end": 12.0}},
     ]}
     dest = tmp_path / "clip.ass"
     build_clip_ass(metadata, 4.0, 14.0, dest, 1080, 1920)
