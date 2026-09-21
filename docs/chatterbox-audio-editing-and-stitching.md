@@ -1,43 +1,46 @@
 # Chatterbox audio editing and stitching
 
-Speech is rendered as ordered utterances. Every utterance records a
-`parent_turn_id`, which groups chunks originating in one uninterrupted speaker
-turn, and a `boundary_reason`, which explains the transition immediately before
-that utterance. The first utterance has no preceding boundary and therefore uses
-`null`.
+## Speech chunks are the durable unit
 
-## Boundary taxonomy
+A **speech chunk** is a natural synthesis unit: one ordered piece of dialogue
+with its speaker, voice settings, text, and pause metadata. It is not a
+fixed-size slice of an episode and is never grouped into batches merely because
+a counter reached a configured limit.
 
-* **`technical_continuation`** — a sentence exceeded the configured Chatterbox
-  input limit and had to be split by words (or, for an exceptionally long token,
-  characters). The fragments are still one continuous thought, so assembly adds
-  little or no silence.
-* **`sentence_break`** — the input limit required a split after sentence-ending
-  punctuation. This gets normal, short conversational spacing.
-* **`paragraph_break`** — a paragraph could not remain in the preceding chunk.
-  This gets normal paragraph spacing, slightly longer than a sentence boundary.
-* **`speaker_change`** — a speaker tag began a new turn. Its pause is configured
-  with `SPEAKER_CHANGE_PAUSE_MS`.
-* **`section_break`** — the production moved between editorial sections, such as
-  the host introduction and episode body. Its pause is configured with
-  `SECTION_CHANGE_PAUSE_MS`.
-* **`explicit_dramatic_pause`** — production metadata deliberately requests a
-  dramatic beat, rather than one inferred from text or speakers. Its pause is
-  configured with `DRAMATIC_PAUSE_MS`.
+Generation job manifests own one ordered, top-level `chunks` collection. Each
+chunk is checkpointed independently with these durable fields:
 
-Chunking packs text up to `MAX_CHARS_PER_CHUNK`. It first uses punctuation and
-paragraph boundaries and resorts to word splitting only when a single sentence
-cannot fit. This avoids turning implementation limits into audible sentence
-breaks.
+- `status`: `queued`, `running`, `retrying`, `complete`, or `failed`;
+- `attempt`: the most recent synthesis attempt number;
+- `output`: the path to the original synthesized WAV;
+- `normalized_output`: the path to the validated, normalized WAV;
+- `audio_metrics`: measurements captured during normalization; and
+- `error`: the latest synthesis or validation error, or `null`.
 
-## Assembly contract
+This makes retries and restart recovery proportional to the actual failed work.
+A valid completed chunk is reused after a process restart; an incomplete or
+invalid chunk returns to the queue without discarding other completed speech.
 
-`calculate_transition_pause()` reads only the incoming utterance's
-`boundary_reason`; it does not infer timing from host or section labels. Audio is
-assembled strictly in order by writing each complete PCM buffer followed by the
-declared silence. Speech buffers are never overlapped or crossfaded.
+## Stitching the episode
 
-Normalization operates on derived copies and retains the configured leading and
-trailing silence plus `SPEECH_SAFETY_BUFFER_MS`. Boundary metadata changes only
-the silence inserted *between* those normalized copies, so it does not weaken
-the existing protection around quiet speech edges.
+After all chunks complete, the application reads them in manifest order and
+assembles the final episode directly from their normalized WAV files. Pause and
+speaker-transition rules are applied at that final timeline step. There is no
+intermediate audio batch that defines correctness or resumability.
+
+The manifest reader remains compatible with older jobs. When it encounters a
+legacy `segments` collection, it flattens each segment's chunks in segment and
+chunk order into the top-level `chunks` collection. Existing chunk state and
+artifacts are preserved, including attempts, outputs, metrics, and errors.
+
+## Editorial outputs are separate concepts
+
+An editor may still want intermediate deliverables, but synthesis batches are
+not an editorial model. Represent those deliverables separately as either:
+
+- **named chapters**, with meaningful titles and ordered chunk boundaries; or
+- **export ranges**, with explicit start/end chunk IDs or timeline timestamps.
+
+Chapters and export ranges may produce their own media files without owning or
+duplicating synthesis status. This keeps editorial intent stable even if chunk
+sizes, voices, retry policy, or render infrastructure change.
