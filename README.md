@@ -7,7 +7,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Browser-based episode editor on port `8081`
 - Preloaded pilot narration script
 - Per-host Chatterbox reference voice, tempo, exaggeration, CFG weight, temperature, Min P, Top P, and repetition penalty
-- Optional uploaded intro track and multi-host spoken intro lines before the episode script
+- Optional uploaded intro track with multi-host spoken lines mixed over the music or played after it
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
 - Durable segment batch jobs with progress polling and per-segment audio
@@ -167,8 +167,52 @@ or `data/` directories, so queued jobs and uploaded voices remain available.
 5. When complete, click **Download MP3**.
 
 To create a show open, select an **Intro track** and add **Host intro lines** using
-the same `[Host Name]` speaker tags as the main script. The finished MP3 plays
-the full track first, followed by the rendered host introduction and episode.
+the same `[Host Name]` speaker tags as the main script. Leave **Play the host
+intro over the music** selected to start both together, and use **Music volume
+under voice** to keep the speech clear. The complete track is retained, and the
+episode starts after both the music and spoken intro finish. Clear the overlap
+option to play the full track before the host introduction instead.
+
+### Adjusting silence detection and timing
+
+Audio timing is configured in `.env`. The detection threshold and boundary
+settings apply to newly rendered speech chunks:
+
+```text
+# Detect quieter speech (the default is -45 dB).
+SILENCE_THRESHOLD_DB=-50
+
+# Retain up to this much quiet audio before and after detected speech.
+MAX_LEADING_SILENCE_MS=300
+MAX_TRAILING_SILENCE_MS=450
+
+# Preserve this buffer around detected speech to avoid clipping quiet consonants.
+SPEECH_SAFETY_BUFFER_MS=60
+```
+
+If quiet speech is being reported as `WAV contains no audible speech`, make
+`SILENCE_THRESHOLD_DB` more negative in small steps, such as `-45` to `-50`.
+If background noise is being treated as speech, move it in the other direction,
+such as `-45` to `-40`. `MAX_LEADING_SILENCE_MS` and
+`MAX_TRAILING_SILENCE_MS` change how much silence is retained after speech has
+been detected; they do not change detection sensitivity.
+
+The pauses deliberately inserted between chunks can be adjusted separately:
+
+```text
+SAME_SPEAKER_PAUSE_MS=225
+NORMAL_TRANSITION_PAUSE_MS=400
+SPEAKER_CHANGE_PAUSE_MS=500
+DRAMATIC_PAUSE_MS=1000
+```
+
+After editing `.env`, rebuild and recreate the app so it receives the new
+values. Existing rendered chunks are reused by resumed jobs, so start a new
+render when evaluating detection changes:
+
+```bash
+docker compose up -d --build --force-recreate app
+```
 
 Generated files are retained under:
 
