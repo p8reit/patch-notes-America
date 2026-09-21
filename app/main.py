@@ -74,7 +74,7 @@ VOICE_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Patch Notes: America", version="0.5.0")
+app = FastAPI(title="Podcast Builder", version="0.5.0")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=APP_ROOT / "app" / "templates")
 
@@ -565,7 +565,7 @@ Character notes: {host.get('character_notes', '')}"""
         if len(hosts) > 1
         else "- There is only one host, so do not emit any speaker tags."
     )
-    return f"""You are writing a podcast conversation for Patch Notes: America.
+    return f"""You are writing a podcast conversation for the show described by the supplied cast, tone, and source notes.
 
 GOAL
 Create a natural, entertaining discussion among {names}. Capture the ingredients of excellent podcast chemistry without imitating any real host, show, comedian, or public figure. The hosts like one another. They can disagree, tease, interrupt, correct, and challenge each other without becoming partisan caricatures.
@@ -587,7 +587,7 @@ WRITING RULES
 - Stay grounded in the supplied notes. Do not invent factual details, quotes, polling numbers, dates, or allegations.
 - If the notes leave something uncertain, have a host explicitly say it is uncertain or needs verification.
 - No host is permanently correct. Let different hosts make the strongest point at different moments.
-- Wade-style practical reasoning should not become anti-intellectual; city-style analysis should not become smug; worldly context should not become a lecture. Apply equivalent protections to any added hosts.
+- Keep every host nuanced: practical reasoning should not become anti-intellectual, analysis should not become smug, and context should not become a lecture.
 - Use callbacks, follow-up questions, occasional interruptions, short reactions, and friendly roasting.
 - Avoid repetitive agreement phrases and obvious turn-taking.
 - Let a host occasionally change their mind or concede a point.
@@ -597,7 +597,7 @@ WRITING RULES
 - Insert a speaker tag only when the active speaker changes. Consecutive paragraphs from the same speaker do not need another tag.
 {switch_example}
 - Never put dialogue on the same line as a speaker tag, and never add a colon after a speaker name.
-- Use only these exact speaker names: {names}. Never emit role labels such as HOST_SOUTHERN, HOST_CITY, or HOST_WORLDLY.
+- Use only these exact speaker names: {names}. Never emit role labels or invented speaker names.
 - Make the first 20 seconds hook the listener. End with a clean transition or takeaway rather than a generic summary.
 """
 
@@ -1281,13 +1281,10 @@ def render_social_clip(episode_dir: Path, start: float, end: float, title: str, 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    pilot_path = EPISODES_DIR / "pilot.txt"
-    pilot = pilot_path.read_text(encoding="utf-8") if pilot_path.exists() else ""
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
-            "pilot": pilot,
             "default_voice": DEFAULT_VOICE,
             "default_tempo": DEFAULT_TEMPO,
             "host_profiles": load_host_profiles(),
@@ -1548,6 +1545,7 @@ async def list_generation_jobs():
             "title": job.get("title", "Untitled episode"),
             "status": job.get("status", "unknown"),
             "created_at": job.get("created_at"),
+            "started_at": job.get("started_at"),
             "finished_at": job.get("finished_at"),
             "download_url": job.get("download_url"),
             "error": job.get("error"),
