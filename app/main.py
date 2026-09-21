@@ -667,6 +667,21 @@ def extract_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def parse_model_json(response: httpx.Response, provider: str) -> dict[str, Any]:
+    """Decode a model response while preserving a useful upstream error."""
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        detail = response.text.strip().replace("\n", " ")[:500]
+        message = f"{provider} returned an invalid JSON response"
+        if detail:
+            message = f"{message}: {detail}"
+        raise HTTPException(status_code=502, detail=message) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail=f"{provider} returned an invalid JSON response")
+    return payload
+
+
 async def generate_conversation_with_openai(prompt: str) -> str:
     if not OPENAI_API_KEY:
         raise HTTPException(
@@ -685,7 +700,7 @@ async def generate_conversation_with_openai(prompt: str) -> str:
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(OPENAI_RESPONSES_URL, headers=headers, json=payload)
             response.raise_for_status()
-            text = extract_response_text(response.json())
+            text = extract_response_text(parse_model_json(response, "Conversation model"))
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text[:500]
         raise HTTPException(status_code=502, detail=f"Conversation model request failed: {detail}") from exc
@@ -712,7 +727,7 @@ async def generate_conversation_locally(prompt: str) -> str:
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(LOCAL_AI_URL, json=payload)
             response.raise_for_status()
-            body = response.json()
+            body = parse_model_json(response, "Local conversation model")
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,

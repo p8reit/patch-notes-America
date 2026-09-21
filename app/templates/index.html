@@ -300,6 +300,24 @@
       return element.innerHTML;
     }
 
+    async function readJsonResponse(response, fallbackMessage = 'Request failed') {
+      const body = await response.text();
+      let data;
+      try {
+        data = body ? JSON.parse(body) : {};
+      } catch (_error) {
+        const serverMessage = body.trim().replace(/\s+/g, ' ').slice(0, 300);
+        if (!response.ok) {
+          throw new Error(serverMessage || `${fallbackMessage} (HTTP ${response.status})`);
+        }
+        throw new Error('The server returned an invalid response. Please try again.');
+      }
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || `${fallbackMessage} (HTTP ${response.status})`);
+      }
+      return data;
+    }
+
     const settingHelp = [
       ['input[name="title"]', 'The episode name used in the render queue, saved files, and episode metadata.'],
       ['#packet-angle', 'The common theme that should connect every story in this research packet.'],
@@ -398,8 +416,7 @@
     }
 
     async function refreshJobs() {
-      const res = await fetch('/api/generation-jobs'); const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Could not load audio jobs');
+      const res = await fetch('/api/generation-jobs'); const data = await readJsonResponse(res, 'Could not load audio jobs');
       latestJobs = data.jobs;
       configuredWorkers = data.workers;
       renderJobs(data.jobs, data.workers);
@@ -412,8 +429,7 @@
       if (activeJobPollers.has(jobId)) return;
       const poll = async () => {
         try {
-          const res = await fetch(`/api/generation-jobs/${encodeURIComponent(jobId)}`); const job = await res.json();
-          if (!res.ok) throw new Error(job.detail || 'Could not read generation status');
+          const res = await fetch(`/api/generation-jobs/${encodeURIComponent(jobId)}`); const job = await readJsonResponse(res, 'Could not read generation status');
           await refreshJobs();
           if (job.status === 'complete') {
             currentEpisode = job.id;
@@ -479,8 +495,7 @@
       voiceStatus.textContent = 'Loading…';
       try {
         const response = await fetch('/api/chatterbox-voices');
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || 'Could not load voices');
+        const data = await readJsonResponse(response, 'Could not load voices');
         availableVoices = data.voices;
         document.querySelectorAll('.host-voice').forEach((select) => populateVoiceSelect(select, select.value));
         const referenceCount = Math.max(0, availableVoices.length - 1);
@@ -508,8 +523,7 @@
       const form = new FormData();
       form.append('hosts_json', JSON.stringify(serializeHosts()));
       const response = await fetch('/api/host-profiles', {method: 'POST', body: form});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Could not save host');
+      const data = await readJsonResponse(response, 'Could not save host');
       return data;
     }
 
@@ -543,8 +557,7 @@
           form.append('exaggeration', exaggeration.value);
           form.append('cfg_weight', cfg.value);
           const response = await fetch(`/api/hosts/${row.dataset.hostId}/voice`, {method: 'POST', body: form});
-          const data = await response.json();
-          if (!response.ok) throw new Error(data.detail || 'Could not upload reference voice');
+          const data = await readJsonResponse(response, 'Could not upload reference voice');
           row.dataset.referencePath = `voices/${row.dataset.hostId}/reference.wav`;
           row.dataset.referenceFilename = data.reference_voice.filename;
           row.dataset.referenceAvailable = String(data.reference_voice.available);
@@ -559,8 +572,7 @@
         status.textContent = 'Removing reference voice...';
         try {
           const response = await fetch(`/api/hosts/${row.dataset.hostId}/voice`, {method: 'DELETE'});
-          const data = await response.json();
-          if (!response.ok) throw new Error(data.detail || 'Could not remove reference voice');
+          const data = await readJsonResponse(response, 'Could not remove reference voice');
           row.dataset.referencePath = ''; row.dataset.referenceFilename = ''; row.dataset.referenceAvailable = 'false';
           renderVoiceState(row); status.textContent = 'Reference voice removed. This host now uses the default voice.';
         } catch (error) { status.textContent = error.message; }
@@ -571,7 +583,7 @@
         try {
           const form = new FormData(); form.append('exaggeration', exaggeration.value); form.append('cfg_weight', cfg.value);
           const response = await fetch(`/api/hosts/${row.dataset.hostId}/voice/preview`, {method: 'POST', body: form});
-          if (!response.ok) { const data = await response.json(); throw new Error(data.detail || 'Voice preview failed'); }
+          if (!response.ok) await readJsonResponse(response, 'Voice preview failed');
           const player = row.querySelector('.preview-player');
           if (player.dataset.objectUrl) URL.revokeObjectURL(player.dataset.objectUrl);
           player.dataset.objectUrl = URL.createObjectURL(await response.blob()); player.src = player.dataset.objectUrl;
@@ -663,8 +675,7 @@
         const form = new FormData();
         form.append('hosts_json', JSON.stringify(hosts));
         const res = await fetch('/api/host-profiles', { method: 'POST', body: form });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Could not save cast');
+        const data = await readJsonResponse(res, 'Could not save cast');
         castStatus.textContent = `Saved ${data.count} host profile${data.count === 1 ? '' : 's'}.`;
       } catch (err) {
         castStatus.textContent = err.message;
@@ -675,7 +686,7 @@
       const el = document.getElementById('health');
       try {
         const res = await fetch('/api/health');
-        const data = await res.json();
+        const data = await readJsonResponse(res, 'Health check failed');
         el.textContent = data.chatterbox.ok ? 'App ready · Chatterbox online' : 'App ready · Chatterbox offline';
         el.className = data.chatterbox.ok ? 'ok' : 'bad';
         const chatterboxLink = document.getElementById('chatterbox-link');
@@ -726,8 +737,8 @@
     document.getElementById('save-packet').addEventListener('click', async () => {
       const status = document.getElementById('packet-status'); status.textContent = 'Saving packet...';
       try { const form = new FormData(); form.append('packet_json', JSON.stringify(serializePacket()));
-        const res = await fetch('/api/research-packets', {method:'POST', body:form}); const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Could not save packet'); status.textContent = `Saved ${data.packet.stories.length} stories as ${data.id}.`;
+        const res = await fetch('/api/research-packets', {method:'POST', body:form}); const data = await readJsonResponse(res, 'Could not save packet');
+        status.textContent = `Saved ${data.packet.stories.length} stories as ${data.id}.`;
       } catch(err) { status.textContent = err.message; }
     });
 
@@ -735,7 +746,7 @@
       const status = document.getElementById('packet-status'); const button = document.getElementById('draft-packet'); button.disabled=true; status.textContent='Writing full episode from research packet...';
       try { const form = new FormData(); form.append('packet_json', JSON.stringify(serializePacket())); form.append('hosts_json', JSON.stringify(serializeHosts()));
         form.append('target_minutes', document.getElementById('target-minutes').value); form.append('tone', document.getElementById('conversation-tone').value);
-        const res=await fetch('/api/conversation-draft-packet',{method:'POST',body:form}); const data=await res.json(); if(!res.ok) throw new Error(data.detail || 'Episode draft failed');
+        const res=await fetch('/api/conversation-draft-packet',{method:'POST',body:form}); const data=await readJsonResponse(res, 'Episode draft failed');
         document.getElementById('episode-script').value=data.script; status.textContent=`Draft ready: ${data.stories} stories, ${data.hosts} hosts.`;
       } catch(err) { status.textContent=err.message; } finally { button.disabled=false; }
     });
@@ -758,8 +769,7 @@
         form.append('target_minutes', document.getElementById('target-minutes').value);
         form.append('tone', document.getElementById('conversation-tone').value);
         const res = await fetch('/api/conversation-draft', { method: 'POST', body: form });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Conversation generation failed');
+        const data = await readJsonResponse(res, 'Conversation generation failed');
         document.getElementById('episode-script').value = data.script;
         status.textContent = `Draft ready using ${data.hosts} hosts. Review and edit it, then generate audio.`;
       } catch (err) {
@@ -791,8 +801,7 @@
           method: 'POST',
           body: new FormData(event.target),
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Generation failed');
+        const data = await readJsonResponse(res, 'Generation failed');
         currentEpisode = data.job_id;
         progress.textContent = `Submitted ${data.chunks} speech chunk${data.chunks === 1 ? '' : 's'}. You may close this page.`;
         await refreshJobs();
@@ -820,8 +829,7 @@
       container.innerHTML = '';
       try {
         const res = await fetch(`/api/episodes/${currentEpisode}/clip-suggestions`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Could not find clips');
+        const data = await readJsonResponse(res, 'Could not find clips');
         data.suggestions.forEach((item, index) => {
           const card = document.createElement('button');
           card.type = 'button';
@@ -848,8 +856,7 @@
         form.append('clip_title', document.getElementById('clip-title').value);
         form.append('aspect', document.getElementById('clip-aspect').value);
         const res = await fetch(`/api/episodes/${currentEpisode}/clips`, {method:'POST', body:form});
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Clip rendering failed');
+        const data = await readJsonResponse(res, 'Clip rendering failed');
         result.innerHTML = `<a class="download" href="${data.download_url}">Download ${data.aspect} MP4</a>`;
         status.textContent = `Clip ready: ${(data.end - data.start).toFixed(1)} seconds.`;
       } catch (err) { status.textContent = err.message; }

@@ -197,6 +197,33 @@ def test_extract_response_text_handles_responses_shape():
     assert extract_response_text(payload) == "[Alex]\\nHello."
 
 
+def test_parse_model_json_reports_plain_text_upstream_error():
+    import httpx
+    import pytest
+    from fastapi import HTTPException
+    from app.main import parse_model_json
+
+    response = httpx.Response(200, text="Internal Server Error")
+
+    with pytest.raises(HTTPException) as error:
+        parse_model_json(response, "Local conversation model")
+
+    assert error.value.status_code == 502
+    assert error.value.detail == (
+        "Local conversation model returned an invalid JSON response: Internal Server Error"
+    )
+
+
+def test_parse_model_json_rejects_non_object_json():
+    import httpx
+    import pytest
+    from fastapi import HTTPException
+    from app.main import parse_model_json
+
+    with pytest.raises(HTTPException, match="invalid JSON response"):
+        parse_model_json(httpx.Response(200, json=["unexpected"]), "Conversation model")
+
+
 def test_research_packet_parsing_and_notes():
     from app.main import parse_research_packet, research_packet_to_notes
     import json
