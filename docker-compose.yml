@@ -14,7 +14,7 @@ services:
       dockerfile: chatterbox/Dockerfile
     environment:
       # GPU mode belongs in docker-compose.gpu.yml so this base stays portable.
-      CHATTERBOX_DEVICE: cpu
+      CHATTERBOX_DEVICE: ${CHATTERBOX_DEVICE:-cpu}
       CHATTERBOX_EXAGGERATION: ${CHATTERBOX_EXAGGERATION:-0.5}
       CHATTERBOX_CFG_WEIGHT: ${CHATTERBOX_CFG_WEIGHT:-0.5}
     ports:

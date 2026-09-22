@@ -14,7 +14,7 @@ def load_compose(name: str) -> dict:
 def test_base_compose_intentionally_uses_cpu_without_gpu_requests() -> None:
     chatterbox = load_compose("docker-compose.yml")["services"]["chatterbox"]
 
-    assert chatterbox["environment"]["CHATTERBOX_DEVICE"] == "cpu"
+    assert chatterbox["environment"]["CHATTERBOX_DEVICE"] == "${CHATTERBOX_DEVICE:-cpu}"
     assert "deploy" not in chatterbox
     assert "gpus" not in chatterbox
     assert "runtime" not in chatterbox
