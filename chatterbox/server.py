@@ -344,6 +344,11 @@ def run_startup_smoke_test() -> None:
     """Load the model once and prove that its real inference path produces valid WAV."""
     _readiness.update(model_loaded=False, synthesis_ready=False, failure=None, model_parameters=[], smoke_audio=None)
     try:
+        requested_type = DEVICE.casefold().split(":", 1)[0]
+        if requested_type not in {"cpu", "cuda"}:
+            raise RuntimeError(
+                f"Unsupported CHATTERBOX_DEVICE={DEVICE!r}; expected 'cpu' or 'cuda'"
+            )
         if DEVICE.casefold().startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError(
                 "CUDA was requested but torch.cuda.is_available() is false; check the NVIDIA "
@@ -409,6 +414,11 @@ def voices() -> dict[str, list[dict[str, str | bool]]]:
 
 @app.post("/v1/audio/speech")
 def speech(request: SpeechRequest) -> Response:
+    if not _readiness["synthesis_ready"]:
+        raise HTTPException(
+            status_code=503,
+            detail=_readiness["failure"] or "Chatterbox synthesis readiness has not completed",
+        )
     if request.model != "chatterbox":
         raise HTTPException(status_code=422, detail="Only the chatterbox model is supported")
     if request.response_format != "wav":

@@ -21,6 +21,12 @@ def test_base_compose_intentionally_uses_cpu_without_gpu_requests() -> None:
     assert "devices" not in chatterbox
 
 
+def test_legacy_full_compose_cannot_enable_cuda_without_the_gpu_override() -> None:
+    chatterbox = load_compose("docker-compose.full.yml")["services"]["chatterbox"]
+
+    assert chatterbox["environment"]["CHATTERBOX_DEVICE"] == "cpu"
+
+
 def test_gpu_override_intentionally_requests_one_nvidia_gpu_for_cuda() -> None:
     chatterbox = load_compose("docker-compose.gpu.yml")["services"]["chatterbox"]
     request = chatterbox["deploy"]["resources"]["reservations"]["devices"]

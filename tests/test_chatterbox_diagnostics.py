@@ -100,3 +100,26 @@ def test_successful_gpu_smoke_reports_actual_parameter_placement(server, monkeyp
     assert result["model_parameters"] == [
         {"name": "model.weight", "device": "cuda:0", "dtype": "torch.float16"}
     ]
+
+
+def test_speech_is_rejected_until_smoke_synthesis_passes(server, monkeypatch):
+    monkeypatch.setitem(server._readiness, "synthesis_ready", False)
+    monkeypatch.setitem(server._readiness, "failure", "CUDA synthesis failed: kernel mismatch")
+    monkeypatch.setattr(server, "get_model", lambda: pytest.fail("unready model must not be used"))
+
+    with pytest.raises(server.HTTPException) as raised:
+        server.speech(server.SpeechRequest(input="Do not render this."))
+
+    assert raised.value.status_code == 503
+    assert "kernel mismatch" in raised.value.detail
+
+
+def test_unknown_device_fails_readiness_without_loading_model(server, monkeypatch):
+    server.DEVICE = "auto"
+    monkeypatch.setattr(server, "get_model", lambda: pytest.fail("invalid device must not load"))
+
+    server.run_startup_smoke_test()
+
+    result = server.health()
+    assert result["ok"] is False
+    assert "Unsupported CHATTERBOX_DEVICE" in result["failure"]
