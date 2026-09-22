@@ -13,7 +13,8 @@ services:
       context: .
       dockerfile: chatterbox/Dockerfile
     environment:
-      CHATTERBOX_DEVICE: ${CHATTERBOX_DEVICE:-cpu}
+      # GPU mode belongs in docker-compose.gpu.yml so this base stays portable.
+      CHATTERBOX_DEVICE: cpu
       CHATTERBOX_EXAGGERATION: ${CHATTERBOX_EXAGGERATION:-0.5}
       CHATTERBOX_CFG_WEIGHT: ${CHATTERBOX_CFG_WEIGHT:-0.5}
     ports:
@@ -21,13 +22,24 @@ services:
     volumes:
       - ./data/voices:/voices:ro
       - chatterbox-models:/models
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json, urllib.request; data = json.load(urllib.request.urlopen('http://localhost:8000/health')); assert data['ok'], data"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
   app:
     build: .
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     depends_on:
-      - chatterbox
+      chatterbox:
+        condition: service_healthy
     environment:
       CHATTERBOX_URL: http://chatterbox:8000
       CHATTERBOX_TTS_PATH: ${CHATTERBOX_TTS_PATH:-/v1/audio/speech}

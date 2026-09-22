@@ -115,10 +115,36 @@ The first generation downloads Chatterbox model weights into the persistent
 `chatterbox-models` volume. CPU inference is the known-good default and can be
 slow. The default 600-second request timeout accommodates model startup.
 
-GPU inference is available only as an explicit opt-in by setting
-`CHATTERBOX_DEVICE=cuda` in `.env` and providing GPU access through a local
-Compose override. The checked-in Compose files intentionally do not require the
-NVIDIA runtime or reserve a GPU, so a clean deployment uses the stable CPU path.
+The base `docker-compose.yml` intentionally selects CPU inference and makes no
+GPU request, so it remains portable. GPU inference has a dedicated checked-in
+override. On a host with the NVIDIA Container Toolkit installed, launch it with
+this exact command:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
+The override sets `CHATTERBOX_DEVICE=cuda` and uses the Compose Deploy
+Specification's NVIDIA device reservation (`deploy.resources.reservations.devices`).
+This is the only GPU allocation mechanism used: do not add the older
+`runtime: nvidia`, a top-level `gpus`, or manual `/dev` mappings. It requests one
+GPU and exposes only the NVIDIA `compute` driver capability needed for
+inference (rather than graphics, display, video, or compatibility capabilities).
+
+Chatterbox's health check reads `/health` and fails when the requested device is
+not ready. The app waits for that check, so a GPU deployment with unavailable
+CUDA does not proceed as though it were healthy. After startup, verify both the
+configured mode and actual CUDA access from inside the running container:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec chatterbox \
+  python3 -c 'import os, torch; assert os.environ["CHATTERBOX_DEVICE"] == "cuda"; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec chatterbox \
+  python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen("http://localhost:8000/health")); assert data["ok"] and data["device"] == "cuda"; print(data)'
+```
+
+For the portable CPU deployment, continue to use `./scripts/start-and-check.sh`
+or `docker compose up -d --build`; no environment toggle is required.
 
 #### Validated Chatterbox GPU software stack
 
@@ -159,7 +185,7 @@ The build prints and stores the resolved Python, Chatterbox, Torch, TorchAudio,
 CUDA, and cuDNN versions in `/image-build-versions.txt`. It also fails at image
 build time unless Torch and TorchAudio import successfully and exactly match the
 pinned CUDA builds. This smoke check does not require a GPU; host/device access
-is checked only when the container runs with `--gpus`/an NVIDIA Compose device
+is checked only when the container runs with the NVIDIA Compose device
 reservation.
 
 #### Applying timeout configuration changes
