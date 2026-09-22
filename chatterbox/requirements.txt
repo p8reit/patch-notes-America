@@ -1,3 +1,9 @@
+# Chatterbox 0.1.6 declares exact torch/torchaudio 2.6.0 dependencies.  Select
+# the matching official CUDA 12.4 wheels explicitly instead of relying on the
+# transitive dependency resolver (which would otherwise select the CPU index).
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
 chatterbox-tts==0.1.6
 fastapi==0.116.1
 python-multipart==0.0.20

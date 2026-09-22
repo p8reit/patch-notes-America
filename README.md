@@ -120,6 +120,48 @@ GPU inference is available only as an explicit opt-in by setting
 Compose override. The checked-in Compose files intentionally do not require the
 NVIDIA runtime or reserve a GPU, so a clean deployment uses the stable CPU path.
 
+#### Validated Chatterbox GPU software stack
+
+The Chatterbox image uses a deliberately pinned GPU stack rather than accepting
+an implicit transitive PyTorch install:
+
+| Component | Validated/pinned value | Compatibility basis |
+| --- | --- | --- |
+| Chatterbox | `chatterbox-tts==0.1.6` | Its published package metadata requires Python `>=3.10`, `torch==2.6.0`, and `torchaudio==2.6.0`. |
+| Python | `3.10` | Supplied by the Ubuntu 22.04 CUDA image and within Chatterbox's declared Python range. |
+| PyTorch | `torch==2.6.0+cu124` | Official PyTorch CUDA 12.4 wheel. |
+| TorchAudio | `torchaudio==2.6.0+cu124` | Official matching CUDA 12.4 wheel; Torch and TorchAudio releases must match. |
+| CUDA user-space runtime | `12.4.1` | `nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04`; matches the wheel's CUDA 12.4 build. |
+| cuDNN | CUDA 12.4 image's versioned cuDNN runtime | Its numeric runtime version is recorded during the build. |
+
+The CUDA 12.4 runtime requires a host NVIDIA driver new enough to support CUDA
+12.4 (Linux driver `>=550.54.14`). Newer NVIDIA drivers are backward compatible
+with this CUDA runtime. Before enabling GPU inference, record the actual host
+GPU, driver, and compute capability (the build environment used for this change
+does not expose `nvidia-smi`, so it cannot truthfully supply host-specific
+values):
+
+```bash
+nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader
+```
+
+The result is the deployment-specific validated combination. Confirm container
+access with the same CUDA release, then build Chatterbox:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 \
+  nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader
+docker compose build --no-cache chatterbox
+docker compose run --rm chatterbox cat /image-build-versions.txt
+```
+
+The build prints and stores the resolved Python, Chatterbox, Torch, TorchAudio,
+CUDA, and cuDNN versions in `/image-build-versions.txt`. It also fails at image
+build time unless Torch and TorchAudio import successfully and exactly match the
+pinned CUDA builds. This smoke check does not require a GPU; host/device access
+is checked only when the container runs with `--gpus`/an NVIDIA Compose device
+reservation.
+
 #### Applying timeout configuration changes
 
 The application source is copied into the app image when it is built, and
