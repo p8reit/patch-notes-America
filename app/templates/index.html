@@ -137,7 +137,7 @@
       </section>
 
       <div class="actions">
-        <button type="submit">Generate episode</button>
+        <button id="generate-episode" type="submit" disabled>Generate episode</button>
         <span id="progress"></span>
       </div>
     </form>
@@ -702,12 +702,15 @@
 
     async function updateHealth() {
       const el = document.getElementById('health');
+      const generateButton = document.getElementById('generate-episode');
       try {
         const res = await fetch('/api/health');
         const data = await readJsonResponse(res, 'Health check failed');
         const status = data.chatterbox.status || {};
         el.textContent = data.chatterbox.ok ? 'App ready · synthesis verified' : 'App ready · synthesis unavailable';
         el.className = data.chatterbox.ok ? 'ok' : 'bad';
+        generateButton.disabled = !data.chatterbox.ok;
+        generateButton.title = data.chatterbox.ok ? '' : 'Episode generation is disabled until Chatterbox passes its synthesis smoke test.';
         const detail = document.getElementById('health-details');
         const parameter = (status.model_parameters || [])[0];
         detail.textContent = [
@@ -729,6 +732,8 @@
         el.textContent = 'Health check failed';
         el.className = 'bad';
         document.getElementById('health-details').textContent = err.message;
+        generateButton.disabled = true;
+        generateButton.title = 'Episode generation is disabled while Chatterbox health is unavailable.';
       }
     }
 
@@ -942,7 +947,7 @@
       } catch (err) {
         progress.textContent = err.message;
       } finally {
-        button.disabled = false;
+        await updateHealth();
       }
     });
 

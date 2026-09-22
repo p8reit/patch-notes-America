@@ -836,6 +836,24 @@ async def chatterbox_status() -> dict:
         return {"detail": response.text[:200] or "Chatterbox is reachable"}
 
 
+async def require_chatterbox_ready() -> dict:
+    """Refuse new audio work unless the backend passed its real synthesis probe."""
+    try:
+        status = await chatterbox_status()
+    except Exception as exc:  # noqa: BLE001 - turn connectivity into a stable API response
+        raise HTTPException(
+            status_code=503,
+            detail=f"Episode generation is disabled: Chatterbox health check failed: {exc}",
+        ) from exc
+    if not status.get("ok") or not status.get("synthesis_ready"):
+        reason = status.get("failure") or "Chatterbox has not passed synthesis readiness"
+        raise HTTPException(
+            status_code=503,
+            detail=f"Episode generation is disabled: {reason}",
+        )
+    return status
+
+
 async def chatterbox_voices() -> list[dict[str, Any]]:
     """Fetch the voices that the bundled Chatterbox service can actually use."""
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1698,6 +1716,7 @@ async def create_generation_job(
     omit_saved_intro: bool = Form(False),
 ):
     """Queue an episode whose ordered speech chunks are durable render units."""
+    await require_chatterbox_ready()
     if not script.strip():
         raise HTTPException(status_code=400, detail="Script cannot be empty")
     hosts = parse_hosts(hosts_json)
@@ -1820,6 +1839,7 @@ async def generate(
     script: str = Form(...),
     hosts_json: str = Form(...),
 ):
+    await require_chatterbox_ready()
     if not script.strip():
         raise HTTPException(status_code=400, detail="Script cannot be empty")
 

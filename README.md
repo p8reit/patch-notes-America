@@ -81,10 +81,11 @@ Open:
 http://127.0.0.1:8081
 ```
 
-The top status card should show:
+The top status card shows readiness only after the model has loaded and a fixed
+end-to-end synthesis smoke test has produced a valid WAV:
 
 ```text
-App ready · Chatterbox online
+App ready · synthesis verified
 ```
 
 Chatterbox defaults to `127.0.0.1:8000`. Set `CHATTERBOX_PORT` in `.env` if another
@@ -145,8 +146,11 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm \
 
 The command exits zero only when all 16 cases pass, and
 `qualification-report.json` is the evidence for the gate. Run this matrix and
-require a passing report before any future change makes GPU inference the
-default. If direct CUDA fails, investigate the CUDA/Torch/GPU compatibility
+require a passing report on the target production hardware before promoting
+the GPU launch command below. Once that report passes, the GPU command is the
+recommended production command; retain the base CPU command as a diagnostic
+path. Until then, production remains on the base CPU configuration. If direct
+CUDA fails, investigate the CUDA/Torch/GPU compatibility
 stack first. If direct CUDA succeeds but adapter CUDA fails, investigate
 `generate_audio`, sampler injection, tensor conversion, and encoding. If both
 CUDA paths pass but complete episode output fails, investigate
@@ -170,15 +174,19 @@ GPU and exposes only the NVIDIA `compute` driver capability needed for
 inference (rather than graphics, display, video, or compatibility capabilities).
 
 Chatterbox's health check reads `/health` and fails when the requested device is
-not ready. The app waits for that check, so a GPU deployment with unavailable
-CUDA does not proceed as though it were healthy. After startup, verify both the
+not ready. The app waits for that check, and both the API and browser disable
+episode submission unless the model-loading and fixed synthesis smoke test
+passed. `/health` reports the requested and resolved device, Torch/CUDA/cuDNN
+versions, representative model parameter placement, smoke-audio measurements,
+and the actionable startup failure. A GPU deployment with unavailable CUDA
+never falls back to CPU or proceeds as though it were healthy. After startup, verify both the
 configured mode and actual CUDA access from inside the running container:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec chatterbox \
   python3 -c 'import os, torch; assert os.environ["CHATTERBOX_DEVICE"] == "cuda"; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec chatterbox \
-  python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen("http://localhost:8000/health")); assert data["ok"] and data["device"] == "cuda"; print(data)'
+  python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen("http://localhost:8000/health")); assert data["ok"] and data["requested_device"] == "cuda" and data["resolved_device"].startswith("cuda"); print(data)'
 ```
 
 For the portable CPU deployment, continue to use `./scripts/start-and-check.sh`
