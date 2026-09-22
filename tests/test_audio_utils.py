@@ -168,6 +168,24 @@ def test_quality_metrics_reject_repeated_half_second_blocks(tmp_path):
     assert "highly repetitive blocks" in metrics["quality_failures"]
 
 
+def test_quality_metrics_reject_sustained_broadband_static(tmp_path):
+    path = tmp_path / "broadband-static.wav"
+    # Deterministic pseudo-random noise has the moderate amplitude and rapid
+    # sign changes typical of hiss, without relying on a flaky random fixture.
+    state = 12345
+    samples = []
+    for _ in range(2 * RATE):
+        state = (1103515245 * state + 12345) & 0x7FFFFFFF
+        samples.append((state % 16001) - 8000)
+    write_samples(path, samples)
+
+    metrics = analyze_audio_quality(path)
+
+    assert metrics["zero_crossing_ratio"] >= 0.35
+    assert "sustained broadband static" in metrics["quality_failures"]
+    assert validate_audio_segment(path)[0] is False
+
+
 def test_same_speaker_transition():
     assert calculate_transition_pause({}, {"boundary_reason": "sentence_break"}) == SAME_SPEAKER_PAUSE_MS
 

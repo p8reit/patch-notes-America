@@ -34,6 +34,12 @@ QUALITY_STATIC_RATIO = 0.90
 QUALITY_LOW_VARIATION_SECONDS = 3.0
 QUALITY_REPEATED_SECONDS = 4.0
 QUALITY_REPEATED_SIMILARITY = 0.9995
+# Sustained broadband noise crosses zero far more often than speech.  Keep the
+# threshold conservative so sibilants and other short unvoiced sounds remain
+# valid while an entire render made up of hiss is rejected.
+QUALITY_NOISE_MIN_SECONDS = 0.5
+QUALITY_NOISE_MIN_RMS = 0.02
+QUALITY_ZERO_CROSSING_RATIO = 0.35
 
 
 @dataclass(frozen=True)
@@ -131,6 +137,11 @@ def analyze_audio_quality(path: Path) -> dict[str, Any]:
     dc_offset = sum(samples) / count if count else 0.0
     clipping_ratio = sum(abs(value) >= 0.999 for value in samples) / count if count else 0.0
     static_ratio = sum(abs(value) >= 0.95 for value in samples) / count if count else 0.0
+    zero_crossings = sum(
+        (previous < 0 <= current) or (previous >= 0 > current)
+        for previous, current in zip(samples, samples[1:])
+    )
+    zero_crossing_ratio = zero_crossings / (count - 1) if count > 1 else 0.0
 
     # A 100 ms window must have essentially no sample movement while still
     # being audible. Silence is handled separately and does not count here.
@@ -174,6 +185,12 @@ def analyze_audio_quality(path: Path) -> dict[str, Any]:
         failures.append("near-full-scale static")
     if clipping_ratio > QUALITY_CLIPPING_RATIO:
         failures.append("excessive clipping")
+    if (
+        audio.duration_seconds >= QUALITY_NOISE_MIN_SECONDS
+        and rms >= QUALITY_NOISE_MIN_RMS
+        and zero_crossing_ratio >= QUALITY_ZERO_CROSSING_RATIO
+    ):
+        failures.append("sustained broadband static")
     if low_variation_seconds >= QUALITY_LOW_VARIATION_SECONDS:
         failures.append("multi-second nearly constant tone")
     if repeated_seconds >= QUALITY_REPEATED_SECONDS:
@@ -183,6 +200,7 @@ def analyze_audio_quality(path: Path) -> dict[str, Any]:
         "peak_amplitude": round(peak, 8),
         "rms": round(rms, 8),
         "clipping_ratio": round(clipping_ratio, 8),
+        "zero_crossing_ratio": round(zero_crossing_ratio, 8),
         "non_finite_samples": 0,  # Integer PCM cannot encode NaN or infinity.
         "dc_offset": round(dc_offset, 8),
         "long_low_variation_seconds": round(low_variation_seconds, 6),

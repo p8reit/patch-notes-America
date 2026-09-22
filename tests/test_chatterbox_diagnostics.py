@@ -123,3 +123,20 @@ def test_unknown_device_fails_readiness_without_loading_model(server, monkeypatc
     result = server.health()
     assert result["ok"] is False
     assert "Unsupported CHATTERBOX_DEVICE" in result["failure"]
+
+
+def test_speech_validates_each_render_before_returning_it(server, monkeypatch):
+    generated = object()
+    model = types.SimpleNamespace(sr=24_000)
+    validated = []
+    monkeypatch.setitem(server._readiness, "synthesis_ready", True)
+    monkeypatch.setattr(server, "get_model", lambda: model)
+    monkeypatch.setattr(server, "generate_audio", lambda *_args: generated)
+    monkeypatch.setattr(server, "_validate_audio", lambda audio, rate: validated.append((audio, rate)))
+    monkeypatch.setattr(server, "encode_wav", lambda *_args: b"RIFF-valid")
+    server.torch.inference_mode = lambda: __import__("contextlib").nullcontext()
+
+    response = server.speech(server.SpeechRequest(input="Validate this render."))
+
+    assert response.body == b"RIFF-valid"
+    assert validated == [(generated, 24_000)]
