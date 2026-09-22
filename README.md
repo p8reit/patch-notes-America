@@ -121,15 +121,37 @@ the mode to `advanced` only for the pinned Chatterbox 0.1.6 image; its Min P,
 Top P, and repetition-penalty bridge is version- and signature-checked during
 startup. Unknown private APIs fail startup rather than being patched blindly.
 
-To qualify a GPU, run the A/B fixture in the built image. It generates identical
-seeded text on CPU and CUDA first through the public baseline and then through
-the advanced sampler adapter. Its JSON `diagnosis` distinguishes a CUDA-path
-failure from corruption introduced by the internal-method override:
+To qualify a GPU, use the repeatable 16-case acceptance matrix in
+`scripts/qualify-chatterbox.py`. It renders one short sentence and one medium
+paragraph with both the built-in voice and one normalized reference voice,
+through both the pinned package directly and the repository's `generate_audio`
+adapter, on CPU and CUDA. Every successful case is saved as a PCM WAV whose
+name identifies the device, path, voice, and text case. The report beside the
+WAVs records the fixed seed/settings, package and GPU environment, SHA-256
+digests, and objective duration, peak, RMS, DC-offset, clipping, and finite
+sample measurements.
+
+Run it in the GPU image, supplying an authorized reference recording from the
+read-only voices mount and a writable host artifact directory:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm chatterbox \
-  python /service/ab_qualification.py
+mkdir -p artifacts/chatterbox-qualification
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm \
+  -v "$PWD/artifacts/chatterbox-qualification:/artifacts/chatterbox-qualification" \
+  chatterbox python /service/qualify-chatterbox.py \
+  --reference-voice /voices/REFERENCE_ID.wav \
+  --output-dir /artifacts/chatterbox-qualification
 ```
+
+The command exits zero only when all 16 cases pass, and
+`qualification-report.json` is the evidence for the gate. Run this matrix and
+require a passing report before any future change makes GPU inference the
+default. If direct CUDA fails, investigate the CUDA/Torch/GPU compatibility
+stack first. If direct CUDA succeeds but adapter CUDA fails, investigate
+`generate_audio`, sampler injection, tensor conversion, and encoding. If both
+CUDA paths pass but complete episode output fails, investigate
+`synthesize_chunk`, normalization, and final assembly. A missing GPU is a gate
+failure rather than a skipped test.
 
 The base `docker-compose.yml` intentionally selects CPU inference and makes no
 GPU request, so it remains portable. GPU inference has a dedicated checked-in
