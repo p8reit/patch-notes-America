@@ -103,9 +103,57 @@ WAV/RIFF payload, preventing an API JSON response from being saved and passed
 to FFmpeg as audio.
 
 The first generation downloads Chatterbox model weights into the persistent
-`chatterbox-models` volume. CPU inference is supported and can be slow; set
-`CHATTERBOX_DEVICE=cuda` when the container has access to a compatible NVIDIA
-GPU. The default 600-second request timeout accommodates model startup.
+`chatterbox-models` volume. Chatterbox is configured for NVIDIA GPU inference:
+Compose reserves the host GPUs for the container and defaults
+`CHATTERBOX_DEVICE` to `gpu`. The service translates `gpu` to PyTorch's `cuda`
+device name internally. The host must have the NVIDIA driver, NVIDIA
+Container Toolkit, and Docker configured with the NVIDIA runtime. Confirm that
+Docker can see the GPU before starting the service:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+Rebuild and recreate Chatterbox after pulling this configuration change, then
+verify both the container's CUDA access and the device reported by the service:
+
+```bash
+docker compose up -d --build --force-recreate chatterbox
+docker compose exec chatterbox python -c \
+  'import torch; available = torch.cuda.is_available(); print("CUDA available:", available); print("GPU:", torch.cuda.get_device_name(0) if available else "none"); print("Torch CUDA:", torch.version.cuda)'
+curl --fail http://127.0.0.1:8000/health
+```
+
+The CUDA check should print `True` and the GPU name; the health response should
+contain `"device":"cuda"`, `"cuda_available":true`, and the GPU name. Compose
+uses the NVIDIA runtime explicitly, exposes all GPUs, and enables the driver's
+compute and utility capabilities. To deliberately run without a GPU, remove
+the GPU device reservation and `runtime: nvidia` from a local Compose override,
+then set `CHATTERBOX_DEVICE=cpu`. The default 600-second request timeout
+accommodates model startup.
+
+If PyTorch reports a CUDA build (for example, `Torch CUDA: 12.4`) but
+`torch.cuda.is_available()` is `False`, the image has CUDA-enabled PyTorch but
+the running container cannot reach the host driver. Do not call
+`torch.cuda.get_device_name()` unless availability is `True`; doing so produces
+the `Found no NVIDIA driver` traceback without adding diagnostic information.
+First verify the driver on the host, then recreate the container rather than
+only restarting it and inspect Docker's GPU request:
+
+```bash
+nvidia-smi
+docker compose up -d --build --force-recreate chatterbox
+docker inspect "$(docker compose ps -q chatterbox)" \
+  --format '{{json .HostConfig.DeviceRequests}} {{.HostConfig.Runtime}}'
+docker compose exec chatterbox python -c \
+  'import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none")'
+```
+
+The host command must display the GPU and driver version. The inspection output
+should include the `nvidia` driver, the `gpu` capability, and the `nvidia`
+runtime. If the host check fails, install or repair the host NVIDIA driver. If
+only the container checks fail, reinstall or configure NVIDIA Container Toolkit
+before recreating the service.
 
 #### Applying timeout configuration changes
 
