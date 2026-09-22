@@ -16,7 +16,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 VOICE_DIR = Path(os.getenv("CHATTERBOX_VOICE_DIR", "/voices"))
-DEVICE = os.getenv("CHATTERBOX_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+REQUESTED_DEVICE = os.getenv("CHATTERBOX_DEVICE", "gpu" if torch.cuda.is_available() else "cpu")
+# Accept the deployment-facing "gpu" value while passing PyTorch its CUDA
+# device name. Chatterbox ultimately constructs torch devices from this value.
+DEVICE = "cuda" if REQUESTED_DEVICE.casefold() == "gpu" else REQUESTED_DEVICE
 EXAGGERATION = float(os.getenv("CHATTERBOX_EXAGGERATION", "0.5"))
 CFG_WEIGHT = float(os.getenv("CHATTERBOX_CFG_WEIGHT", "0.5"))
 
@@ -133,8 +136,17 @@ def generate_audio(model: ChatterboxTTS, request: SpeechRequest, prompt: str | N
 
 
 @app.get("/health")
-def health() -> dict[str, str | bool]:
-    return {"ok": True, "provider": "chatterbox", "device": DEVICE, "model_loaded": _model is not None}
+def health() -> dict[str, str | bool | None]:
+    cuda_available = torch.cuda.is_available()
+    device_ready = not DEVICE.casefold().startswith("cuda") or cuda_available
+    return {
+        "ok": device_ready,
+        "provider": "chatterbox",
+        "device": DEVICE,
+        "cuda_available": cuda_available,
+        "gpu": torch.cuda.get_device_name(0) if cuda_available else None,
+        "model_loaded": _model is not None,
+    }
 
 
 @app.get("/voices")
