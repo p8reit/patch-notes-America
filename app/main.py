@@ -1638,7 +1638,9 @@ async def health():
     chatterbox = {"ok": False}
     try:
         status = await chatterbox_status()
-        chatterbox = {"ok": True, "status": status}
+        chatterbox = {"ok": bool(status.get("ok")), "status": status}
+        if not chatterbox["ok"]:
+            chatterbox["error"] = status.get("failure") or "Chatterbox synthesis is not ready"
     except Exception as exc:  # noqa: BLE001
         chatterbox = {"ok": False, "error": str(exc)}
     return {"app": "ok", "chatterbox": chatterbox, "chatterbox_public_url": CHATTERBOX_PUBLIC_URL or None}
