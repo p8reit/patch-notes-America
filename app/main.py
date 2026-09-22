@@ -35,6 +35,7 @@ OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", APP_ROOT / "output"))
 CONFIG_DIR = Path(os.getenv("CONFIG_DIR", APP_ROOT / "config"))
 DATA_DIR = Path(os.getenv("DATA_DIR", APP_ROOT / "data"))
 VOICE_DIR = DATA_DIR / "voices"
+SAVED_EPISODES_DIR = EPISODES_DIR / "saved"
 HOST_PROFILES_FILE = CONFIG_DIR / "host_profiles.json"
 MAX_VOICE_UPLOAD_BYTES = int(os.getenv("MAX_VOICE_UPLOAD_MB", "50")) * 1024 * 1024
 MAX_INTRO_TRACK_BYTES = int(os.getenv("MAX_INTRO_TRACK_MB", "50")) * 1024 * 1024
@@ -71,6 +72,7 @@ EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
+SAVED_EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,68 @@ def clean_script(text: str) -> str:
     text = text.replace("**", "").replace("__", "")
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def parse_saved_episode(episode_json: str) -> dict[str, Any]:
+    """Validate and normalize a complete, editable episode document."""
+    try:
+        raw = json.loads(episode_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Episode is invalid JSON") from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="Episode must be an object")
+
+    title = _text_field(raw, "title")
+    if not title:
+        raise HTTPException(status_code=400, detail="Episode title is required")
+    hosts = parse_hosts(json.dumps(raw.get("hosts", [])))
+    packet = raw.get("research_packet", {})
+    if not isinstance(packet, dict):
+        raise HTTPException(status_code=400, detail="Research packet must be an object")
+    stories = packet.get("stories", [])
+    if not isinstance(stories, list) or any(not isinstance(story, dict) for story in stories):
+        raise HTTPException(status_code=400, detail="Research packet stories must be a list of objects")
+    try:
+        target_minutes = int(raw.get("target_minutes", 8))
+        intro_music_volume = float(raw.get("intro_music_volume", 0.25))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Episode contains invalid numeric settings") from exc
+    if not 2 <= target_minutes <= 60:
+        raise HTTPException(status_code=400, detail="Target minutes must be between 2 and 60")
+    if not 0 <= intro_music_volume <= 1:
+        raise HTTPException(status_code=400, detail="Intro music volume must be between 0 and 1")
+    return {
+        "version": 1,
+        "title": title,
+        "hosts": hosts,
+        "research_packet": packet,
+        "story_notes": str(raw.get("story_notes", "")),
+        "target_minutes": target_minutes,
+        "conversation_tone": str(raw.get("conversation_tone", "")),
+        "script": str(raw.get("script", "")),
+        "intro_lines": str(raw.get("intro_lines", "")),
+        "intro_overlap": bool(raw.get("intro_overlap", False)),
+        "intro_music_volume": intro_music_volume,
+    }
+
+
+def _saved_episode_dir(episode_id: str) -> Path:
+    safe_id = slugify(episode_id)
+    if safe_id != episode_id:
+        raise HTTPException(status_code=404, detail="Saved episode not found")
+    return SAVED_EPISODES_DIR / safe_id
+
+
+def _load_saved_episode(episode_id: str) -> tuple[Path, dict[str, Any]]:
+    episode_dir = _saved_episode_dir(episode_id)
+    path = episode_dir / "episode.json"
+    try:
+        episode = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Saved episode not found") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Saved episode could not be read") from exc
+    return episode_dir, episode
 
 
 def remove_accidental_transcript_repetition(text: str) -> str:
@@ -1403,6 +1467,74 @@ async def update_host_profiles(hosts_json: str = Form(...)):
     return {"ok": True, "hosts": hosts, "count": len(hosts)}
 
 
+@app.get("/api/saved-episodes")
+async def list_saved_episodes():
+    episodes = []
+    for path in sorted(SAVED_EPISODES_DIR.glob("*/episode.json"), reverse=True):
+        try:
+            episode = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        episodes.append({
+            "id": path.parent.name,
+            "title": episode.get("title", "Untitled episode"),
+            "updated_at": episode.get("updated_at"),
+            "has_intro_track": bool(episode.get("intro_track")),
+        })
+    return {"episodes": episodes}
+
+
+@app.get("/api/saved-episodes/{episode_id}")
+async def get_saved_episode(episode_id: str):
+    _, episode = _load_saved_episode(episode_id)
+    return {"id": episode_id, "episode": episode}
+
+
+@app.post("/api/saved-episodes")
+async def save_episode(
+    episode_json: str = Form(...),
+    episode_id: str = Form(""),
+    remove_intro_track: bool = Form(False),
+    intro_track: UploadFile | None = File(None),
+):
+    episode = parse_saved_episode(episode_json)
+    now = datetime.now(timezone.utc).isoformat()
+    if episode_id:
+        episode_dir, previous = _load_saved_episode(episode_id)
+        saved_id = episode_id
+        episode["created_at"] = previous.get("created_at", now)
+        if previous.get("intro_track") and not remove_intro_track:
+            episode["intro_track"] = previous["intro_track"]
+    else:
+        saved_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{slugify(episode['title'])}-{uuid4().hex[:8]}"
+        episode_dir = SAVED_EPISODES_DIR / saved_id
+        episode["created_at"] = now
+    episode_dir.mkdir(parents=True, exist_ok=True)
+
+    if remove_intro_track:
+        for old_track in episode_dir.glob("intro-track.*"):
+            old_track.unlink(missing_ok=True)
+        episode.pop("intro_track", None)
+    if intro_track and intro_track.filename:
+        suffix = Path(intro_track.filename).suffix.lower()
+        if suffix not in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg"}:
+            raise HTTPException(status_code=400, detail="Intro track must be WAV, MP3, FLAC, M4A, AAC, or OGG")
+        uploaded = await intro_track.read(MAX_INTRO_TRACK_BYTES + 1)
+        if len(uploaded) > MAX_INTRO_TRACK_BYTES:
+            raise HTTPException(status_code=413, detail="Intro track is too large")
+        for old_track in episode_dir.glob("intro-track.*"):
+            old_track.unlink(missing_ok=True)
+        stored_name = f"intro-track{suffix}"
+        (episode_dir / stored_name).write_bytes(uploaded)
+        episode["intro_track"] = {
+            "filename": Path(intro_track.filename).name,
+            "stored_name": stored_name,
+        }
+    episode["updated_at"] = now
+    (episode_dir / "episode.json").write_text(json.dumps(episode, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, "id": saved_id, "episode": episode}
+
+
 @app.post("/api/hosts/{host_id}/voice")
 async def upload_host_voice(
     host_id: str,
@@ -1550,6 +1682,8 @@ async def create_generation_job(
     intro_overlap: bool = Form(False),
     intro_music_volume: float = Form(0.25),
     intro_track: UploadFile | None = File(None),
+    saved_episode_id: str = Form(""),
+    omit_saved_intro: bool = Form(False),
 ):
     """Queue an episode whose ordered speech chunks are durable render units."""
     if not script.strip():
@@ -1576,6 +1710,16 @@ async def create_generation_job(
     }
     if intro_lines.strip():
         (job_dir / "intro-lines.txt").write_text(clean_script(intro_lines), encoding="utf-8")
+    saved_intro_path: Path | None = None
+    saved_intro_filename: str | None = None
+    if saved_episode_id and not omit_saved_intro and not (intro_track and intro_track.filename):
+        saved_dir, saved_episode = _load_saved_episode(saved_episode_id)
+        saved_intro = saved_episode.get("intro_track")
+        if isinstance(saved_intro, dict) and saved_intro.get("stored_name"):
+            candidate = saved_dir / Path(str(saved_intro["stored_name"])).name
+            if candidate.is_file():
+                saved_intro_path = candidate
+                saved_intro_filename = Path(str(saved_intro.get("filename") or candidate.name)).name
     if intro_track and intro_track.filename:
         suffix = Path(intro_track.filename).suffix.lower()
         if suffix not in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg"}:
@@ -1595,6 +1739,13 @@ async def create_generation_job(
         finally:
             source.unlink(missing_ok=True)
         intro.update({"track": "intro-track.wav", "track_filename": Path(intro_track.filename).name})
+    elif saved_intro_path:
+        try:
+            normalize_intro_track(saved_intro_path, job_dir / "intro-track.wav")
+        except HTTPException:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
+        intro.update({"track": "intro-track.wav", "track_filename": saved_intro_filename})
     job = {
         "id": job_id,
         "title": title,

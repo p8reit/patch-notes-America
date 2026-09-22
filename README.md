@@ -5,6 +5,7 @@ Initial podcast-production application for turning a narration script into a fin
 ## MVP features
 
 - Browser-based episode editor on port `8081`
+- Complete editable episode saves, including the cast, research packet, source notes, script, conversation settings, show-open settings, and intro audio
 - Preloaded pilot narration script
 - Per-host Chatterbox reference voice, tempo, exaggeration, CFG weight, temperature, Min P, Top P, and repetition penalty
 - Optional uploaded intro track with multi-host spoken lines mixed over the music or played after it
@@ -165,6 +166,14 @@ or `data/` directories, so queued jobs and uploaded voices remain available.
    reference recording. Advanced sampling controls remain available below it.
 4. Click **Generate episode**.
 5. When complete, click **Download MP3**.
+
+Use **Save episode** at the top of the editor to create a resumable episode
+file. Choose it from the saved-episode menu and click **Load** to restore the
+entire editing session. Saving again updates the same episode. Saved episode
+documents and their optional intro tracks live under `episodes/saved/`, so they
+survive application and container restarts with the existing `episodes/` bind
+mount. A restored intro track is also reused automatically when the episode is
+submitted for audio generation; it does not need to be uploaded again.
 
 To create a show open, select an **Intro track** and add **Host intro lines** using
 the same `[Host Name]` speaker tags as the main script. Leave **Play the host

@@ -23,6 +23,21 @@
     </section>
 
     <form id="episode-form" class="card">
+      <section class="episode-library" aria-labelledby="episode-library-title">
+        <div>
+          <p class="eyebrow">EPISODE FILE</p>
+          <h2 id="episode-library-title">Save or resume an episode</h2>
+          <p class="hint">Keeps the script, cast, research, conversation settings, show open, and uploaded intro track together.</p>
+        </div>
+        <div class="episode-library-controls">
+          <select id="saved-episode-select" aria-label="Saved episodes"><option value="">Choose a saved episode…</option></select>
+          <button id="load-episode" class="secondary" type="button">Load</button>
+          <button id="save-episode" class="secondary" type="button">Save episode</button>
+        </div>
+        <input id="saved-episode-id" name="saved_episode_id" type="hidden">
+        <input id="omit-saved-intro" name="omit_saved_intro" type="hidden" value="false">
+        <p id="episode-save-status" class="hint" role="status"></p>
+      </section>
       <label>
         Episode title
         <input name="title" placeholder="My next great episode" required>
@@ -101,6 +116,8 @@
           Intro track
           <input id="intro-track" name="intro_track" type="file" accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,audio/*">
           <span class="hint">WAV, MP3, FLAC, M4A, AAC, or OGG.</span>
+          <span id="saved-intro-track" class="hint" hidden></span>
+          <button id="remove-saved-intro" class="danger-link" type="button" hidden>Remove saved intro track</button>
         </label>
         <label class="checkbox-label">
           <input id="intro-overlap" name="intro_overlap" type="checkbox" checked>
@@ -731,6 +748,109 @@
       };
     }
 
+    function serializeEpisode() {
+      return {
+        title: document.querySelector('input[name="title"]').value.trim(),
+        hosts: serializeHosts(),
+        research_packet: serializePacket(),
+        story_notes: document.getElementById('story-notes').value,
+        target_minutes: Number(document.getElementById('target-minutes').value),
+        conversation_tone: document.getElementById('conversation-tone').value,
+        script: document.getElementById('episode-script').value,
+        intro_lines: document.getElementById('intro-lines').value,
+        intro_overlap: document.getElementById('intro-overlap').checked,
+        intro_music_volume: Number(introMusicVolume.value),
+      };
+    }
+
+    let removeSavedIntro = false;
+
+    function showSavedIntro(introTrack) {
+      const label = document.getElementById('saved-intro-track');
+      const removeButton = document.getElementById('remove-saved-intro');
+      label.hidden = !introTrack;
+      removeButton.hidden = !introTrack;
+      label.textContent = introTrack ? `Saved with episode: ${introTrack.filename}` : '';
+      removeSavedIntro = false;
+      document.getElementById('omit-saved-intro').value = 'false';
+    }
+
+    async function refreshSavedEpisodes(selectedId = '') {
+      const response = await fetch('/api/saved-episodes');
+      const data = await readJsonResponse(response, 'Could not list saved episodes');
+      const select = document.getElementById('saved-episode-select');
+      select.replaceChildren(new Option('Choose a saved episode…', ''), ...data.episodes.map((episode) =>
+        new Option(`${episode.title} · ${new Date(episode.updated_at).toLocaleString()}`, episode.id)));
+      select.value = selectedId;
+    }
+
+    function loadEpisodeIntoEditor(episode, episodeId) {
+      document.querySelector('input[name="title"]').value = episode.title || '';
+      hostsContainer.replaceChildren();
+      (episode.hosts || []).forEach(addHost);
+      const packet = episode.research_packet || {};
+      document.getElementById('packet-angle').value = packet.episode_angle || '';
+      document.getElementById('packet-stories').replaceChildren();
+      (packet.stories || []).forEach(addPacketStory);
+      if (!(packet.stories || []).length) addPacketStory();
+      document.getElementById('story-notes').value = episode.story_notes || '';
+      document.getElementById('target-minutes').value = episode.target_minutes ?? 8;
+      document.getElementById('conversation-tone').value = episode.conversation_tone || '';
+      document.getElementById('episode-script').value = episode.script || '';
+      document.getElementById('intro-lines').value = episode.intro_lines || '';
+      document.getElementById('intro-overlap').checked = Boolean(episode.intro_overlap);
+      introMusicVolume.value = episode.intro_music_volume ?? 0.25;
+      introMusicVolume.dispatchEvent(new Event('input'));
+      document.getElementById('intro-track').value = '';
+      document.getElementById('saved-episode-id').value = episodeId;
+      showSavedIntro(episode.intro_track || null);
+    }
+
+    document.getElementById('save-episode').addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const status = document.getElementById('episode-save-status');
+      button.disabled = true; status.textContent = 'Saving the complete episode…';
+      try {
+        const form = new FormData();
+        form.append('episode_json', JSON.stringify(serializeEpisode()));
+        form.append('episode_id', document.getElementById('saved-episode-id').value);
+        form.append('remove_intro_track', String(removeSavedIntro));
+        const introFile = document.getElementById('intro-track').files[0];
+        if (introFile) form.append('intro_track', introFile);
+        const response = await fetch('/api/saved-episodes', {method: 'POST', body: form});
+        const data = await readJsonResponse(response, 'Could not save episode');
+        document.getElementById('saved-episode-id').value = data.id;
+        showSavedIntro(data.episode.intro_track || null);
+        await refreshSavedEpisodes(data.id);
+        status.textContent = `Saved “${data.episode.title}”. You can safely return to it later.`;
+      } catch (error) { status.textContent = error.message; }
+      finally { button.disabled = false; }
+    });
+
+    document.getElementById('load-episode').addEventListener('click', async () => {
+      const id = document.getElementById('saved-episode-select').value;
+      const status = document.getElementById('episode-save-status');
+      if (!id) { status.textContent = 'Choose a saved episode first.'; return; }
+      status.textContent = 'Loading episode…';
+      try {
+        const response = await fetch(`/api/saved-episodes/${encodeURIComponent(id)}`);
+        const data = await readJsonResponse(response, 'Could not load episode');
+        loadEpisodeIntoEditor(data.episode, data.id);
+        status.textContent = `Loaded “${data.episode.title}”.`;
+      } catch (error) { status.textContent = error.message; }
+    });
+
+    document.getElementById('remove-saved-intro').addEventListener('click', () => {
+      removeSavedIntro = true;
+      document.getElementById('omit-saved-intro').value = 'true';
+      document.getElementById('saved-intro-track').hidden = true;
+      document.getElementById('remove-saved-intro').hidden = true;
+      document.getElementById('episode-save-status').textContent = 'The saved intro track will be removed when you save.';
+    });
+    document.getElementById('intro-track').addEventListener('change', () => {
+      if (document.getElementById('intro-track').files.length) removeSavedIntro = true;
+    });
+
     document.getElementById('add-story').addEventListener('click', () => addPacketStory());
     addPacketStory();
 
@@ -868,6 +988,7 @@
     refreshVoices();
     updateHealth();
     refreshJobs().catch(err => { document.getElementById('job-list').innerHTML = `<p class="job-error">${escapeHtml(err.message)}</p>`; });
+    refreshSavedEpisodes().catch(err => { document.getElementById('episode-save-status').textContent = err.message; });
   </script>
 </body>
 </html>
