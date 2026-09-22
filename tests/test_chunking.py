@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from app.main import build_generation_segments, clean_script, describe_chatterbox_error, split_script
+from app.main import MAX_CHARS, build_generation_segments, clean_script, describe_chatterbox_error, split_script
 
 
 def test_clean_script_removes_basic_markdown():
@@ -14,6 +14,13 @@ def test_split_script_respects_limit():
     chunks = split_script(text, max_chars=120)
     assert len(chunks) > 1
     assert all(len(chunk) <= 120 for chunk in chunks)
+
+
+def test_default_chunks_stay_within_chatterbox_safe_input_window():
+    chunks = split_script("This is a complete spoken sentence. " * 100)
+
+    assert MAX_CHARS == 280
+    assert all(len(chunk) <= 280 for chunk in chunks)
 
 
 def test_split_script_keeps_short_paragraphs():

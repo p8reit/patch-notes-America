@@ -22,6 +22,7 @@ VOICE_DIR = Path(os.getenv("CHATTERBOX_VOICE_DIR", "/voices"))
 DEVICE = os.getenv("CHATTERBOX_DEVICE", "cpu")
 EXAGGERATION = float(os.getenv("CHATTERBOX_EXAGGERATION", "0.5"))
 CFG_WEIGHT = float(os.getenv("CHATTERBOX_CFG_WEIGHT", "0.5"))
+MAX_INPUT_CHARS = int(os.getenv("CHATTERBOX_MAX_INPUT_CHARS", "300"))
 
 app = FastAPI(title="Patch Notes Chatterbox TTS")
 _model: ChatterboxTTS | None = None
@@ -29,7 +30,9 @@ _model_lock = threading.Lock()
 
 
 class SpeechRequest(BaseModel):
-    input: str = Field(min_length=1, max_length=5000)
+    # Oversized narration can exhaust Chatterbox's acoustic-token window and
+    # produce a stuck tone. The application splits prose before this boundary.
+    input: str = Field(min_length=1, max_length=MAX_INPUT_CHARS)
     model: str = "chatterbox"
     voice: str = "default"
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
