@@ -16,10 +16,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 VOICE_DIR = Path(os.getenv("CHATTERBOX_VOICE_DIR", "/voices"))
-REQUESTED_DEVICE = os.getenv("CHATTERBOX_DEVICE", "gpu" if torch.cuda.is_available() else "cpu")
-# Accept the deployment-facing "gpu" value while passing PyTorch its CUDA
-# device name. Chatterbox ultimately constructs torch devices from this value.
-DEVICE = "cuda" if REQUESTED_DEVICE.casefold() == "gpu" else REQUESTED_DEVICE
+# CPU is the known-good default. GPU inference remains available as an explicit
+# opt-in with CHATTERBOX_DEVICE=cuda, but is never selected just because a CUDA
+# device happens to be visible to the container.
+DEVICE = os.getenv("CHATTERBOX_DEVICE", "cpu")
 EXAGGERATION = float(os.getenv("CHATTERBOX_EXAGGERATION", "0.5"))
 CFG_WEIGHT = float(os.getenv("CHATTERBOX_CFG_WEIGHT", "0.5"))
 
