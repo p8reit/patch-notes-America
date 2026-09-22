@@ -1,0 +1,13 @@
+services:
+  chatterbox:
+    environment:
+      CHATTERBOX_DEVICE: cuda
+      # Inference needs CUDA compute, not graphics/video/display capabilities.
+      NVIDIA_DRIVER_CAPABILITIES: compute
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
