@@ -13,6 +13,7 @@ from app.audio_utils import (
     SAME_SPEAKER_PAUSE_MS,
     TECHNICAL_CONTINUATION_PAUSE_MS,
     analyze_final_audio_silence,
+    analyze_audio_quality,
     calculate_transition_pause,
     concatenate_wav_segments,
     detect_boundary_silence,
@@ -33,6 +34,12 @@ def write_wav(path, parts, amplitude=12000):
         for index in range(round(duration * RATE)):
             value = int(amplitude * math.sin(2 * math.pi * 220 * index / RATE)) if audible else 0
             samples.append(value)
+    with wave.open(str(path), "wb") as output:
+        output.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
+        output.writeframes(b"".join(struct.pack("<h", value) for value in samples))
+
+
+def write_samples(path, samples):
     with wave.open(str(path), "wb") as output:
         output.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
         output.writeframes(b"".join(struct.pack("<h", value) for value in samples))
@@ -111,6 +118,54 @@ def test_accepts_quiet_speech_below_configured_silence_threshold(tmp_path):
     assert metrics["silent"] is False
     assert metrics["raw_leading_silence"] == pytest.approx(0.5, abs=0.002)
     assert validate_audio_segment(output) == (True, "")
+
+
+def test_quality_metrics_accept_known_good_quiet_and_sustained_speech(tmp_path):
+    path = tmp_path / "speech-like.wav"
+    samples = []
+    for index in range(5 * RATE):
+        # A sustained voiced fundamental with slowly changing speech-like gain
+        # must not be confused with a frozen/repeated output block.
+        envelope = 0.35 + 0.2 * math.sin(2 * math.pi * 1.3 * index / RATE)
+        samples.append(int(9000 * envelope * math.sin(2 * math.pi * 173 * index / RATE)))
+    write_samples(path, samples)
+
+    metrics = analyze_audio_quality(path)
+
+    assert metrics["quality_ok"] is True
+    assert metrics["duration_seconds"] == pytest.approx(5.0)
+    assert metrics["peak_amplitude"] > metrics["rms"] > 0
+    assert validate_audio_segment(path) == (True, "")
+
+
+@pytest.mark.parametrize(
+    ("name", "samples", "failure"),
+    [
+        ("zero", [0] * RATE, "all-zero audio"),
+        ("static", [32760] * RATE, "near-full-scale static"),
+        ("clipped", [32767 if index % 3 else -32768 for index in range(RATE)], "excessive clipping"),
+        ("constant", [5000] * (4 * RATE), "multi-second nearly constant tone"),
+    ],
+)
+def test_quality_metrics_reject_corrupt_renders(tmp_path, name, samples, failure):
+    path = tmp_path / f"{name}.wav"
+    write_samples(path, samples)
+
+    metrics = analyze_audio_quality(path)
+
+    assert failure in metrics["quality_failures"]
+    assert validate_audio_segment(path)[0] is False
+
+
+def test_quality_metrics_reject_repeated_half_second_blocks(tmp_path):
+    block = [int(8000 * math.sin(2 * math.pi * (173 + index / RATE) * index / RATE)) for index in range(RATE // 2)]
+    path = tmp_path / "repeated.wav"
+    write_samples(path, block * 9)
+
+    metrics = analyze_audio_quality(path)
+
+    assert metrics["repeated_window_seconds"] >= 4.0
+    assert "highly repetitive blocks" in metrics["quality_failures"]
 
 
 def test_same_speaker_transition():

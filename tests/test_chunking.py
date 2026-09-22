@@ -110,6 +110,7 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
     from app import main
 
     attempts = 0
+    seeds = []
 
     async def flaky_synthesis(text, voice, tempo, destination, **settings):
         import struct
@@ -117,6 +118,7 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
 
         nonlocal attempts
         attempts += 1
+        seeds.append(settings["seed"])
         if attempts < 3:
             raise httpx.ConnectError("backend restarted")
         with wave.open(str(destination), "wb") as output:
@@ -136,6 +138,8 @@ def test_chunk_retry_checkpoints_and_preserves_completed_wav(tmp_path, monkeypat
     asyncio.run(main.synthesize_chunk_with_retry(tmp_path, job, chunk, destination))
 
     assert attempts == 3
+    assert len(set(seeds)) == 3
+    assert chunk["generation_seed"] == seeds[-1]
     assert chunk["status"] == "complete"
     assert chunk["attempt"] == 3
     assert chunk["output"] == "chunk.wav"

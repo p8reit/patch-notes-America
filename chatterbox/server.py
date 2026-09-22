@@ -58,6 +58,7 @@ class SpeechRequest(BaseModel):
     min_p: float = Field(default=0.05, ge=0.0, le=1.0)
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
     repetition_penalty: float = Field(default=1.2, ge=0.0, le=2.0)
+    seed: int | None = Field(default=None, ge=0, le=2**63 - 1)
 
 
 PUBLIC_CONTROLS = ("audio_prompt_path", "exaggeration", "cfg_weight", "temperature")
@@ -189,18 +190,62 @@ def _validate_audio(wav: torch.Tensor, sample_rate: int) -> dict[str, float | in
     if not isinstance(wav, torch.Tensor) or wav.numel() == 0:
         raise RuntimeError("Smoke synthesis returned empty audio")
     samples = wav.detach().float().cpu().reshape(-1)
-    if not bool(torch.isfinite(samples).all()):
-        raise RuntimeError("Smoke synthesis returned non-finite audio samples")
+    finite = torch.isfinite(samples)
+    non_finite = int((~finite).sum())
+    if non_finite:
+        raise RuntimeError(f"Smoke synthesis returned {non_finite} non-finite audio samples")
     peak = float(samples.abs().max())
     if peak == 0:
         raise RuntimeError("Smoke synthesis returned all-zero audio")
     clipped_fraction = float((samples.abs() >= 0.999).float().mean())
-    if clipped_fraction > 0.01:
+    rms = float(torch.sqrt(torch.mean(samples.square())))
+    dc_offset = float(samples.mean())
+    static_fraction = float((samples.abs() >= 0.95).float().mean())
+    if static_fraction >= 0.90:
+        raise RuntimeError("Smoke synthesis returned near-full-scale static")
+    if clipped_fraction > 0.02:
         raise RuntimeError(f"Smoke synthesis is severely clipped ({clipped_fraction:.1%} of samples)")
     duration = samples.numel() / sample_rate
     if not MIN_SMOKE_SECONDS <= duration <= MAX_SMOKE_SECONDS:
         raise RuntimeError(f"Smoke synthesis duration is implausible ({duration:.3f}s)")
-    return {"samples": samples.numel(), "duration_seconds": round(duration, 3), "peak": round(peak, 6)}
+    window = max(1, round(sample_rate * 0.1))
+    low_run = longest_low_run = 0
+    for block in samples.split(window):
+        low = block.numel() and float(block.max() - block.min()) <= 0.001 and float(block.abs().max()) >= 0.002
+        low_run = low_run + block.numel() if low else 0
+        longest_low_run = max(longest_low_run, low_run)
+    low_variation_seconds = longest_low_run / sample_rate
+    if low_variation_seconds >= 3.0:
+        raise RuntimeError("Smoke synthesis contains a multi-second nearly constant tone")
+
+    block_size = max(1, round(sample_rate * 0.5))
+    blocks = list(samples.split(block_size))
+    repeat_run = repeated_samples = 0
+    maximum_similarity = 0.0
+    for previous, current in zip(blocks, blocks[1:]):
+        if previous.numel() != block_size or current.numel() != block_size:
+            continue
+        energy = float((previous.square() + current.square()).sum())
+        error = float(((previous - current).square()).sum())
+        similarity = max(-1.0, 1.0 - 2.0 * error / energy) if energy else 1.0
+        maximum_similarity = max(maximum_similarity, similarity)
+        if energy and similarity >= 0.9995:
+            repeat_run += block_size
+            repeated_samples = max(repeated_samples, repeat_run + block_size)
+        else:
+            repeat_run = 0
+    repeated_seconds = repeated_samples / sample_rate
+    if repeated_seconds >= 4.0:
+        raise RuntimeError("Smoke synthesis contains highly repetitive blocks")
+    return {
+        "samples": samples.numel(), "duration_seconds": round(duration, 3),
+        "peak": round(peak, 6), "rms": round(rms, 6),
+        "clipping_ratio": round(clipped_fraction, 8), "non_finite_samples": non_finite,
+        "dc_offset": round(dc_offset, 8),
+        "long_low_variation_seconds": round(low_variation_seconds, 3),
+        "repeated_window_similarity": round(maximum_similarity, 8),
+        "repeated_window_seconds": round(repeated_seconds, 3),
+    }
 
 
 def voice_prompt(voice: str) -> str | None:
@@ -268,6 +313,10 @@ def generate_audio(
     active_contract = contract or _generation_contract
     if active_contract is None:
         raise RuntimeError("Generation contract was not initialized with the model")
+    if request.seed is not None:
+        torch.manual_seed(request.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(request.seed)
     public_values = {
         "audio_prompt_path": prompt,
         "exaggeration": request.exaggeration,

@@ -128,3 +128,48 @@ def test_ab_fixture_attributes_corruption(monkeypatch, failures, diagnosis):
     }
 
     assert module.diagnose(results) == diagnosis
+
+
+def test_ab_fixture_preserves_fixed_input_and_failure_artifacts(monkeypatch, tmp_path):
+    fake_server = types.ModuleType("server")
+    fake_server.SpeechRequest = type(
+        "Request", (), {
+            "__init__": lambda self, **values: setattr(self, "values", values),
+            "model_dump": lambda self, exclude: {
+                "model": "chatterbox", "temperature": 0.8, "voice": "default"
+            },
+        },
+    )
+    saved = []
+    fake_server.torchaudio = types.SimpleNamespace(
+        save=lambda path, _wav, rate: (Path(path).write_bytes(b"RIFF-diagnostic"), saved.append((Path(path).name, rate)))
+    )
+    fake_tts = types.ModuleType("chatterbox.tts")
+    fake_tts.ChatterboxTTS = object
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    monkeypatch.setitem(sys.modules, "server", fake_server)
+    monkeypatch.setitem(sys.modules, "chatterbox.tts", fake_tts)
+    path = Path(__file__).parents[1] / "chatterbox" / "ab_qualification.py"
+    spec = importlib.util.spec_from_file_location("ab_artifacts", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Audio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+    def synthesis(device, mode, text, seed, prompt):
+        ok = not (device == "cuda" and mode == "baseline")
+        return ({"ok": ok, "duration_seconds": 1.0}, Audio(), 24_000)
+
+    monkeypatch.setattr(module, "_synthesize", synthesis)
+    report = module.run(artifact_dir=tmp_path)
+
+    assert report["text"] == module.DIAGNOSTIC_TEXT
+    assert report["seed"] == module.DIAGNOSTIC_SEED
+    assert report["diagnosis"] == "cuda execution"
+    assert (tmp_path / "report.json").is_file()
+    assert len(saved) == 4

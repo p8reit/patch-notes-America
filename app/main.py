@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 from contextlib import asynccontextmanager
@@ -865,7 +866,8 @@ def describe_chatterbox_error(exc: httpx.HTTPError) -> str:
 
 
 async def synthesize_chunk(
-    text: str, voice: str, tempo: float, destination: Path, **chatterbox_settings: float
+    text: str, voice: str, tempo: float, destination: Path, seed: int | None = None,
+    **chatterbox_settings: float,
 ) -> None:
     """Generate WAV audio through the local Chatterbox service."""
     payload = {
@@ -874,6 +876,7 @@ async def synthesize_chunk(
         "voice": voice,
         "speed": tempo,
         "response_format": "wav",
+        **({"seed": seed} if seed is not None else {}),
         **{field: chatterbox_settings.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
     }
     timeout = httpx.Timeout(CHATTERBOX_TIMEOUT_SECONDS, connect=10, write=30, pool=10)
@@ -1048,8 +1051,12 @@ async def synthesize_chunk_with_retry(
         _write_job(job_dir, job)
         try:
             temporary.unlink(missing_ok=True)
+            # Never retry a deterministic corruption with the same sampler
+            # state. Persist the seed so a problematic render is reproducible.
+            chunk["generation_seed"] = secrets.randbits(63)
             await synthesize_chunk(
                 chunk["text"], chunk["voice"], chunk["tempo"], temporary,
+                seed=chunk["generation_seed"],
                 **{field: chunk.get(field, default) for field, default in CHATTERBOX_DEFAULTS.items()},
             )
             temporary.replace(destination)
