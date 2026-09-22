@@ -7,6 +7,7 @@ import re
 import subprocess
 import threading
 from pathlib import Path
+from typing import Any, Iterable
 
 import torch
 import torchaudio
@@ -27,6 +28,17 @@ MAX_INPUT_CHARS = int(os.getenv("CHATTERBOX_MAX_INPUT_CHARS", "300"))
 app = FastAPI(title="Patch Notes Chatterbox TTS")
 _model: ChatterboxTTS | None = None
 _model_lock = threading.Lock()
+_readiness: dict[str, Any] = {
+    "model_loaded": False,
+    "synthesis_ready": False,
+    "failure": "Startup smoke synthesis has not completed",
+    "model_parameters": [],
+    "smoke_audio": None,
+}
+
+SMOKE_TEXT = "This is a short Chatterbox readiness test."
+MIN_SMOKE_SECONDS = 0.1
+MAX_SMOKE_SECONDS = 30.0
 
 
 class SpeechRequest(BaseModel):
@@ -51,6 +63,66 @@ def get_model() -> ChatterboxTTS:
         if _model is None:
             _model = ChatterboxTTS.from_pretrained(device=DEVICE)
     return _model
+
+
+def _representative_parameters(model: Any) -> list[dict[str, str]]:
+    """Return a small, truthful sample of the loaded model's parameters."""
+    found: list[dict[str, str]] = []
+    seen: set[int] = set()
+    candidates: Iterable[tuple[str, Any]] = (("model", model),) + tuple(
+        (name, getattr(model, name))
+        for name in ("t3", "s3gen", "ve")
+        if hasattr(model, name)
+    )
+    for component, module in candidates:
+        named_parameters = getattr(module, "named_parameters", None)
+        if not callable(named_parameters):
+            continue
+        for name, parameter in named_parameters():
+            if id(parameter) in seen:
+                continue
+            seen.add(id(parameter))
+            found.append({
+                "name": f"{component}.{name}" if name else component,
+                "device": str(parameter.device),
+                "dtype": str(parameter.dtype),
+            })
+            if len(found) == 3:
+                return found
+    return found
+
+
+def _check_model_placement(parameters: list[dict[str, str]], requested_device: str) -> None:
+    if not parameters:
+        raise RuntimeError("Loaded model exposes no parameters; device placement cannot be verified")
+    requested_type = requested_device.casefold().split(":", 1)[0]
+    mismatched = [item for item in parameters if item["device"].split(":", 1)[0] != requested_type]
+    if mismatched:
+        actual = ", ".join(sorted({item["device"] for item in mismatched}))
+        raise RuntimeError(f"Model device mismatch: requested {requested_device}, found parameters on {actual}")
+    unsupported = [item for item in parameters if item["dtype"] not in {"torch.float16", "torch.float32", "torch.bfloat16"}]
+    if unsupported:
+        actual = ", ".join(sorted({item["dtype"] for item in unsupported}))
+        raise RuntimeError(f"Unsupported model parameter dtype: {actual}")
+
+
+def _validate_audio(wav: torch.Tensor, sample_rate: int) -> dict[str, float | int]:
+    """Reject common silent/corrupt synthesis results before declaring readiness."""
+    if not isinstance(wav, torch.Tensor) or wav.numel() == 0:
+        raise RuntimeError("Smoke synthesis returned empty audio")
+    samples = wav.detach().float().cpu().reshape(-1)
+    if not bool(torch.isfinite(samples).all()):
+        raise RuntimeError("Smoke synthesis returned non-finite audio samples")
+    peak = float(samples.abs().max())
+    if peak == 0:
+        raise RuntimeError("Smoke synthesis returned all-zero audio")
+    clipped_fraction = float((samples.abs() >= 0.999).float().mean())
+    if clipped_fraction > 0.01:
+        raise RuntimeError(f"Smoke synthesis is severely clipped ({clipped_fraction:.1%} of samples)")
+    duration = samples.numel() / sample_rate
+    if not MIN_SMOKE_SECONDS <= duration <= MAX_SMOKE_SECONDS:
+        raise RuntimeError(f"Smoke synthesis duration is implausible ({duration:.3f}s)")
+    return {"samples": samples.numel(), "duration_seconds": round(duration, 3), "peak": round(peak, 6)}
 
 
 def voice_prompt(voice: str) -> str | None:
@@ -138,17 +210,65 @@ def generate_audio(model: ChatterboxTTS, request: SpeechRequest, prompt: str | N
         model.t3.inference = inference
 
 
+def run_startup_smoke_test() -> None:
+    """Load the model once and prove that its real inference path produces valid WAV."""
+    _readiness.update(model_loaded=False, synthesis_ready=False, failure=None, model_parameters=[], smoke_audio=None)
+    try:
+        if DEVICE.casefold().startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA was requested but torch.cuda.is_available() is false; check the NVIDIA "
+                "driver, container GPU reservation, and CUDA/PyTorch version compatibility"
+            )
+        model = get_model()
+        _readiness["model_loaded"] = True
+        parameters = _representative_parameters(model)
+        _readiness["model_parameters"] = parameters
+        _check_model_placement(parameters, DEVICE)
+        request = SpeechRequest(input=SMOKE_TEXT, voice="default")
+        with _model_lock:
+            generated = generate_audio(model, request, None)
+        _validate_audio(generated, model.sr)
+        encoded = encode_wav(generated, model.sr, 1.0)
+        decoded, decoded_rate = torchaudio.load(io.BytesIO(encoded), format="wav")
+        if decoded_rate != model.sr:
+            raise RuntimeError(f"Smoke WAV sample-rate mismatch: expected {model.sr}, decoded {decoded_rate}")
+        _readiness["smoke_audio"] = _validate_audio(decoded, decoded_rate)
+        _readiness["synthesis_ready"] = True
+    except Exception as exc:
+        requested = DEVICE.casefold().startswith("cuda")
+        prefix = "CUDA synthesis failed" if requested and torch.cuda.is_available() else "Synthesis readiness failed"
+        _readiness["failure"] = f"{prefix}: {exc}"
+
+
+@app.on_event("startup")
+def startup_smoke_test() -> None:
+    run_startup_smoke_test()
+
+
 @app.get("/health")
-def health() -> dict[str, str | bool | None]:
-    cuda_available = torch.cuda.is_available()
-    device_ready = not DEVICE.casefold().startswith("cuda") or cuda_available
+def health() -> dict[str, Any]:
+    cuda_visible = torch.cuda.is_available()
+    gpu_name = torch.cuda.get_device_name(0) if cuda_visible else None
+    capability = torch.cuda.get_device_capability(0) if cuda_visible else None
+    parameters = _readiness["model_parameters"]
+    resolved_devices = sorted({item["device"] for item in parameters})
     return {
-        "ok": device_ready,
+        "ok": bool(_readiness["synthesis_ready"]),
         "provider": "chatterbox",
-        "device": DEVICE,
-        "cuda_available": cuda_available,
-        "gpu": torch.cuda.get_device_name(0) if cuda_available else None,
-        "model_loaded": _model is not None,
+        "torch_version": torch.__version__,
+        "torch_cuda_version": torch.version.cuda,
+        "torchaudio_version": torchaudio.__version__,
+        "cudnn_version": torch.backends.cudnn.version(),
+        "cuda_visible": cuda_visible,
+        "gpu_name": gpu_name,
+        "gpu_compute_capability": ".".join(map(str, capability)) if capability else None,
+        "requested_device": DEVICE,
+        "resolved_device": ", ".join(resolved_devices) if resolved_devices else None,
+        "model_loaded": bool(_readiness["model_loaded"]),
+        "synthesis_ready": bool(_readiness["synthesis_ready"]),
+        "model_parameters": parameters,
+        "smoke_audio": _readiness["smoke_audio"],
+        "failure": _readiness["failure"],
     }
 
 

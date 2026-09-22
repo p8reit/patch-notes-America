@@ -19,6 +19,7 @@
         <strong>Services</strong>
         <span id="health">Checking Chatterbox...</span>
         <a id="chatterbox-link" href="#" target="_blank" rel="noopener">Open ChatterboxTTS</a>
+        <pre id="health-details" class="health-details" aria-live="polite"></pre>
       </div>
     </section>
 
@@ -704,8 +705,19 @@
       try {
         const res = await fetch('/api/health');
         const data = await readJsonResponse(res, 'Health check failed');
-        el.textContent = data.chatterbox.ok ? 'App ready · Chatterbox online' : 'App ready · Chatterbox offline';
+        const status = data.chatterbox.status || {};
+        el.textContent = data.chatterbox.ok ? 'App ready · synthesis verified' : 'App ready · synthesis unavailable';
         el.className = data.chatterbox.ok ? 'ok' : 'bad';
+        const detail = document.getElementById('health-details');
+        const parameter = (status.model_parameters || [])[0];
+        detail.textContent = [
+          `CUDA visible: ${status.cuda_visible ?? 'unknown'}${status.gpu_name ? ` (${status.gpu_name}, compute ${status.gpu_compute_capability})` : ''}`,
+          `Requested/resolved: ${status.requested_device || 'unknown'} / ${status.resolved_device || 'not loaded'}`,
+          `Model loaded: ${status.model_loaded ?? false} · Synthesis ready: ${status.synthesis_ready ?? false}`,
+          `Torch ${status.torch_version || '?'} · CUDA ${status.torch_cuda_version || '?'} · TorchAudio ${status.torchaudio_version || '?'} · cuDNN ${status.cudnn_version || '?'}`,
+          parameter ? `Parameter sample: ${parameter.name} · ${parameter.device} · ${parameter.dtype}` : '',
+          data.chatterbox.error || status.failure || '',
+        ].filter(Boolean).join('\n');
         const chatterboxLink = document.getElementById('chatterbox-link');
         const inferredChatterboxUrl = new URL(window.location.href);
         inferredChatterboxUrl.port = '{{ chatterbox_public_port }}';
@@ -716,6 +728,7 @@
       } catch (err) {
         el.textContent = 'Health check failed';
         el.className = 'bad';
+        document.getElementById('health-details').textContent = err.message;
       }
     }
 
