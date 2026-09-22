@@ -67,6 +67,26 @@ Notes. Start both services from the project directory:
 ./scripts/start-and-check.sh
 ```
 
+That command deliberately starts the portable CPU mode. On an NVIDIA host with
+the NVIDIA Container Toolkit installed, select CUDA explicitly:
+
+```bash
+./scripts/start-and-check.sh --gpu
+```
+
+Seeing `Torch 2.6.0+cu124` or `CUDA 12.4` in the status card only means the
+container has CUDA-enabled libraries installed. It does **not** mean Docker has
+made a GPU visible. `CUDA visible: false` together with
+`Requested/resolved: cpu / cpu` proves the CPU Compose configuration was
+started. The `--gpu` option adds `docker-compose.gpu.yml`, requests the NVIDIA
+device, and sets `CHATTERBOX_DEVICE=cuda`; startup then fails rather than
+silently falling back to CPU if CUDA is unavailable.
+
+The startup check also verifies that the live `/api/health` response reports
+the selected device. If `--gpu` reaches an old CPU container or a different
+Compose project on the configured port, the script now exits with an explicit
+device-mismatch error instead of reporting a successful CUDA startup.
+
 The app always listens on container port `8080`. Compose publishes it on the
 host using `APP_BIND_ADDRESS` and `APP_PORT`, which default to
 `127.0.0.1:8081`. The startup script rebuilds and force-recreates the app,
@@ -166,6 +186,8 @@ this exact command:
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
 
+The equivalent checked startup command is `./scripts/start-and-check.sh --gpu`.
+
 The override sets `CHATTERBOX_DEVICE=cuda` and uses the Compose Deploy
 Specification's NVIDIA device reservation (`deploy.resources.reservations.devices`).
 This is the only GPU allocation mechanism used: do not add the older
@@ -190,7 +212,10 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec chatterbox \
 ```
 
 For the portable CPU deployment, continue to use `./scripts/start-and-check.sh`
-or `docker compose up -d --build`; no environment toggle is required.
+or `docker compose up -d --build`. You may also set
+`CHATTERBOX_DEVICE=cuda ./scripts/start-and-check.sh` as a non-positional
+equivalent of `--gpu`; the script selects the required Compose override rather
+than merely changing an environment value.
 
 #### Validated Chatterbox GPU software stack
 
