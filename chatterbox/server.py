@@ -42,6 +42,9 @@ _readiness: dict[str, Any] = {
 SMOKE_TEXT = "This is a short Chatterbox readiness test."
 MIN_SMOKE_SECONDS = 0.1
 MAX_SMOKE_SECONDS = 30.0
+MAX_STATIC_ZERO_CROSSING_RATIO = 0.35
+MIN_STATIC_RMS = 0.02
+MIN_STATIC_SECONDS = 0.5
 
 
 class SpeechRequest(BaseModel):
@@ -208,6 +211,20 @@ def _validate_audio(wav: torch.Tensor, sample_rate: int) -> dict[str, float | in
     duration = samples.numel() / sample_rate
     if not MIN_SMOKE_SECONDS <= duration <= MAX_SMOKE_SECONDS:
         raise RuntimeError(f"Smoke synthesis duration is implausible ({duration:.3f}s)")
+    if samples.numel() > 1:
+        zero_crossings = ((samples[:-1] < 0) != (samples[1:] < 0)).float().mean()
+        zero_crossing_ratio = float(zero_crossings)
+    else:
+        zero_crossing_ratio = 0.0
+    if (
+        duration >= MIN_STATIC_SECONDS
+        and rms >= MIN_STATIC_RMS
+        and zero_crossing_ratio >= MAX_STATIC_ZERO_CROSSING_RATIO
+    ):
+        raise RuntimeError(
+            "Synthesis returned sustained broadband static "
+            f"(zero-crossing ratio {zero_crossing_ratio:.1%})"
+        )
     window = max(1, round(sample_rate * 0.1))
     low_run = longest_low_run = 0
     for block in samples.split(window):
@@ -241,6 +258,7 @@ def _validate_audio(wav: torch.Tensor, sample_rate: int) -> dict[str, float | in
         "samples": samples.numel(), "duration_seconds": round(duration, 3),
         "peak": round(peak, 6), "rms": round(rms, 6),
         "clipping_ratio": round(clipped_fraction, 8), "non_finite_samples": non_finite,
+        "zero_crossing_ratio": round(zero_crossing_ratio, 8),
         "dc_offset": round(dc_offset, 8),
         "long_low_variation_seconds": round(low_variation_seconds, 3),
         "repeated_window_similarity": round(maximum_similarity, 8),
@@ -427,5 +445,12 @@ def speech(request: SpeechRequest) -> Response:
     prompt = voice_prompt(request.voice)
     model = get_model()
     with _model_lock:
-        wav = generate_audio(model, request, prompt)
+        # Chatterbox is an inference-only service.  Disabling autograd avoids
+        # retaining graphs between requests and matches the qualified CLI path.
+        with torch.inference_mode():
+            wav = generate_audio(model, request, prompt)
+        # Readiness proves one seed works, but individual stochastic renders can
+        # still collapse into hiss. Never return corrupt PCM as a successful WAV;
+        # the application will retry 5xx responses with a fresh seed.
+        _validate_audio(wav, model.sr)
     return Response(encode_wav(wav, model.sr, request.speed), media_type="audio/wav")
