@@ -115,6 +115,22 @@ The first generation downloads Chatterbox model weights into the persistent
 `chatterbox-models` volume. CPU inference is the known-good default and can be
 slow. The default 600-second request timeout accommodates model startup.
 
+The service defaults to `CHATTERBOX_GENERATION_MODE=baseline`, which calls only
+parameters exposed by the installed model's public `generate` signature. Set
+the mode to `advanced` only for the pinned Chatterbox 0.1.6 image; its Min P,
+Top P, and repetition-penalty bridge is version- and signature-checked during
+startup. Unknown private APIs fail startup rather than being patched blindly.
+
+To qualify a GPU, run the A/B fixture in the built image. It generates identical
+seeded text on CPU and CUDA first through the public baseline and then through
+the advanced sampler adapter. Its JSON `diagnosis` distinguishes a CUDA-path
+failure from corruption introduced by the internal-method override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm chatterbox \
+  python /service/ab_qualification.py
+```
+
 The base `docker-compose.yml` intentionally selects CPU inference and makes no
 GPU request, so it remains portable. GPU inference has a dedicated checked-in
 override. On a host with the NVIDIA Container Toolkit installed, launch it with

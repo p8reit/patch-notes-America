@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import io
+import importlib.metadata
 import inspect
 import os
 import re
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 import torch
 import torchaudio
@@ -24,9 +25,11 @@ DEVICE = os.getenv("CHATTERBOX_DEVICE", "cpu")
 EXAGGERATION = float(os.getenv("CHATTERBOX_EXAGGERATION", "0.5"))
 CFG_WEIGHT = float(os.getenv("CHATTERBOX_CFG_WEIGHT", "0.5"))
 MAX_INPUT_CHARS = int(os.getenv("CHATTERBOX_MAX_INPUT_CHARS", "300"))
+GENERATION_MODE = os.getenv("CHATTERBOX_GENERATION_MODE", "baseline").casefold()
 
 app = FastAPI(title="Patch Notes Chatterbox TTS")
 _model: ChatterboxTTS | None = None
+_generation_contract: GenerationContract | None = None
 _model_lock = threading.Lock()
 _readiness: dict[str, Any] = {
     "model_loaded": False,
@@ -57,11 +60,86 @@ class SpeechRequest(BaseModel):
     repetition_penalty: float = Field(default=1.2, ge=0.0, le=2.0)
 
 
+PUBLIC_CONTROLS = ("audio_prompt_path", "exaggeration", "cfg_weight", "temperature")
+ADVANCED_CONTROLS = ("min_p", "top_p", "repetition_penalty")
+
+
+class GenerationContract(NamedTuple):
+    """Generation capabilities discovered once, immediately after model loading."""
+
+    chatterbox_version: str
+    public_parameters: frozenset[str]
+    advanced_adapter: "Chatterbox016SamplerAdapter | None"
+
+
+class Chatterbox016SamplerAdapter:
+    """Private sampler bridge tested only against chatterbox-tts 0.1.6.
+
+    Keeping this version-specific prevents an upstream private signature change
+    from silently corrupting audio. Calls are serialized by ``_model_lock``.
+    """
+
+    VERSION = "0.1.6"
+    REQUIRED_PARAMETERS = frozenset(ADVANCED_CONTROLS)
+
+    def __init__(self, model: Any) -> None:
+        inference = getattr(getattr(model, "t3", None), "inference", None)
+        if not callable(inference):
+            raise RuntimeError("Chatterbox 0.1.6 sampler adapter requires model.t3.inference")
+        parameters = inspect.signature(inference).parameters
+        missing = self.REQUIRED_PARAMETERS.difference(parameters)
+        if missing:
+            raise RuntimeError(
+                "Chatterbox 0.1.6 sampler signature mismatch; missing: "
+                + ", ".join(sorted(missing))
+            )
+
+    def generate(
+        self,
+        model: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        advanced: dict[str, float],
+    ) -> torch.Tensor:
+        inference = model.t3.inference
+
+        def configured_inference(*inference_args, **inference_kwargs):
+            inference_kwargs.update(advanced)
+            return inference(*inference_args, **inference_kwargs)
+
+        model.t3.inference = configured_inference
+        try:
+            return model.generate(*args, **kwargs)
+        finally:
+            model.t3.inference = inference
+
+
+def _chatterbox_version() -> str:
+    return importlib.metadata.version("chatterbox-tts")
+
+
+def _build_generation_contract(model: Any, mode: str = GENERATION_MODE) -> GenerationContract:
+    if mode not in {"baseline", "advanced"}:
+        raise RuntimeError("CHATTERBOX_GENERATION_MODE must be 'baseline' or 'advanced'")
+    parameters = frozenset(inspect.signature(model.generate).parameters)
+    version = _chatterbox_version()
+    adapter = None
+    if mode == "advanced" and not set(ADVANCED_CONTROLS).issubset(parameters):
+        if version != Chatterbox016SamplerAdapter.VERSION:
+            raise RuntimeError(
+                f"Advanced sampling has no tested adapter for chatterbox-tts {version}; "
+                "use CHATTERBOX_GENERATION_MODE=baseline"
+            )
+        adapter = Chatterbox016SamplerAdapter(model)
+    return GenerationContract(version, parameters, adapter)
+
+
 def get_model() -> ChatterboxTTS:
-    global _model
+    global _model, _generation_contract
     with _model_lock:
         if _model is None:
             _model = ChatterboxTTS.from_pretrained(device=DEVICE)
+            _generation_contract = _build_generation_contract(_model)
     return _model
 
 
@@ -177,37 +255,40 @@ def encode_wav(wav: torch.Tensor, sample_rate: int, speed: float) -> bytes:
     return result.stdout
 
 
-def generate_audio(model: ChatterboxTTS, request: SpeechRequest, prompt: str | None) -> torch.Tensor:
-    """Apply every supported sampler control across Chatterbox releases.
-
-    Chatterbox 0.1.x exposes the sampling controls on its internal T3 inference
-    method, while newer releases may expose them directly on ``generate``.
-    """
-    options = {
+def generate_audio(
+    model: ChatterboxTTS,
+    request: SpeechRequest,
+    prompt: str | None,
+    *,
+    mode: str | None = None,
+    contract: GenerationContract | None = None,
+) -> torch.Tensor:
+    """Generate through the public baseline, or an explicitly tested adapter."""
+    selected_mode = mode or GENERATION_MODE
+    active_contract = contract or _generation_contract
+    if active_contract is None:
+        raise RuntimeError("Generation contract was not initialized with the model")
+    public_values = {
+        "audio_prompt_path": prompt,
         "exaggeration": request.exaggeration,
         "cfg_weight": request.cfg_weight,
         "temperature": request.temperature,
     }
+    options = {key: value for key, value in public_values.items() if key in active_contract.public_parameters}
     advanced = {
         "min_p": request.min_p,
         "top_p": request.top_p,
         "repetition_penalty": request.repetition_penalty,
     }
-    generate_parameters = inspect.signature(model.generate).parameters
-    if all(field in generate_parameters for field in advanced):
-        return model.generate(request.input, audio_prompt_path=prompt, **options, **advanced)
-
-    inference = model.t3.inference
-
-    def configured_inference(*args, **kwargs):
-        kwargs.update(advanced)
-        return inference(*args, **kwargs)
-
-    model.t3.inference = configured_inference
-    try:
-        return model.generate(request.input, audio_prompt_path=prompt, **options)
-    finally:
-        model.t3.inference = inference
+    if selected_mode == "baseline":
+        return model.generate(request.input, **options)
+    if selected_mode != "advanced":
+        raise RuntimeError(f"Unknown generation mode: {selected_mode}")
+    if set(ADVANCED_CONTROLS).issubset(active_contract.public_parameters):
+        return model.generate(request.input, **options, **advanced)
+    if active_contract.advanced_adapter is None:
+        raise RuntimeError("Advanced generation requested without a tested sampler adapter")
+    return active_contract.advanced_adapter.generate(model, (request.input,), options, advanced)
 
 
 def run_startup_smoke_test() -> None:
