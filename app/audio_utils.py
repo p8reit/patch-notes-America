@@ -6,6 +6,7 @@ import math
 import os
 import re
 import wave
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -23,6 +24,16 @@ TECHNICAL_CONTINUATION_PAUSE_MS = int(os.getenv("TECHNICAL_CONTINUATION_PAUSE_MS
 SPEAKER_CHANGE_PAUSE_MS = int(os.getenv("SPEAKER_CHANGE_PAUSE_MS", "500"))
 SECTION_CHANGE_PAUSE_MS = int(os.getenv("SECTION_CHANGE_PAUSE_MS", "600"))
 DRAMATIC_PAUSE_MS = int(os.getenv("DRAMATIC_PAUSE_MS", "1000"))
+
+# These limits deliberately describe unmistakable render failures rather than
+# audio mastering targets.  In particular, quiet speech and sustained vowels
+# are valid; a signal has to remain almost sample-for-sample constant/repeated
+# for several seconds before it is rejected.
+QUALITY_CLIPPING_RATIO = 0.02
+QUALITY_STATIC_RATIO = 0.90
+QUALITY_LOW_VARIATION_SECONDS = 3.0
+QUALITY_REPEATED_SECONDS = 4.0
+QUALITY_REPEATED_SIMILARITY = 0.9995
 
 
 @dataclass(frozen=True)
@@ -79,6 +90,107 @@ def _frame_peak(frame: bytes, sample_width: int) -> int:
         ),
         default=0,
     )
+
+
+def _pcm_samples(audio: WavData) -> list[float]:
+    """Decode PCM to mono-ish, full-scale-normalized samples for diagnostics."""
+    width = audio.sample_width
+    if width == 1:
+        values = [(value - 128) / 128 for value in audio.frames]
+    elif width in (2, 4):
+        typecode = "h" if width == 2 else "i"
+        decoded = array(typecode)
+        decoded.frombytes(audio.frames)
+        if os.sys.byteorder != "little":
+            decoded.byteswap()
+        scale = float(1 << (width * 8 - 1))
+        values = [value / scale for value in decoded]
+    elif width == 3:
+        scale = float(1 << 23)
+        values = [
+            int.from_bytes(audio.frames[index:index + 3], "little", signed=True) / scale
+            for index in range(0, len(audio.frames), 3)
+        ]
+    else:
+        raise ValueError(f"unsupported PCM sample width: {width}")
+    if audio.channels <= 1:
+        return values
+    # Quality failures on one channel should not be hidden by interleaving it
+    # with another, so inspect the channel with the greatest RMS energy.
+    channels = [values[index::audio.channels] for index in range(audio.channels)]
+    return max(channels, key=lambda channel: sum(value * value for value in channel))
+
+
+def analyze_audio_quality(path: Path) -> dict[str, Any]:
+    """Measure a PCM WAV and conservatively identify obvious corrupt renders."""
+    audio = _read_wav(path)
+    samples = _pcm_samples(audio)
+    count = len(samples)
+    peak = max((abs(value) for value in samples), default=0.0)
+    rms = math.sqrt(sum(value * value for value in samples) / count) if count else 0.0
+    dc_offset = sum(samples) / count if count else 0.0
+    clipping_ratio = sum(abs(value) >= 0.999 for value in samples) / count if count else 0.0
+    static_ratio = sum(abs(value) >= 0.95 for value in samples) / count if count else 0.0
+
+    # A 100 ms window must have essentially no sample movement while still
+    # being audible. Silence is handled separately and does not count here.
+    variation_frames = max(1, round(audio.sample_rate * 0.1))
+    longest_low_variation = current_low_variation = 0
+    for start in range(0, count, variation_frames):
+        window = samples[start:start + variation_frames]
+        low_variation = bool(window) and max(window) - min(window) <= 0.001 and max(
+            abs(value) for value in window
+        ) >= 0.002
+        current_low_variation = current_low_variation + len(window) if low_variation else 0
+        longest_low_variation = max(longest_low_variation, current_low_variation)
+    low_variation_seconds = longest_low_variation / audio.sample_rate if audio.sample_rate else 0.0
+
+    # Compare adjacent half-second blocks. Normalized error makes the test
+    # independent of gain while the very high threshold avoids rejecting
+    # naturally similar phonemes or sustained vowels.
+    block_frames = max(1, round(audio.sample_rate * 0.5))
+    repeated_frames = current_repeated = 0
+    repeated_similarity = 0.0
+    previous: list[float] | None = None
+    for start in range(0, count - block_frames + 1, block_frames):
+        block = samples[start:start + block_frames]
+        if previous is not None:
+            energy = sum(a * a + b * b for a, b in zip(previous, block))
+            error = sum((a - b) ** 2 for a, b in zip(previous, block))
+            similarity = max(-1.0, 1.0 - (2.0 * error / energy)) if energy else 1.0
+            repeated_similarity = max(repeated_similarity, similarity)
+            if energy and similarity >= QUALITY_REPEATED_SIMILARITY:
+                current_repeated += block_frames
+                repeated_frames = max(repeated_frames, current_repeated + block_frames)
+            else:
+                current_repeated = 0
+        previous = block
+    repeated_seconds = repeated_frames / audio.sample_rate if audio.sample_rate else 0.0
+
+    failures: list[str] = []
+    if not samples or peak == 0:
+        failures.append("all-zero audio")
+    if static_ratio >= QUALITY_STATIC_RATIO:
+        failures.append("near-full-scale static")
+    if clipping_ratio > QUALITY_CLIPPING_RATIO:
+        failures.append("excessive clipping")
+    if low_variation_seconds >= QUALITY_LOW_VARIATION_SECONDS:
+        failures.append("multi-second nearly constant tone")
+    if repeated_seconds >= QUALITY_REPEATED_SECONDS:
+        failures.append("highly repetitive blocks")
+    return {
+        "duration_seconds": round(audio.duration_seconds, 6),
+        "peak_amplitude": round(peak, 8),
+        "rms": round(rms, 8),
+        "clipping_ratio": round(clipping_ratio, 8),
+        "non_finite_samples": 0,  # Integer PCM cannot encode NaN or infinity.
+        "dc_offset": round(dc_offset, 8),
+        "long_low_variation_seconds": round(low_variation_seconds, 6),
+        "repeated_window_similarity": round(repeated_similarity, 8),
+        "repeated_window_seconds": round(repeated_seconds, 6),
+        "quality_failures": failures,
+        "quality_ok": not failures,
+    }
 
 
 def _speech_window_bounds(
@@ -195,16 +307,23 @@ def validate_audio_segment(path: Path) -> tuple[bool, str]:
         return False, "empty or invalid WAV"
     if info["silent"]:
         return False, "WAV contains no audible speech"
+    try:
+        quality = analyze_audio_quality(path)
+    except (OSError, EOFError, wave.Error, ValueError) as exc:
+        return False, f"audio quality analysis failed: {exc}"
+    if not quality["quality_ok"]:
+        return False, "; ".join(quality["quality_failures"])
     return True, ""
 
 
-def normalize_audio_segment(source: Path, destination: Path) -> dict[str, float | bool]:
+def normalize_audio_segment(source: Path, destination: Path) -> dict[str, Any]:
     """Write an assembly-ready copy without modifying the original TTS render."""
     if source.resolve() == destination.resolve():
         raise ValueError("normalized audio destination must differ from its source")
     temporary = destination.with_suffix(".wav.tmp")
     try:
         metrics = trim_boundary_silence(source, temporary)
+        metrics.update(analyze_audio_quality(temporary))
         temporary.replace(destination)
         return metrics
     finally:
