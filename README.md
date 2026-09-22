@@ -103,6 +103,14 @@ be overridden with `CHATTERBOX_TTS_PATH`, `CHATTERBOX_HEALTH_PATH`, and
 WAV/RIFF payload, preventing an API JSON response from being saved and passed
 to FFmpeg as audio.
 
+Narration is split into requests of at most 280 characters by default, and the
+bundled service rejects direct requests over 300 characters. Chatterbox has a
+finite acoustic-token window; oversized requests can exhaust that window and
+degrade into static, a sustained tone, or repeated audio rather than completing
+the speech. Keep `MAX_CHARS_PER_CHUNK` at or below
+`CHATTERBOX_MAX_INPUT_CHARS` if either limit is customized. A new generation
+job is required after changing the limit because completed chunks are reused.
+
 The first generation downloads Chatterbox model weights into the persistent
 `chatterbox-models` volume. Chatterbox is configured for NVIDIA GPU inference:
 Compose reserves the host GPUs for the container and defaults

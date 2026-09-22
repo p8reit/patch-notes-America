@@ -56,7 +56,10 @@ CHATTERBOX_DEFAULTS = {
     "top_p": 1.0,
     "repetition_penalty": 1.2,
 }
-MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "700"))
+# Chatterbox's acoustic token generation has a finite output window. Large
+# prose chunks can exhaust it before the text is finished, at which point the
+# model commonly degenerates into a sustained or repeating sound.
+MAX_CHARS = int(os.getenv("MAX_CHARS_PER_CHUNK", "280"))
 MIN_DUPLICATE_TRANSCRIPT_CHARS = int(os.getenv("MIN_DUPLICATE_TRANSCRIPT_CHARS", "500"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
