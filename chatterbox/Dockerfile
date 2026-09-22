@@ -49,6 +49,7 @@ assert torch.backends.cudnn.version() is not None, versions
 print("Chatterbox CUDA dependency smoke check passed")
 PY
 COPY chatterbox/server.py chatterbox/ab_qualification.py .
+COPY scripts/qualify-chatterbox.py .
 
 EXPOSE 8000
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
