@@ -22,6 +22,9 @@ Initial podcast-production application for turning a narration script into a fin
 
 ## Architecture
 
+For a product-level view of the interface, workflows, data, APIs, and runtime
+boundaries, see the [application design map](docs/application-design-map.md).
+
 ```text
 Browser :${APP_PORT:-8081}
     |
