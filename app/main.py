@@ -642,11 +642,24 @@ def build_episode_speech_chunks(
     canonical_intro = remove_intro_episode_overlap(intro_lines, canonical_script)
     intro_chunks = build_speech_chunks(canonical_intro, hosts, max_chars, "host_intro") if canonical_intro else []
     episode_chunks = build_speech_chunks(canonical_script, hosts, max_chars, "episode")
+    if intro_chunks and episode_chunks:
+        episode_chunks[0] = {**episode_chunks[0], "boundary_reason": "section_break"}
     utterances = [*intro_chunks, *episode_chunks]
     for sequence, utterance in enumerate(utterances, start=1):
         utterance["sequence"] = sequence
         utterance["section"] = utterance["section_id"]
     return utterances
+
+
+def _with_intro_track_boundary(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Declare the transition from a leading music track to spoken audio."""
+    if len(chunks) < 2:
+        return chunks
+    return [
+        chunks[0],
+        {**chunks[1], "boundary_reason": "explicit_dramatic_pause"},
+        *chunks[2:],
+    ]
 
 
 def build_conversation_prompt(
@@ -1208,7 +1221,7 @@ async def process_generation_job(job_id: str) -> None:
             _write_job(job_dir, job)
 
         final_paths = all_chunk_paths
-        final_chunks = all_chunks
+        final_chunks = _with_intro_track_boundary(all_chunks) if intro_track else all_chunks
         intro = job.get("intro", {})
         chunks_after_track = all_chunks[1:] if intro_track else all_chunks
         intro_chunk_count = next(
