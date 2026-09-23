@@ -5,6 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.main import (
+    _with_intro_track_boundary,
     build_speech_chunks,
     parse_hosts,
     parse_speaker_script,
@@ -70,6 +71,17 @@ def test_episode_chunks_put_host_intro_lines_before_main_script():
 
     assert [chunk["section"] for chunk in chunks] == ["host_intro", "host_intro", "episode"]
     assert [chunk["host"] for chunk in chunks] == ["Major Patchnotes", "Alex", "Major Patchnotes"]
+    assert chunks[2]["boundary_reason"] == "section_break"
+
+
+def test_intro_track_declares_boundary_before_first_spoken_chunk():
+    track = {"host": "intro", "section": "intro"}
+    speech = {"host": "Major Patchnotes", "section": "episode", "boundary_reason": None}
+
+    final_chunks = _with_intro_track_boundary([track, speech])
+
+    assert final_chunks[1]["boundary_reason"] == "explicit_dramatic_pause"
+    assert speech["boundary_reason"] is None
 
 
 def test_exact_long_script_repetition_is_rendered_only_once():
