@@ -321,13 +321,27 @@ def test_build_clip_ass_contains_speaker_and_text(tmp_path):
     from app.main import build_clip_ass
     metadata = {"utterances": [
         {"sequence": 1, "display_name": "Wade Mercer", "normalized_text": "Now hold on a minute. This is the useful part.", "timing": {"start": 5.0, "end": 12.0}},
+        {"sequence": 2, "display_name": "Marcus", "normalized_text": "The second takeaway gives the clip another visual beat.", "timing": {"start": 12.0, "end": 24.0}},
     ]}
     dest = tmp_path / "clip.ass"
-    build_clip_ass(metadata, 4.0, 14.0, dest, 1080, 1920)
+    build_clip_ass(metadata, 4.0, 25.0, dest, 1080, 1920)
     text = dest.read_text()
     assert "Wade Mercer" in text
     assert "This is the useful part." in text
     assert "PlayResX: 1080" in text
+    assert "Style: VisualCard" in text
+    assert text.count(",VisualCard,") == 2
+    assert "PATCH NOTE" in text
+
+
+def test_short_clip_does_not_get_crowded_with_visual_cards():
+    from app.main import _clip_visual_cards
+
+    metadata = {"utterances": [
+        {"sequence": 1, "normalized_text": "A short thought.", "timing": {"start": 0.0, "end": 8.0}},
+    ]}
+
+    assert _clip_visual_cards(metadata, 0.0, 8.0) == []
 
 
 def test_chatterbox_voice_controls_are_preserved_in_chunks():

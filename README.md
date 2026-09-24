@@ -722,6 +722,7 @@ After an episode is rendered, the app exposes a Clip Studio for short-form distr
 - Lets you override the suggested window with exact start/end times.
 - Exports vertical 9:16, square 1:1, or horizontal 16:9 MP4.
 - Burns synchronized speaker captions directly into the video.
+- Inserts up to two brief, branded pull-quote still cards using dialogue from the selected moment, without requiring an image service or network call.
 - Adds Patch Notes: America branding and a custom clip headline.
 - Saves exports under `output/<episode>/clips/`.
 

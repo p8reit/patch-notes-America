@@ -1489,11 +1489,64 @@ def _ass_escape(text: str) -> str:
     return text.replace("\n", r"\N")
 
 
+def _clip_visual_cards(metadata: dict[str, Any], start: float, end: float) -> list[dict[str, Any]]:
+    """Build one or two short pull-quote cards from dialogue inside the clip."""
+    duration = end - start
+    if duration < 12:
+        return []
+    excerpts: list[str] = []
+    for chunk in ordered_utterances(metadata):
+        timing = chunk.get("timing", chunk)
+        if float(timing.get("end", 0)) <= start or float(timing.get("start", 0)) >= end:
+            continue
+        text = str(chunk.get("normalized_text", chunk.get("text", ""))).strip()
+        sentence = next((part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()), "")
+        if sentence and sentence not in excerpts:
+            excerpts.append(sentence)
+
+    count = min(2 if duration >= 20 else 1, len(excerpts))
+    if not count:
+        return []
+    chosen = [excerpts[0]] if count == 1 else [excerpts[0], excerpts[-1]]
+    centers = [duration * 0.28] if count == 1 else [duration * 0.25, duration * 0.68]
+    card_duration = min(4.5, max(3.0, duration * 0.18))
+    return [
+        {
+            "start": round(max(0.0, center - card_duration / 2), 2),
+            "end": round(min(duration, center + card_duration / 2), 2),
+            "text": text[:120],
+        }
+        for center, text in zip(centers, chosen)
+    ]
+
+
+def _ass_wrap(text: str, line_length: int = 28) -> str:
+    """Wrap escaped card copy without adding a rendering dependency."""
+    words = text.split()
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        if current and len(" ".join([*current, word])) > line_length:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        lines.append(" ".join(current))
+    return r"\N".join(lines)
+
+
 def build_clip_ass(metadata: dict[str, Any], start: float, end: float, destination: Path, width: int, height: int) -> None:
     font_size = 64 if height >= 1600 else 42
     margin_v = int(height * 0.18)
-    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,{font_size},&H00FFFFFF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,{margin_v},1\nStyle: Speaker,DejaVu Sans,{max(30, int(font_size*.52))},&H0058A6FF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,{max(60, int(margin_v*.62))},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,{font_size},&H00FFFFFF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,{margin_v},1\nStyle: Speaker,DejaVu Sans,{max(30, int(font_size*.52))},&H0058A6FF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,{max(60, int(margin_v*.62))},1\nStyle: VisualCard,DejaVu Sans,{max(44, int(font_size*.9))},&H00FFFFFF,&H000000FF,&H003D8BFF,&HE6192333,-1,0,0,0,100,100,1,0,3,6,0,5,{int(width*.1)},{int(width*.1)},0,1\nStyle: VisualLabel,DejaVu Sans,{max(24, int(font_size*.42))},&H0058A6FF,&H000000FF,&H00121920,&H00121920,-1,0,0,0,100,100,3,0,1,2,0,8,70,70,{int(height*.26)},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
     events: list[str] = []
+    for card in _clip_visual_cards(metadata, start, end):
+        card_start = _ass_time(float(card["start"]))
+        card_end = _ass_time(float(card["end"]))
+        text = _ass_wrap(_ass_escape(str(card["text"])))
+        events.append(f"Dialogue: 3,{card_start},{card_end},VisualCard,,0,0,0,,“{text}”")
+        events.append(f"Dialogue: 4,{card_start},{card_end},VisualLabel,,0,0,0,,PATCH NOTE")
     for chunk in ordered_utterances(metadata):
         timing = chunk.get("timing", chunk)
         c_start = float(timing.get("start", 0))
