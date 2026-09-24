@@ -334,14 +334,26 @@ def test_build_clip_ass_contains_speaker_and_text(tmp_path):
     assert "PATCH NOTE" in text
 
 
-def test_short_clip_does_not_get_crowded_with_visual_cards():
+def test_short_clip_still_gets_a_visual_card():
     from app.main import _clip_visual_cards
 
     metadata = {"utterances": [
         {"sequence": 1, "normalized_text": "A short thought.", "timing": {"start": 0.0, "end": 8.0}},
     ]}
 
-    assert _clip_visual_cards(metadata, 0.0, 8.0) == []
+    cards = _clip_visual_cards(metadata, 0.0, 8.0)
+
+    assert len(cards) == 1
+    assert cards[0]["text"] == "A short thought."
+
+
+def test_clip_without_caption_text_gets_a_branded_visual_card():
+    from app.main import _clip_visual_cards
+
+    cards = _clip_visual_cards({"title": "Election Week"}, 0.0, 5.0)
+
+    assert len(cards) == 1
+    assert cards[0]["text"] == "Election Week"
 
 
 def test_chatterbox_voice_controls_are_preserved_in_chunks():

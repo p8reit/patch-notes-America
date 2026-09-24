@@ -1492,8 +1492,6 @@ def _ass_escape(text: str) -> str:
 def _clip_visual_cards(metadata: dict[str, Any], start: float, end: float) -> list[dict[str, Any]]:
     """Build one or two short pull-quote cards from dialogue inside the clip."""
     duration = end - start
-    if duration < 12:
-        return []
     excerpts: list[str] = []
     for chunk in ordered_utterances(metadata):
         timing = chunk.get("timing", chunk)
@@ -1504,12 +1502,12 @@ def _clip_visual_cards(metadata: dict[str, Any], start: float, end: float) -> li
         if sentence and sentence not in excerpts:
             excerpts.append(sentence)
 
-    count = min(2 if duration >= 20 else 1, len(excerpts))
-    if not count:
-        return []
+    if not excerpts:
+        excerpts.append(str(metadata.get("title") or "Patch Notes: America"))
+    count = min(2, len(excerpts))
     chosen = [excerpts[0]] if count == 1 else [excerpts[0], excerpts[-1]]
     centers = [duration * 0.28] if count == 1 else [duration * 0.25, duration * 0.68]
-    card_duration = min(4.5, max(3.0, duration * 0.18))
+    card_duration = min(4.5, max(1.5, duration * 0.18))
     return [
         {
             "start": round(max(0.0, center - card_duration / 2), 2),
