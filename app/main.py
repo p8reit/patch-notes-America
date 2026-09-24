@@ -69,6 +69,9 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com/v1/responses")
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2")
 OPENAI_IMAGES_URL = os.getenv("OPENAI_IMAGES_URL", "https://api.openai.com/v1/images/generations")
+CLIP_IMAGE_PROVIDER = os.getenv("CLIP_IMAGE_PROVIDER", "openai").strip().lower()
+LOCAL_IMAGE_MODEL = os.getenv("LOCAL_IMAGE_MODEL", "stabilityai/sdxl-turbo")
+LOCAL_IMAGES_URL = os.getenv("LOCAL_IMAGES_URL", "http://imagegen:8000/v1/images/generations")
 CONVERSATION_PROVIDER = os.getenv("CONVERSATION_PROVIDER", "openai").strip().lower()
 LOCAL_AI_URL = os.getenv("LOCAL_AI_URL", "http://ollama:11434/api/chat")
 LOCAL_AI_MODEL = os.getenv("LOCAL_AI_MODEL", "llama3.1:8b")
@@ -1561,20 +1564,26 @@ async def generate_clip_art(
     destination: Path,
 ) -> Path:
     """Generate and validate a raster illustration for one clip."""
-    if not OPENAI_API_KEY:
+    if CLIP_IMAGE_PROVIDER not in {"openai", "local"}:
+        raise RuntimeError("CLIP_IMAGE_PROVIDER must be 'openai' or 'local'")
+    if CLIP_IMAGE_PROVIDER == "openai" and not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured for clip artwork")
     sizes = {"vertical": "1024x1536", "square": "1024x1024", "horizontal": "1536x1024"}
     payload = {
-        "model": OPENAI_IMAGE_MODEL,
+        "model": LOCAL_IMAGE_MODEL if CLIP_IMAGE_PROVIDER == "local" else OPENAI_IMAGE_MODEL,
         "prompt": clip_art_prompt(title, excerpt),
         "size": sizes[aspect],
         "quality": "low",
         "n": 1,
     }
+    endpoint = LOCAL_IMAGES_URL if CLIP_IMAGE_PROVIDER == "local" else OPENAI_IMAGES_URL
+    headers = {"Content-Type": "application/json"}
+    if CLIP_IMAGE_PROVIDER == "openai":
+        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
     async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=10)) as client:
         response = await client.post(
-            OPENAI_IMAGES_URL,
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            endpoint,
+            headers=headers,
             json=payload,
         )
         response.raise_for_status()

@@ -352,6 +352,7 @@ def test_generate_clip_art_persists_valid_image_bytes(tmp_path, monkeypatch):
             return Response()
 
     monkeypatch.setattr(main, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "openai")
     monkeypatch.setattr(main.httpx, "AsyncClient", Client)
     destination = tmp_path / "clip-art.png"
 
@@ -362,6 +363,48 @@ def test_generate_clip_art_persists_valid_image_bytes(tmp_path, monkeypatch):
     assert captured["payload"]["size"] == "1024x1536"
     assert captured["payload"]["model"] == main.OPENAI_IMAGE_MODEL
     assert "no words" in captured["payload"]["prompt"]
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_generate_clip_art_can_use_local_provider_without_api_key(tmp_path, monkeypatch):
+    import asyncio
+    import base64
+    from app import main
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            data = base64.b64encode(b"\x89PNG\r\n\x1a\nlocal-image").decode()
+            return {"data": [{"b64_json": data}]}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, headers, json):
+            captured.update({"url": url, "headers": headers, "payload": json})
+            return Response()
+
+    monkeypatch.setattr(main, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "local")
+    monkeypatch.setattr(main, "LOCAL_IMAGES_URL", "http://imagegen:8000/v1/images/generations")
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+
+    asyncio.run(main.generate_clip_art("Episode", "Local art", "square", tmp_path / "art.png"))
+
+    assert captured["url"] == main.LOCAL_IMAGES_URL
+    assert "Authorization" not in captured["headers"]
+    assert captured["payload"]["model"] == main.LOCAL_IMAGE_MODEL
 
 
 def test_render_social_clip_uses_generated_art_as_video_source(tmp_path, monkeypatch):

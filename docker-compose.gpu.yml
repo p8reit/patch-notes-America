@@ -1,4 +1,13 @@
 services:
+  imagegen:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   chatterbox:
     environment:
       CHATTERBOX_DEVICE: cuda
