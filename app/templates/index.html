@@ -159,7 +159,7 @@
         <div>
           <p class="eyebrow">SOCIAL DISTRIBUTION</p>
           <h2>Clip Studio</h2>
-          <p class="hint">Turn the finished episode into captioned vertical, square, or horizontal social clips. Suggestions favor tight 20–60 second exchanges with strong hooks and multiple hosts.</p>
+          <p class="hint">Every finished episode automatically includes a vertical opening clip and up to two top content moments. You can also create custom vertical, square, or horizontal clips here.</p>
         </div>
         <button id="suggest-clips" class="secondary" type="button">Find best moments</button>
       </div>
@@ -421,8 +421,10 @@
       }
       list.innerHTML = visibleJobs.map(job => {
         const progress = job.progress || {complete: 0, total: 0};
+        const clipLinks = (job.clips || []).map((clip, index) => `<a class="download compact" href="${encodeURI(clip.download_url)}">Clip ${index + 1}</a>`).join('');
+        const clipWarning = job.clip_error ? `<span class="job-error">Episode ready; automatic clips failed: ${escapeHtml(job.clip_error)}</span>` : '';
         const detail = job.status === 'complete'
-          ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>`
+          ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>${clipLinks}${clipWarning}`
           : job.status === 'failed' ? `<span class="job-error">${escapeHtml(job.error || 'Rendering failed')}</span>`
           : `<span class="hint">${progress.complete}/${progress.total} chunks · safe to close this page</span>`;
         const timer = job.status === 'running'
@@ -452,7 +454,9 @@
           if (job.status === 'complete') {
             currentEpisode = job.id;
             const result = document.getElementById('result');
-            result.innerHTML = `<strong>Episode ready.</strong><p>${escapeHtml(job.title)}</p><a class="download" href="${encodeURI(job.download_url)}">Download MP3</a>`;
+            const clipLinks = (job.clips || []).map((clip, index) => `<a class="download" href="${encodeURI(clip.download_url)}">Download clip ${index + 1}</a>`).join('');
+            const clipNote = job.clip_error ? `<p class="job-error">Automatic clips could not be rendered: ${escapeHtml(job.clip_error)}</p>` : '';
+            result.innerHTML = `<strong>Episode and social clips ready.</strong><p>${escapeHtml(job.title)}</p><a class="download" href="${encodeURI(job.download_url)}">Download MP3</a>${clipLinks}${clipNote}`;
             result.hidden = false; document.getElementById('progress').textContent = 'Background render complete.';
             activeJobPollers.delete(jobId); return;
           }
