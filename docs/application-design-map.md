@@ -137,7 +137,9 @@ sequenceDiagram
     Queue->>Disk: Persist and normalize chunk WAVs
     Queue->>FFmpeg: Assemble speech, intro, and final MP3
     FFmpeg->>Disk: Write episode.mp3 and metadata
-    API-->>UI: Complete + download URL
+    Queue->>FFmpeg: Render opening + two ranked content clips
+    FFmpeg->>Disk: Write three vertical MP4s
+    API-->>UI: Complete + episode and clip download URLs
     Producer->>API: Download episode
 ```
 
@@ -145,7 +147,7 @@ Jobs are filesystem-backed rather than browser-backed. On application startup, i
 
 ### Clip production
 
-The completed episode metadata is enriched with a chunk timeline. Candidate 20–60 second windows are scored for strong hooks, useful duration, and multiple speakers. The producer may accept a suggestion or set exact bounds, title, and aspect ratio. FFmpeg produces a captioned MP4 in vertical (`9:16`), square (`1:1`), or horizontal (`16:9`) format.
+The completed episode metadata is enriched with a chunk timeline. After MP3 assembly, the worker automatically renders a vertical opening clip and up to two non-overlapping content clips scored for strong hooks, useful duration, and multiple speakers. The selected image provider—OpenAI Images or the optional local CUDA SDXL Turbo service—generates a topic-aware editorial illustration for each clip; the validated raster file is persisted beside the MP4 and becomes its visual background. Timed pull-quote cards, branding, and captions remain layered above the art. Image-provider failures are recorded separately and fall back to the dark branded background, while clip errors remain isolated from the completed episode. The producer may also accept a suggestion or set exact bounds, title, and aspect ratio. FFmpeg produces a captioned MP4 in vertical (`9:16`), square (`1:1`), or horizontal (`16:9`) format.
 
 ## 5. System architecture
 
@@ -169,6 +171,9 @@ flowchart TB
     AI{Conversation provider}
     OpenAI[OpenAI Responses API]
     Ollama[Optional Ollama service :11434]
+    Images{Clip image provider}
+    OpenAIImages[OpenAI Images API]
+    LocalImages[Optional CUDA SDXL Turbo service :8000]
     FFmpeg[FFmpeg subprocess]
 
     subgraph Storage[Bind-mounted filesystem]
@@ -188,6 +193,9 @@ flowchart TB
     Domain --> AI
     AI --> OpenAI
     AI --> Ollama
+    Domain --> Images
+    Images --> OpenAIImages
+    Images --> LocalImages
     Domain --> FFmpeg
     Workers --> FFmpeg
     Domain <--> Storage

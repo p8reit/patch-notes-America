@@ -159,7 +159,7 @@
         <div>
           <p class="eyebrow">SOCIAL DISTRIBUTION</p>
           <h2>Clip Studio</h2>
-          <p class="hint">Turn the finished episode into captioned vertical, square, or horizontal social clips. Suggestions favor tight 20–60 second exchanges with strong hooks and multiple hosts.</p>
+          <p class="hint">Every finished episode automatically includes a vertical opening clip and up to two top content moments with original editorial artwork. You can also create custom vertical, square, or horizontal clips here.</p>
         </div>
         <button id="suggest-clips" class="secondary" type="button">Find best moments</button>
       </div>
@@ -421,8 +421,11 @@
       }
       list.innerHTML = visibleJobs.map(job => {
         const progress = job.progress || {complete: 0, total: 0};
+        const clipLinks = (job.clips || []).map((clip, index) => `<a class="download compact" href="${encodeURI(clip.download_url)}">Clip ${index + 1}</a>`).join('');
+        const clipWarning = job.clip_error ? `<span class="job-error">Episode ready; automatic clips failed: ${escapeHtml(job.clip_error)}</span>` : '';
+        const artWarning = job.clip_art_error ? `<span class="job-error">Clips ready without generated artwork: ${escapeHtml(job.clip_art_error)}</span>` : '';
         const detail = job.status === 'complete'
-          ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>`
+          ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>${clipLinks}${clipWarning}${artWarning}`
           : job.status === 'failed' ? `<span class="job-error">${escapeHtml(job.error || 'Rendering failed')}</span>`
           : `<span class="hint">${progress.complete}/${progress.total} chunks · safe to close this page</span>`;
         const timer = job.status === 'running'
@@ -452,7 +455,10 @@
           if (job.status === 'complete') {
             currentEpisode = job.id;
             const result = document.getElementById('result');
-            result.innerHTML = `<strong>Episode ready.</strong><p>${escapeHtml(job.title)}</p><a class="download" href="${encodeURI(job.download_url)}">Download MP3</a>`;
+            const clipLinks = (job.clips || []).map((clip, index) => `<a class="download" href="${encodeURI(clip.download_url)}">Download clip ${index + 1}</a>`).join('');
+            const clipNote = job.clip_error ? `<p class="job-error">Automatic clips could not be rendered: ${escapeHtml(job.clip_error)}</p>` : '';
+            const artNote = job.clip_art_error ? `<p class="job-error">Clips rendered without generated artwork: ${escapeHtml(job.clip_art_error)}</p>` : '';
+            result.innerHTML = `<strong>Episode and social clips ready.</strong><p>${escapeHtml(job.title)}</p><a class="download" href="${encodeURI(job.download_url)}">Download MP3</a>${clipLinks}${clipNote}${artNote}`;
             result.hidden = false; document.getElementById('progress').textContent = 'Background render complete.';
             activeJobPollers.delete(jobId); return;
           }
@@ -996,7 +1002,9 @@
         const res = await fetch(`/api/episodes/${currentEpisode}/clips`, {method:'POST', body:form});
         const data = await readJsonResponse(res, 'Clip rendering failed');
         result.innerHTML = `<a class="download" href="${data.download_url}">Download ${data.aspect} MP4</a>`;
-        status.textContent = `Clip ready: ${(data.end - data.start).toFixed(1)} seconds.`;
+        status.textContent = data.art_error
+          ? `Clip ready without generated artwork: ${data.art_error}`
+          : `Clip ready with generated artwork: ${(data.end - data.start).toFixed(1)} seconds.`;
       } catch (err) { status.textContent = err.message; }
       finally { button.disabled = false; }
     });

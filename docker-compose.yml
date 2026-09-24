@@ -1,4 +1,25 @@
 services:
+  imagegen:
+    build:
+      context: .
+      dockerfile: imagegen/Dockerfile
+    profiles: ["local-image"]
+    environment:
+      IMAGEGEN_DEVICE: cuda
+      IMAGEGEN_MODEL: ${LOCAL_IMAGE_MODEL:-stabilityai/sdxl-turbo}
+      IMAGEGEN_STEPS: ${LOCAL_IMAGE_STEPS:-2}
+      IMAGEGEN_CPU_OFFLOAD: ${LOCAL_IMAGE_CPU_OFFLOAD:-true}
+      NVIDIA_DRIVER_CAPABILITIES: compute
+    volumes:
+      - imagegen-models:/models
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import json,urllib.request; assert json.load(urllib.request.urlopen('http://localhost:8000/health'))['ok']\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
   ollama:
     image: ollama/ollama:0.11.10
     profiles: ["local-ai"]
@@ -70,6 +91,11 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
       OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-https://api.openai.com/v1/responses}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-2}
+      OPENAI_IMAGES_URL: ${OPENAI_IMAGES_URL:-https://api.openai.com/v1/images/generations}
+      CLIP_IMAGE_PROVIDER: ${CLIP_IMAGE_PROVIDER:-openai}
+      LOCAL_IMAGE_MODEL: ${LOCAL_IMAGE_MODEL:-stabilityai/sdxl-turbo}
+      LOCAL_IMAGES_URL: ${LOCAL_IMAGES_URL:-http://imagegen:8000/v1/images/generations}
       CONVERSATION_PROVIDER: ${CONVERSATION_PROVIDER:-openai}
       LOCAL_AI_URL: ${LOCAL_AI_URL:-http://ollama:11434/api/chat}
       LOCAL_AI_MODEL: ${LOCAL_AI_MODEL:-llama3.1:8b}
@@ -91,3 +117,4 @@ services:
 volumes:
   ollama-data:
   chatterbox-models:
+  imagegen-models:
