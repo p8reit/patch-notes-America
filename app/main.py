@@ -1303,6 +1303,24 @@ async def process_generation_job(job_id: str) -> None:
         job["audio_qa"] = qa
         job["timeline"] = timeline
         timeline_wav.unlink(missing_ok=True)
+        metadata = {
+            "episode": job_id,
+            "title": job["title"],
+            "duration": round(float(timeline[-1]["end"] + timeline[-1]["pause_after_ms"] / 1000), 3),
+            "utterances": job["chunks"],
+            "audio_qa": qa,
+        }
+        metadata_file = job_dir / "metadata.json"
+        metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        job["clips"] = []
+        job["clip_error"] = None
+        try:
+            job["clips"] = render_automatic_social_clips(job_dir, job["title"], metadata)
+            metadata["clips"] = job["clips"]
+            metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        except Exception as clip_exc:  # Clip failures must not discard a completed episode.
+            job["clip_error"] = str(clip_exc)
+            logger.exception("Automatic social clip rendering failed for %s", job_id)
         job["status"] = "complete"
         job["download_url"] = f"/api/episodes/{job_id}/download"
     except Exception as exc:  # Persist failures so polling clients never hang.
@@ -1419,6 +1437,45 @@ def suggest_clip_windows(metadata: dict[str, Any], min_seconds: float = 20, max_
     return selected
 
 
+def select_automatic_clip_windows(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Choose one opening and two non-overlapping content moments."""
+    duration = float(metadata.get("duration") or 0)
+    if duration < 5:
+        return []
+
+    utterances = ordered_utterances(metadata)
+    intro_utterances = [item for item in utterances if item.get("section_id", item.get("section")) == "host_intro"]
+    intro_end = max(
+        (float(item.get("timing", item).get("end", 0)) for item in intro_utterances),
+        default=0.0,
+    )
+    opening_end = min(duration, 60.0, max(20.0, intro_end))
+    opening = {
+        "kind": "intro",
+        "start": 0.0,
+        "end": round(opening_end, 2),
+        "duration": round(opening_end, 2),
+        "speakers": sorted({
+            str(item.get("display_name", item.get("host", "Host")))
+            for item in utterances
+            if float(item.get("timing", item).get("start", duration)) < opening_end
+        }),
+        "preview": "Episode opening",
+    }
+
+    content = [
+        item for item in utterances
+        if item.get("section_id", item.get("section", "episode")) == "episode"
+        and float(item.get("timing", item).get("start", 0)) >= opening_end
+    ]
+    # Keep automatic excerpts tighter than the manual 60-second ceiling so one
+    # broad window does not crowd out two distinct moments from the episode.
+    ranked = suggest_clip_windows({"utterances": content}, max_seconds=45, limit=2)
+    for item in ranked:
+        item["kind"] = "content"
+    return [opening, *ranked]
+
+
 def _ass_time(seconds: float) -> str:
     seconds = max(0.0, seconds)
     hours = int(seconds // 3600)
@@ -1493,6 +1550,40 @@ def render_social_clip(episode_dir: Path, start: float, end: float, title: str, 
         "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", str(destination),
     ]
     subprocess.run(cmd, check=True)
+
+
+def render_automatic_social_clips(
+    episode_dir: Path,
+    episode_title: str,
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Render the opening and up to two best content moments after episode assembly."""
+    rendered: list[dict[str, Any]] = []
+    titles = [f"{episode_title}: Opening", f"{episode_title}: Best moment 1", f"{episode_title}: Best moment 2"]
+    for index, window in enumerate(select_automatic_clip_windows(metadata)):
+        title = titles[index]
+        clip_id = f"auto-{index + 1}-{window['kind']}"
+        destination = episode_dir / "clips" / f"{clip_id}.mp4"
+        render_social_clip(
+            episode_dir,
+            float(window["start"]),
+            float(window["end"]),
+            title,
+            "vertical",
+            destination,
+            metadata,
+        )
+        rendered.append({
+            "id": clip_id,
+            "kind": window["kind"],
+            "title": title,
+            "start": window["start"],
+            "end": window["end"],
+            "duration": window["duration"],
+            "aspect": "vertical",
+            "download_url": f"/api/episodes/{metadata['episode']}/clips/{clip_id}/download",
+        })
+    return rendered
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1853,6 +1944,8 @@ async def list_generation_jobs():
             "started_at": job.get("started_at"),
             "finished_at": job.get("finished_at"),
             "download_url": job.get("download_url"),
+            "clips": job.get("clips", []),
+            "clip_error": job.get("clip_error"),
             "error": job.get("error"),
             "progress": _job_progress(job),
         })

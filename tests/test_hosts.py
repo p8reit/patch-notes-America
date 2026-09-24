@@ -280,6 +280,43 @@ def test_clip_suggestions_prefer_multi_speaker_windows():
     assert len(suggestions[0]["speakers"]) >= 2
 
 
+def test_automatic_clips_include_opening_and_two_content_moments():
+    from app.main import select_automatic_clip_windows
+
+    metadata = {"duration": 120.0, "utterances": [
+        {"sequence": 1, "section_id": "host_intro", "display_name": "Wade", "normalized_text": "Welcome to the show.", "timing": {"start": 0.0, "end": 10.0}},
+        {"sequence": 2, "section_id": "episode", "display_name": "Wade", "normalized_text": "Here is the problem and why it matters.", "timing": {"start": 20.0, "end": 31.0}},
+        {"sequence": 3, "section_id": "episode", "display_name": "Marcus", "normalized_text": "But wait, that is the point. What happens next?", "timing": {"start": 31.0, "end": 44.0}},
+        {"sequence": 4, "section_id": "episode", "display_name": "Julian", "normalized_text": "Actually, another part matters because people feel it.", "timing": {"start": 62.0, "end": 74.0}},
+        {"sequence": 5, "section_id": "episode", "display_name": "Wade", "normalized_text": "That is why this second moment is worth sharing.", "timing": {"start": 74.0, "end": 87.0}},
+    ]}
+
+    clips = select_automatic_clip_windows(metadata)
+
+    assert [clip["kind"] for clip in clips] == ["intro", "content", "content"]
+    assert clips[0]["start"] == 0.0
+    assert clips[0]["end"] == 20.0
+    assert all(20 <= clip["duration"] <= 60 for clip in clips)
+
+
+def test_automatic_clip_rendering_returns_durable_downloads(tmp_path, monkeypatch):
+    from app import main
+
+    calls = []
+    metadata = {"episode": "episode-1", "duration": 80.0, "utterances": [
+        {"sequence": 1, "section_id": "episode", "display_name": "Wade", "normalized_text": "Opening thought.", "timing": {"start": 0.0, "end": 20.0}},
+        {"sequence": 2, "section_id": "episode", "display_name": "Marcus", "normalized_text": "Here is the problem. Why does it matter?", "timing": {"start": 20.0, "end": 41.0}},
+        {"sequence": 3, "section_id": "episode", "display_name": "Julian", "normalized_text": "But there is another useful answer.", "timing": {"start": 50.0, "end": 72.0}},
+    ]}
+    monkeypatch.setattr(main, "render_social_clip", lambda *args: calls.append(args))
+
+    clips = main.render_automatic_social_clips(tmp_path, "Episode One", metadata)
+
+    assert len(calls) == 3
+    assert [clip["id"] for clip in clips] == ["auto-1-intro", "auto-2-content", "auto-3-content"]
+    assert clips[0]["download_url"] == "/api/episodes/episode-1/clips/auto-1-intro/download"
+
+
 def test_build_clip_ass_contains_speaker_and_text(tmp_path):
     from app.main import build_clip_ass
     metadata = {"utterances": [
