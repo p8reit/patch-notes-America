@@ -403,6 +403,12 @@ checkpointed in the manifest. The final MP3 is assembled directly from the
 ordered completed chunks. Progress survives page/API timeouts in
 `output/<job-id>/job.json`; no arbitrary fixed-size render batches are used.
 
+Final MP3 assembly uses FFmpeg's two-pass EBU R128 loudness normalization. The
+complete program is measured first, then mastered to -14 LUFS integrated with a
+-1.5 dB true-peak ceiling and encoded as a 128 kbps, 44.1 kHz stereo MP3. This
+final-program pass preserves the relative dynamics between speech chunks while
+producing consistent playback loudness suitable for Spotify-oriented delivery.
+
 The queue uses one worker by default so concurrent episodes do not compete for
 all CPU and memory. After submitting an episode, it is safe to close the
 browser: open the app later and the **Render queue** lists active and completed

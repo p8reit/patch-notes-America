@@ -22,7 +22,7 @@ from app.audio_utils import (
     trim_boundary_silence,
     validate_audio_segment,
 )
-from app.main import mix_intro_track_and_voice, parse_speaker_script
+from app.main import assemble_mp3, mix_intro_track_and_voice, parse_speaker_script
 
 
 RATE = 8000
@@ -275,3 +275,56 @@ def test_intro_music_volume_must_be_in_range(tmp_path):
         mix_intro_track_and_voice(
             tmp_path / "music.wav", tmp_path / "voice.wav", tmp_path / "mixed.wav", 1.1
         )
+
+
+def test_assemble_mp3_uses_two_pass_loudness_mastering(monkeypatch, tmp_path):
+    source = tmp_path / "speech.wav"
+    output = tmp_path / "episode.mp3"
+    write_wav(source, [(0.5, True)])
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if "null" in args:
+            return SimpleNamespace(stderr='''
+            {"input_i":"-22.10","input_tp":"-6.20","input_lra":"1.30",
+             "input_thresh":"-32.10","target_offset":"0.10"}
+            ''')
+        (tmp_path / args[-1]).write_bytes(b"mastered mp3")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("app.main.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr("app.main.subprocess.run", fake_run)
+
+    assemble_mp3([source], output)
+
+    assert len(calls) == 2
+    analysis_filter = calls[0][0][calls[0][0].index("-af") + 1]
+    assert "loudnorm=I=-14.0:TP=-1.5:LRA=11.0:dual_mono=true" in analysis_filter
+    assert "print_format=json" in analysis_filter
+    mastering_filter = calls[1][0][calls[1][0].index("-af") + 1]
+    assert "measured_I=-22.10" in mastering_filter
+    assert "measured_TP=-6.20" in mastering_filter
+    assert "measured_LRA=1.30" in mastering_filter
+    assert "measured_thresh=-32.10" in mastering_filter
+    assert "offset=0.10" in mastering_filter
+    assert "linear=true" in mastering_filter
+    assert output.read_bytes() == b"mastered mp3"
+    assert not output.with_suffix(".timeline.wav").exists()
+    assert not output.with_suffix(".mastered.tmp.mp3").exists()
+
+
+def test_assemble_mp3_rejects_missing_loudness_measurements(monkeypatch, tmp_path):
+    source = tmp_path / "speech.wav"
+    output = tmp_path / "episode.mp3"
+    write_wav(source, [(0.5, True)])
+    monkeypatch.setattr("app.main.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(
+        "app.main.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(stderr="no measurements")
+    )
+
+    with pytest.raises(RuntimeError, match="did not return loudness measurements"):
+        assemble_mp3([source], output)
+
+    assert not output.exists()
+    assert not output.with_suffix(".timeline.wav").exists()

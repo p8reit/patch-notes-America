@@ -917,38 +917,60 @@ async def synthesize_chunk(
 def assemble_mp3(
     chunk_paths: List[Path], output_file: Path, chunks: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
-    """Build a zero-based WAV timeline, then encode it; pauses are added only here."""
+    """Build a zero-based timeline and loudness-master the final MP3."""
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg is not installed in the application container")
 
     chunks = chunks or [{"host": "unknown", "text": ""} for _ in chunk_paths]
     timeline_wav = output_file.with_suffix(".timeline.wav")
+    temporary_output = output_file.with_suffix(".mastered.tmp.mp3")
     timeline = concatenate_wav_segments(chunk_paths, chunks, timeline_wav)
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        timeline_wav.name,
-        "-af",
-        "asetpts=PTS-STARTPTS",
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        "128k",
-        "-ar",
-        "44100",
-        "-ac",
-        "2",
-        output_file.name,
-    ]
     try:
-        subprocess.run(cmd, cwd=output_file.parent, check=True)
+        target = "I=-14.0:TP=-1.5:LRA=11.0:dual_mono=true"
+        analysis = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-nostats", "-i", timeline_wav.name,
+                "-af", f"asetpts=PTS-STARTPTS,loudnorm={target}:print_format=json",
+                "-f", "null", "-",
+            ],
+            cwd=output_file.parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        match = re.search(r'\{\s*"input_i".*?\}', analysis.stderr, flags=re.DOTALL)
+        if not match:
+            raise RuntimeError("FFmpeg did not return loudness measurements for the final episode")
+        measurements = json.loads(match.group(0))
+        required = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+        if any(key not in measurements for key in required):
+            raise RuntimeError("FFmpeg returned incomplete loudness measurements for the final episode")
+
+        measured = ":".join(
+            (
+                f"measured_I={measurements['input_i']}",
+                f"measured_TP={measurements['input_tp']}",
+                f"measured_LRA={measurements['input_lra']}",
+                f"measured_thresh={measurements['input_thresh']}",
+                f"offset={measurements['target_offset']}",
+                "linear=true",
+            )
+        )
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", timeline_wav.name,
+                "-af", f"asetpts=PTS-STARTPTS,loudnorm={target}:{measured}",
+                "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                temporary_output.name,
+            ],
+            cwd=output_file.parent,
+            check=True,
+        )
+        temporary_output.replace(output_file)
     finally:
         timeline_wav.unlink(missing_ok=True)
+        temporary_output.unlink(missing_ok=True)
     return timeline
 
 
