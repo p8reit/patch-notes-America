@@ -716,11 +716,13 @@ API endpoints: `POST /api/research-packets`, `GET /api/research-packets`, `GET /
 
 After an episode is rendered, the app exposes a Clip Studio for short-form distribution.
 
+- Automatically renders three vertical clips after episode assembly: the opening plus the two highest-ranked, non-overlapping content moments (when the episode contains enough eligible content).
 - Measures every rendered TTS chunk with `ffprobe` and stores precise start/end timestamps in episode metadata.
 - Scores 20–60 second candidate moments, favoring strong hooks, questions, conversational turns, and multiple speakers.
 - Lets you override the suggested window with exact start/end times.
 - Exports vertical 9:16, square 1:1, or horizontal 16:9 MP4.
 - Burns synchronized speaker captions directly into the video.
+- Inserts at least one branded still card in every clip, using dialogue from the selected moment when available and the episode title as a fallback, without requiring an image service or network call.
 - Adds Patch Notes: America branding and a custom clip headline.
 - Saves exports under `output/<episode>/clips/`.
 
@@ -732,4 +734,4 @@ POST /api/episodes/{episode_slug}/clips
 GET  /api/episodes/{episode_slug}/clips/{clip_id}/download
 ```
 
-The clip-selection logic is deliberately local and deterministic for MVP, so it works without additional AI calls. A later ranking layer can use the transcript, story importance, audience metrics, or a model to improve viral-moment selection.
+Automatic clip failure is recorded separately and never changes a successfully assembled episode back to failed. The clip-selection logic is deliberately local and deterministic for MVP, so it works without additional AI calls. A later ranking layer can use the transcript, story importance, audience metrics, or a model to improve viral-moment selection.

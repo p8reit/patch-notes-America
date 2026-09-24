@@ -1303,6 +1303,24 @@ async def process_generation_job(job_id: str) -> None:
         job["audio_qa"] = qa
         job["timeline"] = timeline
         timeline_wav.unlink(missing_ok=True)
+        metadata = {
+            "episode": job_id,
+            "title": job["title"],
+            "duration": round(float(timeline[-1]["end"] + timeline[-1]["pause_after_ms"] / 1000), 3),
+            "utterances": job["chunks"],
+            "audio_qa": qa,
+        }
+        metadata_file = job_dir / "metadata.json"
+        metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        job["clips"] = []
+        job["clip_error"] = None
+        try:
+            job["clips"] = render_automatic_social_clips(job_dir, job["title"], metadata)
+            metadata["clips"] = job["clips"]
+            metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        except Exception as clip_exc:  # Clip failures must not discard a completed episode.
+            job["clip_error"] = str(clip_exc)
+            logger.exception("Automatic social clip rendering failed for %s", job_id)
         job["status"] = "complete"
         job["download_url"] = f"/api/episodes/{job_id}/download"
     except Exception as exc:  # Persist failures so polling clients never hang.
@@ -1419,6 +1437,45 @@ def suggest_clip_windows(metadata: dict[str, Any], min_seconds: float = 20, max_
     return selected
 
 
+def select_automatic_clip_windows(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Choose one opening and two non-overlapping content moments."""
+    duration = float(metadata.get("duration") or 0)
+    if duration < 5:
+        return []
+
+    utterances = ordered_utterances(metadata)
+    intro_utterances = [item for item in utterances if item.get("section_id", item.get("section")) == "host_intro"]
+    intro_end = max(
+        (float(item.get("timing", item).get("end", 0)) for item in intro_utterances),
+        default=0.0,
+    )
+    opening_end = min(duration, 60.0, max(20.0, intro_end))
+    opening = {
+        "kind": "intro",
+        "start": 0.0,
+        "end": round(opening_end, 2),
+        "duration": round(opening_end, 2),
+        "speakers": sorted({
+            str(item.get("display_name", item.get("host", "Host")))
+            for item in utterances
+            if float(item.get("timing", item).get("start", duration)) < opening_end
+        }),
+        "preview": "Episode opening",
+    }
+
+    content = [
+        item for item in utterances
+        if item.get("section_id", item.get("section", "episode")) == "episode"
+        and float(item.get("timing", item).get("start", 0)) >= opening_end
+    ]
+    # Keep automatic excerpts tighter than the manual 60-second ceiling so one
+    # broad window does not crowd out two distinct moments from the episode.
+    ranked = suggest_clip_windows({"utterances": content}, max_seconds=45, limit=2)
+    for item in ranked:
+        item["kind"] = "content"
+    return [opening, *ranked]
+
+
 def _ass_time(seconds: float) -> str:
     seconds = max(0.0, seconds)
     hours = int(seconds // 3600)
@@ -1432,11 +1489,62 @@ def _ass_escape(text: str) -> str:
     return text.replace("\n", r"\N")
 
 
+def _clip_visual_cards(metadata: dict[str, Any], start: float, end: float) -> list[dict[str, Any]]:
+    """Build one or two short pull-quote cards from dialogue inside the clip."""
+    duration = end - start
+    excerpts: list[str] = []
+    for chunk in ordered_utterances(metadata):
+        timing = chunk.get("timing", chunk)
+        if float(timing.get("end", 0)) <= start or float(timing.get("start", 0)) >= end:
+            continue
+        text = str(chunk.get("normalized_text", chunk.get("text", ""))).strip()
+        sentence = next((part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()), "")
+        if sentence and sentence not in excerpts:
+            excerpts.append(sentence)
+
+    if not excerpts:
+        excerpts.append(str(metadata.get("title") or "Patch Notes: America"))
+    count = min(2, len(excerpts))
+    chosen = [excerpts[0]] if count == 1 else [excerpts[0], excerpts[-1]]
+    centers = [duration * 0.28] if count == 1 else [duration * 0.25, duration * 0.68]
+    card_duration = min(4.5, max(1.5, duration * 0.18))
+    return [
+        {
+            "start": round(max(0.0, center - card_duration / 2), 2),
+            "end": round(min(duration, center + card_duration / 2), 2),
+            "text": text[:120],
+        }
+        for center, text in zip(centers, chosen)
+    ]
+
+
+def _ass_wrap(text: str, line_length: int = 28) -> str:
+    """Wrap escaped card copy without adding a rendering dependency."""
+    words = text.split()
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        if current and len(" ".join([*current, word])) > line_length:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        lines.append(" ".join(current))
+    return r"\N".join(lines)
+
+
 def build_clip_ass(metadata: dict[str, Any], start: float, end: float, destination: Path, width: int, height: int) -> None:
     font_size = 64 if height >= 1600 else 42
     margin_v = int(height * 0.18)
-    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,{font_size},&H00FFFFFF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,{margin_v},1\nStyle: Speaker,DejaVu Sans,{max(30, int(font_size*.52))},&H0058A6FF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,{max(60, int(margin_v*.62))},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,{font_size},&H00FFFFFF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,{margin_v},1\nStyle: Speaker,DejaVu Sans,{max(30, int(font_size*.52))},&H0058A6FF,&H000000FF,&HCC000000,&H88000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,{max(60, int(margin_v*.62))},1\nStyle: VisualCard,DejaVu Sans,{max(44, int(font_size*.9))},&H00FFFFFF,&H000000FF,&H003D8BFF,&HE6192333,-1,0,0,0,100,100,1,0,3,6,0,5,{int(width*.1)},{int(width*.1)},0,1\nStyle: VisualLabel,DejaVu Sans,{max(24, int(font_size*.42))},&H0058A6FF,&H000000FF,&H00121920,&H00121920,-1,0,0,0,100,100,3,0,1,2,0,8,70,70,{int(height*.26)},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
     events: list[str] = []
+    for card in _clip_visual_cards(metadata, start, end):
+        card_start = _ass_time(float(card["start"]))
+        card_end = _ass_time(float(card["end"]))
+        text = _ass_wrap(_ass_escape(str(card["text"])))
+        events.append(f"Dialogue: 3,{card_start},{card_end},VisualCard,,0,0,0,,“{text}”")
+        events.append(f"Dialogue: 4,{card_start},{card_end},VisualLabel,,0,0,0,,PATCH NOTE")
     for chunk in ordered_utterances(metadata):
         timing = chunk.get("timing", chunk)
         c_start = float(timing.get("start", 0))
@@ -1493,6 +1601,40 @@ def render_social_clip(episode_dir: Path, start: float, end: float, title: str, 
         "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", str(destination),
     ]
     subprocess.run(cmd, check=True)
+
+
+def render_automatic_social_clips(
+    episode_dir: Path,
+    episode_title: str,
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Render the opening and up to two best content moments after episode assembly."""
+    rendered: list[dict[str, Any]] = []
+    titles = [f"{episode_title}: Opening", f"{episode_title}: Best moment 1", f"{episode_title}: Best moment 2"]
+    for index, window in enumerate(select_automatic_clip_windows(metadata)):
+        title = titles[index]
+        clip_id = f"auto-{index + 1}-{window['kind']}"
+        destination = episode_dir / "clips" / f"{clip_id}.mp4"
+        render_social_clip(
+            episode_dir,
+            float(window["start"]),
+            float(window["end"]),
+            title,
+            "vertical",
+            destination,
+            metadata,
+        )
+        rendered.append({
+            "id": clip_id,
+            "kind": window["kind"],
+            "title": title,
+            "start": window["start"],
+            "end": window["end"],
+            "duration": window["duration"],
+            "aspect": "vertical",
+            "download_url": f"/api/episodes/{metadata['episode']}/clips/{clip_id}/download",
+        })
+    return rendered
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1853,6 +1995,8 @@ async def list_generation_jobs():
             "started_at": job.get("started_at"),
             "finished_at": job.get("finished_at"),
             "download_url": job.get("download_url"),
+            "clips": job.get("clips", []),
+            "clip_error": job.get("clip_error"),
             "error": job.get("error"),
             "progress": _job_progress(job),
         })

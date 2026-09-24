@@ -137,7 +137,9 @@ sequenceDiagram
     Queue->>Disk: Persist and normalize chunk WAVs
     Queue->>FFmpeg: Assemble speech, intro, and final MP3
     FFmpeg->>Disk: Write episode.mp3 and metadata
-    API-->>UI: Complete + download URL
+    Queue->>FFmpeg: Render opening + two ranked content clips
+    FFmpeg->>Disk: Write three vertical MP4s
+    API-->>UI: Complete + episode and clip download URLs
     Producer->>API: Download episode
 ```
 
@@ -145,7 +147,7 @@ Jobs are filesystem-backed rather than browser-backed. On application startup, i
 
 ### Clip production
 
-The completed episode metadata is enriched with a chunk timeline. Candidate 20–60 second windows are scored for strong hooks, useful duration, and multiple speakers. The producer may accept a suggestion or set exact bounds, title, and aspect ratio. FFmpeg produces a captioned MP4 in vertical (`9:16`), square (`1:1`), or horizontal (`16:9`) format.
+The completed episode metadata is enriched with a chunk timeline. After MP3 assembly, the worker automatically renders a vertical opening clip and up to two non-overlapping content clips scored for strong hooks, useful duration, and multiple speakers. Every clip includes at least one timed, branded still card selected from its dialogue, with the episode title as a fallback when no caption text intersects the clip; a second card is included when another distinct excerpt is available. The cards are generated locally as part of the caption composition. Clip errors are recorded without failing the completed episode. The producer may also accept a suggestion or set exact bounds, title, and aspect ratio. FFmpeg produces a captioned MP4 in vertical (`9:16`), square (`1:1`), or horizontal (`16:9`) format.
 
 ## 5. System architecture
 
