@@ -207,6 +207,35 @@ def test_explicit_dramatic_pause_uses_dramatic_spacing():
     assert calculate_transition_pause({}, {"boundary_reason": "explicit_dramatic_pause"}) == DRAMATIC_PAUSE_MS
 
 
+@pytest.mark.parametrize(
+    ("previous", "current", "expected"),
+    [
+        (
+            {"host": "Wade", "section": "episode"},
+            {"host": "Wade", "section": "episode"},
+            SAME_SPEAKER_PAUSE_MS,
+        ),
+        (
+            {"host": "Wade", "section": "episode"},
+            {"host": "Alex", "section": "episode"},
+            SPEAKER_CHANGE_PAUSE_MS,
+        ),
+        (
+            {"host": "Wade", "section": "host_intro"},
+            {"host": "Wade", "section": "episode"},
+            SECTION_CHANGE_PAUSE_MS,
+        ),
+    ],
+)
+def test_missing_transition_reason_is_inferred_for_legacy_chunks(previous, current, expected):
+    assert calculate_transition_pause(previous, current) == expected
+
+
+def test_unknown_transition_reason_is_rejected():
+    with pytest.raises(ValueError, match="Missing or unknown transition boundary reason: 'surprise'"):
+        calculate_transition_pause({}, {"boundary_reason": "surprise"})
+
+
 def test_concatenation_is_sequential_and_never_overlaps_segments(tmp_path):
     first, second, combined = tmp_path / "first.wav", tmp_path / "second.wav", tmp_path / "combined.wav"
     write_wav(first, [(0.5, True)])

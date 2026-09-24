@@ -12,6 +12,7 @@ Initial podcast-production application for turning a narration script into a fin
 - Automatic TTS-friendly script cleanup
 - Automatic script chunking (default max 700 characters)
 - Durable speech-chunk jobs with progress polling and resumable audio
+- Compatibility spacing for resumable jobs created before transition-boundary metadata was added
 - Persistent background render queue designed for slow CPU-only generation
 - Chatterbox generation through the bundled service's `POST /v1/audio/speech` API
 - Per-chunk WAV files retained for selective regeneration/debugging
