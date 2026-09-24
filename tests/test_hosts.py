@@ -407,6 +407,57 @@ def test_generate_clip_art_can_use_local_provider_without_api_key(tmp_path, monk
     assert captured["payload"]["model"] == main.LOCAL_IMAGE_MODEL
 
 
+def test_generate_clip_art_explains_how_to_start_unreachable_local_provider(tmp_path, monkeypatch):
+    import asyncio
+    from app import main
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            request = main.httpx.Request("POST", main.LOCAL_IMAGES_URL)
+            raise main.httpx.ConnectError("All connection attempts failed", request=request)
+
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "local")
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+
+    with pytest.raises(RuntimeError, match=r"start-and-check\.sh --gpu --local-image"):
+        asyncio.run(main.generate_clip_art("Episode", "Local art", "square", tmp_path / "art.png"))
+
+
+def test_generate_clip_art_explains_unreachable_openai_provider(tmp_path, monkeypatch):
+    import asyncio
+    from app import main
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            request = main.httpx.Request("POST", main.OPENAI_IMAGES_URL)
+            raise main.httpx.ConnectError("All connection attempts failed", request=request)
+
+    monkeypatch.setattr(main, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "openai")
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+
+    with pytest.raises(RuntimeError, match="check network access"):
+        asyncio.run(main.generate_clip_art("Episode", "Remote art", "vertical", tmp_path / "art.png"))
+
+
 def test_render_social_clip_uses_generated_art_as_video_source(tmp_path, monkeypatch):
     from app import main
 

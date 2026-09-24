@@ -703,6 +703,12 @@ OpenAI-compatible endpoint over the Compose network. `OPENAI_API_KEY` remains
 optional for clip art when `CLIP_IMAGE_PROVIDER=local`; it is still required
 if conversation drafting uses the OpenAI provider.
 
+If a clip falls back to the branded background because the local artwork
+service is unreachable, start or recreate the complete CUDA stack with
+`./scripts/start-and-check.sh --gpu --local-image`. Starting only the app and
+Chatterbox while `CLIP_IMAGE_PROVIDER=local` leaves the profiled image service
+unavailable.
+
 ### Run the conversation engine locally
 
 An optional Ollama profile can replace paid conversation calls while leaving

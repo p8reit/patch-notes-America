@@ -1580,13 +1580,23 @@ async def generate_clip_art(
     headers = {"Content-Type": "application/json"}
     if CLIP_IMAGE_PROVIDER == "openai":
         headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=10)) as client:
-        response = await client.post(
-            endpoint,
-            headers=headers,
-            json=payload,
-        )
-        response.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=10)) as client:
+            response = await client.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+    except httpx.ConnectError as exc:
+        if CLIP_IMAGE_PROVIDER == "local":
+            detail = (
+                "Local clip artwork service is unreachable. Start the CUDA stack with "
+                "./scripts/start-and-check.sh --gpu --local-image and retry the clip."
+            )
+        else:
+            detail = "OpenAI clip artwork service is unreachable; check network access and retry the clip."
+        raise RuntimeError(detail) from exc
     body = response.json()
     encoded = body.get("data", [{}])[0].get("b64_json") if isinstance(body, dict) else None
     if not isinstance(encoded, str):
