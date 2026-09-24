@@ -271,6 +271,7 @@ stateDiagram-v2
 
 - Episode submission remains disabled until Chatterbox passes model loading and a real synthesis smoke test.
 - Each TTS request validates that the response is a WAV/RIFF payload; audio is then checked and normalized before assembly.
+- Final MP3 assembly measures the complete program and applies two-pass EBU R128 mastering at -14 LUFS integrated with a -1.5 dB true-peak ceiling.
 - Retryable TTS failures use a configurable attempt count and delay. The manifest records progress and errors for the queue UI.
 - GPU mode is fail-closed: a requested CUDA device must actually resolve to CUDA. CPU is the portable default.
 - Uploaded voice and intro files are size-limited and normalized through FFmpeg before production use.
