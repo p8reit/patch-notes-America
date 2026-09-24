@@ -363,6 +363,13 @@ def calculate_transition_pause(previous: dict[str, Any], current: dict[str, Any]
         "explicit_dramatic_pause": DRAMATIC_PAUSE_MS,
     }
     reason = current.get("boundary_reason")
+    if reason is None:
+        if current.get("section") != previous.get("section"):
+            reason = "section_break"
+        elif current.get("host") != previous.get("host"):
+            reason = "speaker_change"
+        else:
+            reason = "sentence_break"
     if reason not in pauses:
         raise ValueError(f"Missing or unknown transition boundary reason: {reason!r}")
     return pauses[reason]
