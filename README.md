@@ -666,9 +666,10 @@ Then edit:
 ```text
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-5.6-luna
+OPENAI_IMAGE_MODEL=gpt-image-2
 ```
 
-The implementation uses the OpenAI Responses API by default. `OPENAI_RESPONSES_URL` and `OPENAI_MODEL` are environment-configurable so this layer can be swapped or proxied later without changing the podcast/audio pipeline.
+The implementation uses the OpenAI Responses API for conversation drafting and the Images API for clip artwork. `OPENAI_RESPONSES_URL`, `OPENAI_MODEL`, `OPENAI_IMAGES_URL`, and `OPENAI_IMAGE_MODEL` are environment-configurable. If image generation is unavailable, the MP4 still renders with the existing branded background and reports the artwork error separately.
 
 ### Run the conversation engine locally
 
@@ -722,7 +723,8 @@ After an episode is rendered, the app exposes a Clip Studio for short-form distr
 - Lets you override the suggested window with exact start/end times.
 - Exports vertical 9:16, square 1:1, or horizontal 16:9 MP4.
 - Burns synchronized speaker captions directly into the video.
-- Inserts at least one branded still card in every clip, using dialogue from the selected moment when available and the episode title as a fallback, without requiring an image service or network call.
+- Generates an original editorial illustration for each clip through the configured image model, stores it beside the MP4, and uses it as the video background behind branding and captions.
+- Retains branded pull-quote cards and falls back to the existing dark background if image generation is unavailable; artwork errors do not fail an otherwise valid clip.
 - Adds Patch Notes: America branding and a custom clip headline.
 - Saves exports under `output/<episode>/clips/`.
 

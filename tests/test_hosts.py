@@ -300,6 +300,7 @@ def test_automatic_clips_include_opening_and_two_content_moments():
 
 
 def test_automatic_clip_rendering_returns_durable_downloads(tmp_path, monkeypatch):
+    import asyncio
     from app import main
 
     calls = []
@@ -308,13 +309,80 @@ def test_automatic_clip_rendering_returns_durable_downloads(tmp_path, monkeypatc
         {"sequence": 2, "section_id": "episode", "display_name": "Marcus", "normalized_text": "Here is the problem. Why does it matter?", "timing": {"start": 20.0, "end": 41.0}},
         {"sequence": 3, "section_id": "episode", "display_name": "Julian", "normalized_text": "But there is another useful answer.", "timing": {"start": 50.0, "end": 72.0}},
     ]}
+    async def no_art(*_args):
+        return None
+
+    monkeypatch.setattr(main, "generate_clip_art", no_art)
     monkeypatch.setattr(main, "render_social_clip", lambda *args: calls.append(args))
 
-    clips = main.render_automatic_social_clips(tmp_path, "Episode One", metadata)
+    clips = asyncio.run(main.render_automatic_social_clips(tmp_path, "Episode One", metadata))
 
     assert len(calls) == 3
     assert [clip["id"] for clip in clips] == ["auto-1-intro", "auto-2-content", "auto-3-content"]
     assert clips[0]["download_url"] == "/api/episodes/episode-1/clips/auto-1-intro/download"
+
+
+def test_generate_clip_art_persists_valid_image_bytes(tmp_path, monkeypatch):
+    import asyncio
+    import base64
+    from app import main
+
+    captured = {}
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"image-data"
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"b64_json": base64.b64encode(image_bytes).decode()}]}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, headers, json):
+            captured.update({"url": url, "headers": headers, "payload": json})
+            return Response()
+
+    monkeypatch.setattr(main, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+    destination = tmp_path / "clip-art.png"
+
+    result = asyncio.run(main.generate_clip_art("Episode", "A consequential policy debate", "vertical", destination))
+
+    assert result == destination
+    assert destination.read_bytes() == image_bytes
+    assert captured["payload"]["size"] == "1024x1536"
+    assert captured["payload"]["model"] == main.OPENAI_IMAGE_MODEL
+    assert "no words" in captured["payload"]["prompt"]
+
+
+def test_render_social_clip_uses_generated_art_as_video_source(tmp_path, monkeypatch):
+    from app import main
+
+    (tmp_path / "episode.mp3").write_bytes(b"audio")
+    artwork = tmp_path / "art.png"
+    artwork.write_bytes(b"image")
+    captured = {}
+    monkeypatch.setattr(main.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(main.subprocess, "run", lambda command, check: captured.update(command=command, check=check))
+
+    main.render_social_clip(
+        tmp_path, 0, 8, "A headline", "vertical", tmp_path / "clip.mp4",
+        {"utterances": []}, artwork,
+    )
+
+    command = captured["command"]
+    assert str(artwork) in command
+    assert "-loop" in command
+    assert any("force_original_aspect_ratio=increase" in value for value in command)
 
 
 def test_build_clip_ass_contains_speaker_and_text(tmp_path):

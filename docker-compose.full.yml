@@ -70,6 +70,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
       OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-https://api.openai.com/v1/responses}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-2}
+      OPENAI_IMAGES_URL: ${OPENAI_IMAGES_URL:-https://api.openai.com/v1/images/generations}
       CONVERSATION_PROVIDER: ${CONVERSATION_PROVIDER:-openai}
       LOCAL_AI_URL: ${LOCAL_AI_URL:-http://ollama:11434/api/chat}
       LOCAL_AI_MODEL: ${LOCAL_AI_MODEL:-llama3.1:8b}
