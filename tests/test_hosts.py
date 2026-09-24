@@ -280,17 +280,148 @@ def test_clip_suggestions_prefer_multi_speaker_windows():
     assert len(suggestions[0]["speakers"]) >= 2
 
 
+def test_automatic_clips_include_opening_and_two_content_moments():
+    from app.main import select_automatic_clip_windows
+
+    metadata = {"duration": 120.0, "utterances": [
+        {"sequence": 1, "section_id": "host_intro", "display_name": "Wade", "normalized_text": "Welcome to the show.", "timing": {"start": 0.0, "end": 10.0}},
+        {"sequence": 2, "section_id": "episode", "display_name": "Wade", "normalized_text": "Here is the problem and why it matters.", "timing": {"start": 20.0, "end": 31.0}},
+        {"sequence": 3, "section_id": "episode", "display_name": "Marcus", "normalized_text": "But wait, that is the point. What happens next?", "timing": {"start": 31.0, "end": 44.0}},
+        {"sequence": 4, "section_id": "episode", "display_name": "Julian", "normalized_text": "Actually, another part matters because people feel it.", "timing": {"start": 62.0, "end": 74.0}},
+        {"sequence": 5, "section_id": "episode", "display_name": "Wade", "normalized_text": "That is why this second moment is worth sharing.", "timing": {"start": 74.0, "end": 87.0}},
+    ]}
+
+    clips = select_automatic_clip_windows(metadata)
+
+    assert [clip["kind"] for clip in clips] == ["intro", "content", "content"]
+    assert clips[0]["start"] == 0.0
+    assert clips[0]["end"] == 20.0
+    assert all(20 <= clip["duration"] <= 60 for clip in clips)
+
+
+def test_automatic_clip_rendering_returns_durable_downloads(tmp_path, monkeypatch):
+    import asyncio
+    from app import main
+
+    calls = []
+    metadata = {"episode": "episode-1", "duration": 80.0, "utterances": [
+        {"sequence": 1, "section_id": "episode", "display_name": "Wade", "normalized_text": "Opening thought.", "timing": {"start": 0.0, "end": 20.0}},
+        {"sequence": 2, "section_id": "episode", "display_name": "Marcus", "normalized_text": "Here is the problem. Why does it matter?", "timing": {"start": 20.0, "end": 41.0}},
+        {"sequence": 3, "section_id": "episode", "display_name": "Julian", "normalized_text": "But there is another useful answer.", "timing": {"start": 50.0, "end": 72.0}},
+    ]}
+    async def no_art(*_args):
+        return None
+
+    monkeypatch.setattr(main, "generate_clip_art", no_art)
+    monkeypatch.setattr(main, "render_social_clip", lambda *args: calls.append(args))
+
+    clips = asyncio.run(main.render_automatic_social_clips(tmp_path, "Episode One", metadata))
+
+    assert len(calls) == 3
+    assert [clip["id"] for clip in clips] == ["auto-1-intro", "auto-2-content", "auto-3-content"]
+    assert clips[0]["download_url"] == "/api/episodes/episode-1/clips/auto-1-intro/download"
+
+
+def test_generate_clip_art_persists_valid_image_bytes(tmp_path, monkeypatch):
+    import asyncio
+    import base64
+    from app import main
+
+    captured = {}
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"image-data"
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"b64_json": base64.b64encode(image_bytes).decode()}]}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, headers, json):
+            captured.update({"url": url, "headers": headers, "payload": json})
+            return Response()
+
+    monkeypatch.setattr(main, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+    destination = tmp_path / "clip-art.png"
+
+    result = asyncio.run(main.generate_clip_art("Episode", "A consequential policy debate", "vertical", destination))
+
+    assert result == destination
+    assert destination.read_bytes() == image_bytes
+    assert captured["payload"]["size"] == "1024x1536"
+    assert captured["payload"]["model"] == main.OPENAI_IMAGE_MODEL
+    assert "no words" in captured["payload"]["prompt"]
+
+
+def test_render_social_clip_uses_generated_art_as_video_source(tmp_path, monkeypatch):
+    from app import main
+
+    (tmp_path / "episode.mp3").write_bytes(b"audio")
+    artwork = tmp_path / "art.png"
+    artwork.write_bytes(b"image")
+    captured = {}
+    monkeypatch.setattr(main.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(main.subprocess, "run", lambda command, check: captured.update(command=command, check=check))
+
+    main.render_social_clip(
+        tmp_path, 0, 8, "A headline", "vertical", tmp_path / "clip.mp4",
+        {"utterances": []}, artwork,
+    )
+
+    command = captured["command"]
+    assert str(artwork) in command
+    assert "-loop" in command
+    assert any("force_original_aspect_ratio=increase" in value for value in command)
+
+
 def test_build_clip_ass_contains_speaker_and_text(tmp_path):
     from app.main import build_clip_ass
     metadata = {"utterances": [
         {"sequence": 1, "display_name": "Wade Mercer", "normalized_text": "Now hold on a minute. This is the useful part.", "timing": {"start": 5.0, "end": 12.0}},
+        {"sequence": 2, "display_name": "Marcus", "normalized_text": "The second takeaway gives the clip another visual beat.", "timing": {"start": 12.0, "end": 24.0}},
     ]}
     dest = tmp_path / "clip.ass"
-    build_clip_ass(metadata, 4.0, 14.0, dest, 1080, 1920)
+    build_clip_ass(metadata, 4.0, 25.0, dest, 1080, 1920)
     text = dest.read_text()
     assert "Wade Mercer" in text
     assert "This is the useful part." in text
     assert "PlayResX: 1080" in text
+    assert "Style: VisualCard" in text
+    assert text.count(",VisualCard,") == 2
+    assert "PATCH NOTE" in text
+
+
+def test_short_clip_still_gets_a_visual_card():
+    from app.main import _clip_visual_cards
+
+    metadata = {"utterances": [
+        {"sequence": 1, "normalized_text": "A short thought.", "timing": {"start": 0.0, "end": 8.0}},
+    ]}
+
+    cards = _clip_visual_cards(metadata, 0.0, 8.0)
+
+    assert len(cards) == 1
+    assert cards[0]["text"] == "A short thought."
+
+
+def test_clip_without_caption_text_gets_a_branded_visual_card():
+    from app.main import _clip_visual_cards
+
+    cards = _clip_visual_cards({"title": "Election Week"}, 0.0, 5.0)
+
+    assert len(cards) == 1
+    assert cards[0]["text"] == "Election Week"
 
 
 def test_chatterbox_voice_controls_are_preserved_in_chunks():

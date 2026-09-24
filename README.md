@@ -666,9 +666,10 @@ Then edit:
 ```text
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-5.6-luna
+OPENAI_IMAGE_MODEL=gpt-image-2
 ```
 
-The implementation uses the OpenAI Responses API by default. `OPENAI_RESPONSES_URL` and `OPENAI_MODEL` are environment-configurable so this layer can be swapped or proxied later without changing the podcast/audio pipeline.
+The implementation uses the OpenAI Responses API for conversation drafting and the Images API for clip artwork. `OPENAI_RESPONSES_URL`, `OPENAI_MODEL`, `OPENAI_IMAGES_URL`, and `OPENAI_IMAGE_MODEL` are environment-configurable. If image generation is unavailable, the MP4 still renders with the existing branded background and reports the artwork error separately.
 
 ### Run the conversation engine locally
 
@@ -716,11 +717,14 @@ API endpoints: `POST /api/research-packets`, `GET /api/research-packets`, `GET /
 
 After an episode is rendered, the app exposes a Clip Studio for short-form distribution.
 
+- Automatically renders three vertical clips after episode assembly: the opening plus the two highest-ranked, non-overlapping content moments (when the episode contains enough eligible content).
 - Measures every rendered TTS chunk with `ffprobe` and stores precise start/end timestamps in episode metadata.
 - Scores 20–60 second candidate moments, favoring strong hooks, questions, conversational turns, and multiple speakers.
 - Lets you override the suggested window with exact start/end times.
 - Exports vertical 9:16, square 1:1, or horizontal 16:9 MP4.
 - Burns synchronized speaker captions directly into the video.
+- Generates an original editorial illustration for each clip through the configured image model, stores it beside the MP4, and uses it as the video background behind branding and captions.
+- Retains branded pull-quote cards and falls back to the existing dark background if image generation is unavailable; artwork errors do not fail an otherwise valid clip.
 - Adds Patch Notes: America branding and a custom clip headline.
 - Saves exports under `output/<episode>/clips/`.
 
@@ -732,4 +736,4 @@ POST /api/episodes/{episode_slug}/clips
 GET  /api/episodes/{episode_slug}/clips/{clip_id}/download
 ```
 
-The clip-selection logic is deliberately local and deterministic for MVP, so it works without additional AI calls. A later ranking layer can use the transcript, story importance, audience metrics, or a model to improve viral-moment selection.
+Automatic clip failure is recorded separately and never changes a successfully assembled episode back to failed. The clip-selection logic is deliberately local and deterministic for MVP, so it works without additional AI calls. A later ranking layer can use the transcript, story importance, audience metrics, or a model to improve viral-moment selection.
