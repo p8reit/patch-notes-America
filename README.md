@@ -703,6 +703,12 @@ OpenAI-compatible endpoint over the Compose network. `OPENAI_API_KEY` remains
 optional for clip art when `CLIP_IMAGE_PROVIDER=local`; it is still required
 if conversation drafting uses the OpenAI provider.
 
+If a clip falls back to the branded background because the local artwork
+service is unreachable, start or recreate the complete CUDA stack with
+`./scripts/start-and-check.sh --gpu --local-image`. Starting only the app and
+Chatterbox while `CLIP_IMAGE_PROVIDER=local` leaves the profiled image service
+unavailable.
+
 ### Run the conversation engine locally
 
 An optional Ollama profile can replace paid conversation calls while leaving
@@ -754,9 +760,9 @@ After an episode is rendered, the app exposes a Clip Studio for short-form distr
 - Scores 20–60 second candidate moments, favoring strong hooks, questions, conversational turns, and multiple speakers.
 - Lets you override the suggested window with exact start/end times.
 - Exports vertical 9:16, square 1:1, or horizontal 16:9 MP4.
-- Burns synchronized speaker captions directly into the video.
-- Generates an original editorial illustration for each clip through either OpenAI Images or the optional local SDXL Turbo service, stores it beside the MP4, and uses it as the video background behind branding and captions.
-- Retains branded pull-quote cards and falls back to the existing dark background if image generation is unavailable; artwork errors do not fail an otherwise valid clip.
+- Burns each spoken passage once as a synchronized speaker caption, without a second pull-quote layer that repeats and overlaps the same text.
+- Generates a hyper-realistic editorial image with lifelike fictional people when relevant through either OpenAI Images or the optional local SDXL Turbo service, stores it beside the MP4, and uses it as the video background behind branding and captions.
+- Falls back to the existing dark branded background if image generation is unavailable; artwork errors do not fail an otherwise valid clip.
 - Adds Patch Notes: America branding and a custom clip headline.
 - Saves exports under `output/<episode>/clips/`.
 

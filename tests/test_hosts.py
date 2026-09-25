@@ -407,6 +407,57 @@ def test_generate_clip_art_can_use_local_provider_without_api_key(tmp_path, monk
     assert captured["payload"]["model"] == main.LOCAL_IMAGE_MODEL
 
 
+def test_generate_clip_art_explains_how_to_start_unreachable_local_provider(tmp_path, monkeypatch):
+    import asyncio
+    from app import main
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            request = main.httpx.Request("POST", main.LOCAL_IMAGES_URL)
+            raise main.httpx.ConnectError("All connection attempts failed", request=request)
+
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "local")
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+
+    with pytest.raises(RuntimeError, match=r"start-and-check\.sh --gpu --local-image"):
+        asyncio.run(main.generate_clip_art("Episode", "Local art", "square", tmp_path / "art.png"))
+
+
+def test_generate_clip_art_explains_unreachable_openai_provider(tmp_path, monkeypatch):
+    import asyncio
+    from app import main
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            request = main.httpx.Request("POST", main.OPENAI_IMAGES_URL)
+            raise main.httpx.ConnectError("All connection attempts failed", request=request)
+
+    monkeypatch.setattr(main, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "openai")
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+
+    with pytest.raises(RuntimeError, match="check network access"):
+        asyncio.run(main.generate_clip_art("Episode", "Remote art", "vertical", tmp_path / "art.png"))
+
+
 def test_render_social_clip_uses_generated_art_as_video_source(tmp_path, monkeypatch):
     from app import main
 
@@ -440,9 +491,29 @@ def test_build_clip_ass_contains_speaker_and_text(tmp_path):
     assert "Wade Mercer" in text
     assert "This is the useful part." in text
     assert "PlayResX: 1080" in text
-    assert "Style: VisualCard" in text
-    assert text.count(",VisualCard,") == 2
-    assert "PATCH NOTE" in text
+    assert ",VisualCard," not in text
+    assert "PATCH NOTE" not in text
+    assert text.count("Now hold on a minute.") == 1
+
+
+def test_clip_title_font_size_shrinks_long_headlines_into_safe_area():
+    from app.main import _clip_title_font_size
+
+    long_title = "Meta Put VR on a Diet — Best moment from the full conversation"
+    assert _clip_title_font_size("Brief headline", 1080) == 41
+    assert _clip_title_font_size(long_title, 1080) < 41
+    assert len(long_title) * _clip_title_font_size(long_title, 1080) * 0.58 <= 1080 * 0.84
+
+
+def test_clip_art_prompt_requests_photorealistic_people_not_illustrations():
+    from app.main import clip_art_prompt
+
+    prompt = clip_art_prompt("Virtual reality", "People meet in a shared digital world.")
+
+    assert "hyper-realistic" in prompt
+    assert "lifelike fictional people" in prompt
+    assert "natural anatomy" in prompt
+    assert "rather than cartoons" in prompt
 
 
 def test_short_clip_still_gets_a_visual_card():
