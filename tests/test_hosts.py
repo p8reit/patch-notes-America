@@ -491,9 +491,29 @@ def test_build_clip_ass_contains_speaker_and_text(tmp_path):
     assert "Wade Mercer" in text
     assert "This is the useful part." in text
     assert "PlayResX: 1080" in text
-    assert "Style: VisualCard" in text
-    assert text.count(",VisualCard,") == 2
-    assert "PATCH NOTE" in text
+    assert ",VisualCard," not in text
+    assert "PATCH NOTE" not in text
+    assert text.count("Now hold on a minute.") == 1
+
+
+def test_clip_title_font_size_shrinks_long_headlines_into_safe_area():
+    from app.main import _clip_title_font_size
+
+    long_title = "Meta Put VR on a Diet — Best moment from the full conversation"
+    assert _clip_title_font_size("Brief headline", 1080) == 41
+    assert _clip_title_font_size(long_title, 1080) < 41
+    assert len(long_title) * _clip_title_font_size(long_title, 1080) * 0.58 <= 1080 * 0.84
+
+
+def test_clip_art_prompt_requests_photorealistic_people_not_illustrations():
+    from app.main import clip_art_prompt
+
+    prompt = clip_art_prompt("Virtual reality", "People meet in a shared digital world.")
+
+    assert "hyper-realistic" in prompt
+    assert "lifelike fictional people" in prompt
+    assert "natural anatomy" in prompt
+    assert "rather than cartoons" in prompt
 
 
 def test_short_clip_still_gets_a_visual_card():
