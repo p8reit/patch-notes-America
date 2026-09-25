@@ -22,6 +22,7 @@ def episode_document():
         "target_minutes": 12,
         "conversation_tone": "measured",
         "script": "[Alex]\nWelcome to the show.",
+        "image_prompt": "A moonlit town hall with a documentary mood",
         "intro_lines": "Tonight, we explain the result.",
         "intro_overlap": True,
         "intro_music_volume": 0.35,
@@ -36,6 +37,7 @@ def test_parse_saved_episode_preserves_all_editor_sections():
     assert episode["research_packet"]["stories"][0]["headline"] == "A result"
     assert episode["story_notes"] == "Producer notes"
     assert episode["script"].startswith("[Alex]")
+    assert episode["image_prompt"] == "A moonlit town hall with a documentary mood"
     assert episode["intro_overlap"] is True
     assert episode["intro_music_volume"] == 0.35
 
@@ -58,6 +60,7 @@ def test_saved_episode_api_round_trip_includes_intro_track(tmp_path, monkeypatch
 
     loaded = client.get(f"/api/saved-episodes/{episode_id}").json()
     assert loaded["episode"]["script"] == episode_document()["script"]
+    assert loaded["episode"]["image_prompt"] == episode_document()["image_prompt"]
     listing = client.get("/api/saved-episodes").json()["episodes"]
     assert listing == [{
         "id": episode_id,
@@ -85,3 +88,31 @@ def test_updating_saved_episode_can_remove_intro_track(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert "intro_track" not in response.json()["episode"]
     assert not list((tmp_path / created["id"]).glob("intro-track.*"))
+
+
+def test_saved_episode_defaults_image_prompt_for_older_documents():
+    document = episode_document()
+    document.pop("image_prompt")
+
+    assert main.parse_saved_episode(json.dumps(document))["image_prompt"] == ""
+
+
+def test_saved_episode_rejects_oversized_image_prompt():
+    document = episode_document()
+    document["image_prompt"] = "x" * (main.MAX_IMAGE_PROMPT_CHARS + 1)
+
+    response = TestClient(main.app).post(
+        "/api/saved-episodes",
+        data={"episode_json": json.dumps(document)},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Episode image prompt must be 2000 characters or fewer"
+
+
+def test_editor_places_intro_before_script_and_submits_image_prompt():
+    template = (main.APP_ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert template.index('class="intro-section"') < template.index('id="episode-script"')
+    assert 'id="image-prompt" name="image_prompt"' in template
+    assert "image_prompt: document.getElementById('image-prompt').value" in template

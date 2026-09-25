@@ -101,15 +101,6 @@
         </div>
       </section>
 
-      <label>
-        Episode script
-        <textarea id="episode-script" name="script" rows="24" placeholder="Write or generate your episode script here." required></textarea>
-      </label>
-      <p class="hint script-help">
-        Switch speakers with the exact host name on its own line, such as <code>[Alex Rivera]</code> or <code>[Jordan Lee]</code>.
-        Text before the first speaker tag is spoken by the first host.
-      </p>
-
       <section class="intro-section">
         <div class="section-heading"><div><p class="eyebrow">SHOW OPEN</p><h2>Episode intro</h2></div></div>
         <p class="hint">Optionally start with a music or sound-design track and choose whether the hosts speak over it or after it.</p>
@@ -135,6 +126,21 @@
           <span class="hint">Use the same speaker-tag format as the episode script.</span>
         </label>
       </section>
+
+      <label>
+        Episode image prompt
+        <textarea id="image-prompt" name="image_prompt" rows="4" maxlength="2000" placeholder="Describe the setting, subjects, mood, or visual style for this episode's social clip artwork."></textarea>
+        <span class="hint">Optional visual direction for automatically generated and custom clip artwork. Existing safety and no-text constraints still apply.</span>
+      </label>
+
+      <label>
+        Episode script
+        <textarea id="episode-script" name="script" rows="24" placeholder="Write or generate your episode script here." required></textarea>
+      </label>
+      <p class="hint script-help">
+        Switch speakers with the exact host name on its own line, such as <code>[Alex Rivera]</code> or <code>[Jordan Lee]</code>.
+        Text before the first speaker tag is spoken by the first host.
+      </p>
 
       <div class="actions">
         <button id="generate-episode" type="submit" disabled>Generate episode</button>
@@ -348,6 +354,7 @@
       ['#story-notes', 'Source material for quickly drafting a single-story conversation.'],
       ['#target-minutes', 'The approximate length the conversation writer should target.'],
       ['#conversation-tone', 'Words that guide the mood, pacing, and editorial style of the generated discussion.'],
+      ['#image-prompt', 'Visual direction for episode artwork, such as setting, subjects, mood, and composition.'],
       ['#episode-script', 'The editable transcript that will be split by speaker and rendered into audio.'],
       ['#intro-track', 'Optional music or sound design that plays in full at the very start of the finished episode.'],
       ['#intro-overlap', 'When selected, the spoken host introduction starts with the music instead of waiting for it to finish.'],
@@ -781,6 +788,7 @@
         target_minutes: Number(document.getElementById('target-minutes').value),
         conversation_tone: document.getElementById('conversation-tone').value,
         script: document.getElementById('episode-script').value,
+        image_prompt: document.getElementById('image-prompt').value,
         intro_lines: document.getElementById('intro-lines').value,
         intro_overlap: document.getElementById('intro-overlap').checked,
         intro_music_volume: Number(introMusicVolume.value),
@@ -821,6 +829,7 @@
       document.getElementById('target-minutes').value = episode.target_minutes ?? 8;
       document.getElementById('conversation-tone').value = episode.conversation_tone || '';
       document.getElementById('episode-script').value = episode.script || '';
+      document.getElementById('image-prompt').value = episode.image_prompt || '';
       document.getElementById('intro-lines').value = episode.intro_lines || '';
       document.getElementById('intro-overlap').checked = Boolean(episode.intro_overlap);
       introMusicVolume.value = episode.intro_music_volume ?? 0.25;
@@ -999,6 +1008,7 @@
         form.append('end', document.getElementById('clip-end').value);
         form.append('clip_title', document.getElementById('clip-title').value);
         form.append('aspect', document.getElementById('clip-aspect').value);
+        form.append('image_prompt', document.getElementById('image-prompt').value);
         const res = await fetch(`/api/episodes/${currentEpisode}/clips`, {method:'POST', body:form});
         const data = await readJsonResponse(res, 'Clip rendering failed');
         result.innerHTML = `<a class="download" href="${data.download_url}">Download ${data.aspect} MP4</a>`;
