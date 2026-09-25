@@ -79,8 +79,9 @@ Podcast Builder
 │   │   ├── Collapsible research packet
 │   │   ├── Quick story / source notes
 │   │   └── Duration and tone
-│   ├── Episode script
 │   ├── Show open
+│   ├── Episode image prompt
+│   ├── Episode script
 │   └── Generate action
 ├── Latest result
 ├── Background render queue
@@ -147,7 +148,7 @@ Jobs are filesystem-backed rather than browser-backed. On application startup, i
 
 ### Clip production
 
-The completed episode metadata is enriched with a chunk timeline. After MP3 assembly, the worker automatically renders a vertical opening clip and up to two non-overlapping content clips scored for strong hooks, useful duration, and multiple speakers. The selected image provider—OpenAI Images or the optional local CUDA SDXL Turbo service—generates a topic-aware, hyper-realistic editorial image with lifelike fictional people when relevant; the validated raster file is persisted beside the MP4 and becomes its visual background. Branding and synchronized captions remain layered above the art, with each spoken passage rendered once so duplicate text cannot overlap. Image-provider failures are recorded separately and fall back to the dark branded background, while clip errors remain isolated from the completed episode. The producer may also accept a suggestion or set exact bounds, title, and aspect ratio. FFmpeg produces a captioned MP4 in vertical (`9:16`), square (`1:1`), or horizontal (`16:9`) format.
+The completed episode metadata is enriched with a chunk timeline. After MP3 assembly, the worker automatically renders a vertical opening clip and up to two non-overlapping content clips scored for strong hooks, useful duration, and multiple speakers. The selected image provider—OpenAI Images or the optional local CUDA SDXL Turbo service—combines the producer's optional episode image prompt with the episode context and fixed visual-safety constraints to generate a topic-aware, hyper-realistic editorial image with lifelike fictional people when relevant; the validated raster file is persisted beside the MP4 and becomes its visual background. The same producer direction is reused when creating a custom clip from the active episode. Branding and synchronized captions remain layered above the art, with each spoken passage rendered once so duplicate text cannot overlap. Image-provider failures are recorded separately and fall back to the dark branded background, while clip errors remain isolated from the completed episode. The producer may also accept a suggestion or set exact bounds, title, and aspect ratio. FFmpeg produces a captioned MP4 in vertical (`9:16`), square (`1:1`), or horizontal (`16:9`) format.
 
 ## 5. System architecture
 

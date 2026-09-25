@@ -337,6 +337,11 @@ under voice** to keep the speech clear. The complete track is retained, and the
 episode starts after both the music and spoken intro finish. Clear the overlap
 option to play the full track before the host introduction instead.
 
+Use **Episode image prompt** to guide the setting, subjects, mood, and
+composition of generated social-clip artwork. The prompt is saved with the
+episode and applied to both automatic and custom clips while the application's
+existing photorealism, safety, and no-text constraints remain in force.
+
 ### Adjusting silence detection and timing
 
 Audio timing is configured in `.env`. The detection threshold and boundary
@@ -762,6 +767,7 @@ After an episode is rendered, the app exposes a Clip Studio for short-form distr
 - Exports vertical 9:16, square 1:1, or horizontal 16:9 MP4.
 - Burns each spoken passage once as a synchronized speaker caption, without a second pull-quote layer that repeats and overlaps the same text.
 - Generates a hyper-realistic editorial image with lifelike fictional people when relevant through either OpenAI Images or the optional local SDXL Turbo service, stores it beside the MP4, and uses it as the video background behind branding and captions.
+- Applies the optional saved **Episode image prompt** to automatic and custom clip artwork without replacing the built-in visual-safety and no-text constraints.
 - Falls back to the existing dark branded background if image generation is unavailable; artwork errors do not fail an otherwise valid clip.
 - Adds Patch Notes: America branding and a custom clip headline.
 - Saves exports under `output/<episode>/clips/`.
