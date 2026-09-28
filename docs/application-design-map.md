@@ -107,7 +107,7 @@ Podcast Builder
 
 ### Conversation generation
 
-- The producer can draft from quick notes or from a structured, multi-story research packet.
+- The producer can draft from quick notes or from a structured, multi-story research packet. Saved packets can be selected and restored into the editor; the browser warns before replacement when the current packet differs from the last saved or loaded state.
 - The backend builds a cast-aware prompt containing personalities, target duration, tone, source constraints, and required speaker-tag syntax.
 - Generation uses the configured OpenAI provider by default or an optional local Ollama-compatible service.
 - Generated dialogue always returns to the editable script field; it is not sent directly to rendering.

@@ -757,7 +757,9 @@ The response returns a speaker-tagged script that is validated against the confi
 
 ## Episode research packets
 
-The conversation engine now supports multi-story research packets. Each story records a headline, importance, verified facts, disputed/uncertain claims, discussion angles, and source references. Packets can be saved under `config/research_packets/` and used to draft a complete episode. The generator is instructed to cover every story, weight high-importance stories more heavily, preserve uncertainty, use natural transitions/callbacks, and never read source URLs aloud.
+The conversation engine now supports multi-story research packets. Each story records a headline, importance, verified facts, disputed/uncertain claims, discussion angles, and source references. Packets can be saved under `config/research_packets/`, selected and loaded back into the packet editor, and used to draft a complete episode. The saved-packet status reports loading, empty, success, and failure states; loading warns before it replaces unsaved packet edits. Saving refreshes the list and keeps the new packet selected. The generator is instructed to cover every story, weight high-importance stories more heavily, preserve uncertainty, use natural transitions/callbacks, and never read source URLs aloud.
+
+Malformed stored packet files are omitted from the collection response. Requesting a malformed packet directly returns HTTP `422` without rewriting the file; valid stored objects are returned with all existing fields intact for compatibility.
 
 API endpoints: `POST /api/research-packets`, `GET /api/research-packets`, `GET /api/research-packets/{id}`, and `POST /api/conversation-draft-packet`.
 
