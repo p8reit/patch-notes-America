@@ -27,7 +27,7 @@ Workspace
 
 ## 2. Experience map
 
-The product is a single, vertically scrolling production workspace. The usual path is left-to-right below; users can also skip AI drafting and write a script directly.
+The product is a single, vertically scrolling production workspace organized into six numbered regions. A compact sticky navigation identifies the current region and links directly to each stage; on narrow screens it becomes a non-sticky, single-column list. The usual path is left-to-right below; users can also skip AI drafting and write a script directly.
 
 ```mermaid
 flowchart LR
@@ -66,26 +66,31 @@ flowchart LR
 Podcast Builder
 ├── Product header
 ├── Services status card
-├── Episode form
+├── Numbered workflow navigation
+├── 1. Episode setup
 │   ├── Episode file (load / save)
-│   ├── Episode title
-│   ├── Cast
+│   └── Episode title
+├── 2. Cast
 │   │   └── Repeating host card
 │   │       ├── Identity and role
 │   │       ├── Reference voice and preview
-│   │       ├── Core + advanced Chatterbox controls
+│   │       ├── Collapsed voice + advanced Chatterbox controls
 │   │       └── Character personality
-│   ├── Conversation engine
+├── 3. Research and draft
 │   │   ├── Collapsible research packet
 │   │   ├── Quick story / source notes
 │   │   └── Duration and tone
-│   ├── Show open
+├── 4. Script and show open
+│   ├── Collapsed optional show-open settings
 │   ├── Episode image prompt
-│   ├── Episode script
-│   └── Generate action
-├── Latest result
-├── Background render queue
-└── Clip Studio (revealed after a completed episode is selected)
+│   └── Episode script
+├── 5. Render and download
+│   ├── Generate action and latest result
+│   └── Background render queue
+│       ├── Search, status filter, and chronological sort
+│       └── Persistent summary and episode download actions
+└── 6. Distribution
+    └── Clip Studio (revealed after a completed episode is selected)
 ```
 
 ### Responsive behavior and visual language

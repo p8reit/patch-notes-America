@@ -29,6 +29,10 @@ textarea { resize: vertical; line-height: 1.5; }
 .actions { display: flex; align-items: center; gap: 14px; }
 button, .download { background: #238636; color: white; border: none; border-radius: 10px; padding: 12px 18px; font-weight: 700; text-decoration: none; cursor: pointer; }
 button:disabled { opacity: .55; cursor: wait; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 3px solid #79c0ff;
+  outline-offset: 3px;
+}
 .compact-button { padding: 5px 9px; margin-left: 6px; font-size: .8rem; }
 #progress { color: #8b949e; }
 .result p { color: #8b949e; }
@@ -42,13 +46,40 @@ button:disabled { opacity: .55; cursor: wait; }
 .job-status.complete { color: #3fb950; background: rgba(63,185,80,.13); }
 .job-status.failed, .job-error { color: #f85149; }
 .download.compact { padding: 8px 12px; font-size: .86rem; text-align: center; }
-.worker-note { margin: 4px 0 0; }
-.queue-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.queue-filter { display: flex; align-items: center; gap: 8px; margin: 0; padding: 0; color: #c9d1d9; font-size: .9rem; white-space: nowrap; }
-.queue-filter input { width: auto; accent-color: #238636; }
+.queue-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) 160px 160px auto; align-items: end; gap: 12px; margin-top: 20px; padding: 14px; border: 1px solid #30363d; border-radius: 12px; background: #0d1117; }
+.queue-control { gap: 6px; margin: 0; padding: 0; color: #8b949e; font-size: .78rem; }
+.queue-control input, .queue-control select { min-height: 42px; }
+.queue-refresh { min-height: 42px; white-space: nowrap; }
+.queue-summary { margin-top: 14px; color: #8b949e; font-size: .86rem; font-variant-numeric: tabular-nums; }
+.queue-empty { padding: 28px 18px; border: 1px dashed #30363d; border-radius: 10px; text-align: center; }
+.queue-empty p { margin-bottom: 0; }
 .job-timer { color: #58a6ff !important; font-variant-numeric: tabular-nums; }
+@media (max-width: 760px) { .queue-toolbar { grid-template-columns: 1fr 1fr; } .queue-search { grid-column: 1 / -1; } }
 @media (max-width: 700px) { .job-row { grid-template-columns: 1fr auto; } .job-row > :last-child { grid-column: 1 / -1; } }
+@media (max-width: 520px) { .queue-toolbar { grid-template-columns: 1fr; } .queue-search { grid-column: auto; } .queue-refresh { width: 100%; } }
 @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } .status-card div { flex-direction: column; } }
+
+/* Numbered production workflow */
+.workflow-nav { position: sticky; top: 10px; z-index: 10; margin: 18px 0; padding: 8px; border: 1px solid #30363d; border-radius: 14px; background: rgba(22,27,34,.96); box-shadow: 0 8px 24px rgba(0,0,0,.35); backdrop-filter: blur(10px); }
+.workflow-nav ol { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin: 0; padding: 0; list-style: none; }
+.workflow-nav a { display: flex; align-items: center; gap: 7px; min-height: 42px; padding: 7px 9px; border-radius: 9px; color: #8b949e; font-size: .75rem; font-weight: 700; line-height: 1.15; text-decoration: none; }
+.workflow-nav a span { display: grid; flex: 0 0 22px; place-items: center; width: 22px; height: 22px; border: 1px solid #484f58; border-radius: 50%; color: #c9d1d9; }
+.workflow-nav a:hover { color: #e8ecf2; background: #21262d; }
+.workflow-nav a[aria-current="step"] { color: #fff; background: rgba(35,134,54,.28); }
+.workflow-nav a[aria-current="step"] span { border-color: #3fb950; background: #238636; color: #fff; }
+.workflow-stage { scroll-margin-top: 92px; }
+.workflow-stage + .workflow-stage { margin-top: 30px; padding-top: 28px; border-top: 1px solid #30363d; }
+.conversation-builder.workflow-stage { margin-right: -1px; margin-left: -1px; }
+.script-stage > .section-heading, .render-stage > .section-heading { margin-bottom: 18px; }
+.intro-section > summary { cursor: pointer; color: #c9d1d9; }
+.intro-section[open] > summary { margin-bottom: 18px; }
+@media (max-width: 700px) {
+  .shell { margin-top: 24px; }
+  .workflow-nav { position: static; }
+  .workflow-nav ol { grid-template-columns: 1fr; }
+  .workflow-nav a { min-height: 38px; }
+  .workflow-stage { scroll-margin-top: 12px; }
+}
 
 /* Contextual setting help */
 .setting-info { position: absolute; top: -2px; right: 0; z-index: 2; }
