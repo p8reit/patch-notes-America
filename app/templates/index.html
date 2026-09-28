@@ -72,6 +72,11 @@
         <details class="research-packet">
           <summary><strong>Episode research packet</strong> — organize multiple stories</summary>
           <p class="hint">Build a factual packet with verified facts, uncertainty, discussion angles, and sources. Add as many stories as the episode needs.</p>
+          <div class="episode-library-controls">
+            <label for="saved-packet-select">Saved research packet</label>
+            <select id="saved-packet-select"><option value="">Loading saved packets…</option></select>
+            <button id="load-packet" class="secondary" type="button" disabled>Load</button>
+          </div>
           <label>Episode angle<input id="packet-angle" placeholder="What connects this week's stories?"></label>
           <div id="packet-stories"></div>
           <div class="section-actions">
@@ -79,7 +84,7 @@
             <button id="save-packet" class="secondary" type="button">Save research packet</button>
             <button id="draft-packet" class="secondary" type="button">Draft full episode</button>
           </div>
-          <p id="packet-status" class="hint"></p>
+          <p id="packet-status" class="hint" role="status" aria-live="polite">Loading saved packets…</p>
         </details>
         <label>
           Quick story / source notes
@@ -301,6 +306,7 @@
     </article>
   </template>
 
+  <script src="/static/research-packets.js"></script>
   <script>
     const initialProfiles = {{ host_profiles | tojson }};
     const hostsContainer = document.getElementById('hosts');
@@ -756,12 +762,17 @@
       wrap.className = 'host-row packet-story';
       wrap.innerHTML = `
         <div class="host-row-heading"><strong>Story</strong><button type="button" class="secondary remove-story">Remove</button></div>
-        <label>Headline<input class="story-headline" value="${data.headline || ''}"></label>
-        <div class="host-grid"><label>Importance<select class="story-importance"><option>high</option><option selected>medium</option><option>low</option></select></label><label>Sources, one per line<textarea class="story-sources" rows="3">${(data.sources || []).join('\n')}</textarea></label></div>
-        <label>Verified facts<textarea class="story-facts" rows="5">${data.verified_facts || ''}</textarea></label>
-        <label>Disputed / uncertain<textarea class="story-uncertain" rows="3">${data.disputed_or_uncertain || ''}</textarea></label>
-        <label>Discussion angles<textarea class="story-angles" rows="3">${data.angles || ''}</textarea></label>`;
+        <label>Headline<input class="story-headline"></label>
+        <div class="host-grid"><label>Importance<select class="story-importance"><option>high</option><option selected>medium</option><option>low</option></select></label><label>Sources, one per line<textarea class="story-sources" rows="3"></textarea></label></div>
+        <label>Verified facts<textarea class="story-facts" rows="5"></textarea></label>
+        <label>Disputed / uncertain<textarea class="story-uncertain" rows="3"></textarea></label>
+        <label>Discussion angles<textarea class="story-angles" rows="3"></textarea></label>`;
+      wrap.querySelector('.story-headline').value = data.headline || '';
       wrap.querySelector('.story-importance').value = data.importance || 'medium';
+      wrap.querySelector('.story-sources').value = (data.sources || []).join('\n');
+      wrap.querySelector('.story-facts').value = data.verified_facts || '';
+      wrap.querySelector('.story-uncertain').value = data.disputed_or_uncertain || '';
+      wrap.querySelector('.story-angles').value = data.angles || '';
       wrap.querySelector('.remove-story').onclick = () => wrap.remove();
       document.getElementById('packet-stories').appendChild(wrap);
       addSettingInfo(wrap);
@@ -886,13 +897,19 @@
 
     document.getElementById('add-story').addEventListener('click', () => addPacketStory());
     addPacketStory();
-
-    document.getElementById('save-packet').addEventListener('click', async () => {
-      const status = document.getElementById('packet-status'); status.textContent = 'Saving packet...';
-      try { const form = new FormData(); form.append('packet_json', JSON.stringify(serializePacket()));
-        const res = await fetch('/api/research-packets', {method:'POST', body:form}); const data = await readJsonResponse(res, 'Could not save packet');
-        status.textContent = `Saved ${data.packet.stories.length} stories as ${data.id}.`;
-      } catch(err) { status.textContent = err.message; }
+    window.ResearchPackets.init({
+      document,
+      fetch: window.fetch.bind(window),
+      confirm: window.confirm.bind(window),
+      FormData,
+      serializePacket,
+      readJsonResponse,
+      replacePacket(packet) {
+        document.getElementById('packet-angle').value = packet.episode_angle || '';
+        document.getElementById('packet-stories').replaceChildren();
+        (packet.stories || []).forEach(addPacketStory);
+        if (!(packet.stories || []).length) addPacketStory();
+      },
     });
 
     document.getElementById('draft-packet').addEventListener('click', async () => {

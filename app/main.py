@@ -2384,8 +2384,9 @@ async def list_research_packets():
     for path in sorted(RESEARCH_PACKETS_DIR.glob("*.json"), reverse=True):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            packets.append({"id": path.stem, "title": data.get("title", path.stem), "stories": len(data.get("stories", []))})
-        except (OSError, json.JSONDecodeError):
+            normalized = parse_research_packet(json.dumps(data))
+            packets.append({"id": path.stem, "title": normalized["title"], "stories": len(normalized["stories"])})
+        except (OSError, TypeError, UnicodeError, HTTPException, json.JSONDecodeError):
             continue
     return {"packets": packets}
 
@@ -2396,8 +2397,12 @@ async def get_research_packet(packet_id: str):
     path = RESEARCH_PACKETS_DIR / f"{safe_id}.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Research packet not found")
-    packet = json.loads(path.read_text(encoding="utf-8"))
-    return {"id": safe_id, "packet": packet, "notes": research_packet_to_notes(packet)}
+    try:
+        packet = json.loads(path.read_text(encoding="utf-8"))
+        normalized = parse_research_packet(json.dumps(packet))
+    except (OSError, TypeError, UnicodeError, json.JSONDecodeError, HTTPException) as exc:
+        raise HTTPException(status_code=422, detail="Stored research packet is malformed") from exc
+    return {"id": safe_id, "packet": packet, "notes": research_packet_to_notes(normalized)}
 
 
 @app.post("/api/conversation-draft-packet")
