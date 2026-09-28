@@ -307,6 +307,7 @@
   </template>
 
   <script src="/static/research-packets.js"></script>
+  <script src="/static/episode-editor-state.js"></script>
   <script>
     const initialProfiles = {{ host_profiles | tojson }};
     const hostsContainer = document.getElementById('hosts');
@@ -819,6 +820,17 @@
 
     let removeSavedIntro = false;
 
+    function serializeEditorState() {
+      const introFile = document.getElementById('intro-track').files[0];
+      return {
+        ...serializeEpisode(),
+        pending_intro: introFile ? {name: introFile.name, size: introFile.size, type: introFile.type} : null,
+        remove_saved_intro: removeSavedIntro,
+      };
+    }
+
+    let editorState;
+
     function showSavedIntro(introTrack) {
       const label = document.getElementById('saved-intro-track');
       const removeButton = document.getElementById('remove-saved-intro');
@@ -876,7 +888,9 @@
         const data = await readJsonResponse(response, 'Could not save episode');
         document.getElementById('saved-episode-id').value = data.id;
         showSavedIntro(data.episode.intro_track || null);
+        document.getElementById('intro-track').value = '';
         await refreshSavedEpisodes(data.id);
+        editorState.markClean();
         status.textContent = `Saved “${data.episode.title}”. You can safely return to it later.`;
       } catch (error) { status.textContent = error.message; }
       finally { button.disabled = false; }
@@ -884,13 +898,19 @@
 
     document.getElementById('load-episode').addEventListener('click', async () => {
       const id = document.getElementById('saved-episode-select').value;
+      const selectedTitle = document.getElementById('saved-episode-select').selectedOptions[0]?.textContent;
       const status = document.getElementById('episode-save-status');
       if (!id) { status.textContent = 'Choose a saved episode first.'; return; }
+      if (!editorState.confirmEpisodeReplacement(selectedTitle)) {
+        status.textContent = 'Load canceled; your unsaved episode edits were kept.';
+        return;
+      }
       status.textContent = 'Loading episode…';
       try {
         const response = await fetch(`/api/saved-episodes/${encodeURIComponent(id)}`);
         const data = await readJsonResponse(response, 'Could not load episode');
         loadEpisodeIntoEditor(data.episode, data.id);
+        editorState.markClean();
         status.textContent = `Loaded “${data.episode.title}”.`;
       } catch (error) { status.textContent = error.message; }
     });
@@ -925,6 +945,7 @@
 
     document.getElementById('draft-packet').addEventListener('click', async () => {
       const status = document.getElementById('packet-status'); const button = document.getElementById('draft-packet'); button.disabled=true; status.textContent='Writing full episode from research packet...';
+      if (!editorState.confirmScriptReplacement()) { button.disabled=false; status.textContent='Draft canceled; the existing script was kept.'; return; }
       try { const form = new FormData(); form.append('packet_json', JSON.stringify(serializePacket())); form.append('hosts_json', JSON.stringify(serializeHosts()));
         form.append('target_minutes', document.getElementById('target-minutes').value); form.append('tone', document.getElementById('conversation-tone').value);
         const res=await fetch('/api/conversation-draft-packet',{method:'POST',body:form}); const data=await readJsonResponse(res, 'Episode draft failed');
@@ -938,6 +959,10 @@
       const storyNotes = document.getElementById('story-notes').value.trim();
       if (!storyNotes) {
         status.textContent = 'Add story or source notes first.';
+        return;
+      }
+      if (!editorState.confirmScriptReplacement()) {
+        status.textContent = 'Draft canceled; the existing script was kept.';
         return;
       }
       const hosts = serializeHosts();
@@ -1048,6 +1073,12 @@
 
     initialProfiles.forEach(addHost);
     addSettingInfo();
+    editorState = window.EpisodeEditorState.init({
+      window,
+      form: document.getElementById('episode-form'),
+      serialize: serializeEditorState,
+      confirm: window.confirm.bind(window),
+    });
     refreshVoices();
     updateHealth();
     refreshJobs().catch(err => { document.getElementById('job-list').innerHTML = `<p class="job-error">${escapeHtml(err.message)}</p>`; });

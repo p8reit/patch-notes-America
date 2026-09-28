@@ -101,6 +101,7 @@ Podcast Builder
 ### Episode and cast editing
 
 - The browser keeps the active form state and serializes host cards into `hosts_json` before saving or rendering.
+- The browser compares the active episode, cast, research, show-open, image-prompt, and script fields with the last successfully loaded or saved snapshot. It warns before navigation or replacing that work with another episode or AI draft; it does not autosave episode or research documents.
 - Saving an episode persists its editable document and copies its uploaded intro track into that saved episode's directory.
 - Host profiles are workspace-level entities. A host can use a legacy Chatterbox voice or a normalized, host-specific reference recording.
 - Voice preview is transient: it synthesizes sample text, returns WAV audio, and removes the preview artifact after the response is served.
