@@ -23,8 +23,20 @@
       </div>
     </section>
 
+    <nav class="workflow-nav" aria-label="Episode workflow">
+      <ol>
+        <li><a href="#stage-1" aria-current="step"><span>1</span> Episode setup</a></li>
+        <li><a href="#stage-2"><span>2</span> Cast</a></li>
+        <li><a href="#stage-3"><span>3</span> Research and draft</a></li>
+        <li><a href="#stage-4"><span>4</span> Script and show open</a></li>
+        <li><a href="#stage-5"><span>5</span> Render and download</a></li>
+        <li><a href="#clip-studio"><span>6</span> Distribution</a></li>
+      </ol>
+    </nav>
+
     <form id="episode-form" class="card">
-      <section class="episode-library" aria-labelledby="episode-library-title">
+      <section id="stage-1" class="workflow-stage episode-setup" aria-labelledby="episode-library-title" data-workflow-stage>
+      <div class="episode-library">
         <div>
           <p class="eyebrow">EPISODE FILE</p>
           <h2 id="episode-library-title">Save or resume an episode</h2>
@@ -38,17 +50,18 @@
         <input id="saved-episode-id" name="saved_episode_id" type="hidden">
         <input id="omit-saved-intro" name="omit_saved_intro" type="hidden" value="false">
         <p id="episode-save-status" class="hint" role="status"></p>
-      </section>
+      </div>
       <label>
         Episode title
         <input name="title" placeholder="My next great episode" required>
       </label>
+      </section>
 
-      <section class="hosts-section">
+      <section id="stage-2" class="workflow-stage hosts-section" aria-labelledby="cast-title" data-workflow-stage>
         <div class="section-heading">
           <div>
-            <p class="eyebrow">CAST</p>
-            <h2>Host Profiles</h2>
+            <p class="eyebrow">2 · CAST</p>
+            <h2 id="cast-title">Host profiles</h2>
           </div>
           <div class="section-actions">
             <button id="save-cast" class="secondary" type="button">Save cast</button>
@@ -62,10 +75,11 @@
         <p id="cast-status" class="hint"></p>
       </section>
 
-      <section class="card conversation-builder">
+      <section id="stage-3" class="workflow-stage card conversation-builder" aria-labelledby="research-title" data-workflow-stage>
         <div class="section-heading">
           <div>
-            <h2>Conversation engine</h2>
+            <p class="eyebrow">3 · RESEARCH AND DRAFT</p>
+            <h2 id="research-title">Research and draft</h2>
             <p class="hint">Give the cast a verified story packet or source notes. The generator writes an editable multi-host discussion directly into the script below.</p>
           </div>
         </div>
@@ -106,8 +120,10 @@
         </div>
       </section>
 
-      <section class="intro-section">
-        <div class="section-heading"><div><p class="eyebrow">SHOW OPEN</p><h2>Episode intro</h2></div></div>
+      <section id="stage-4" class="workflow-stage script-stage" aria-labelledby="script-stage-title" data-workflow-stage>
+        <div class="section-heading"><div><p class="eyebrow">4 · SCRIPT AND SHOW OPEN</p><h2 id="script-stage-title">Script and show open</h2></div></div>
+      <details class="intro-section">
+        <summary><strong>Optional show open</strong> — music and host intro</summary>
         <p class="hint">Optionally start with a music or sound-design track and choose whether the hosts speak over it or after it.</p>
         <label>
           Intro track
@@ -130,7 +146,7 @@
           <textarea id="intro-lines" name="intro_lines" rows="6" placeholder="Welcome to the show.&#10;&#10;[Jordan Lee]&#10;Here is what we are covering today."></textarea>
           <span class="hint">Use the same speaker-tag format as the episode script.</span>
         </label>
-      </section>
+      </details>
 
       <label>
         Episode image prompt
@@ -146,11 +162,15 @@
         Switch speakers with the exact host name on its own line, such as <code>[Alex Rivera]</code> or <code>[Jordan Lee]</code>.
         Text before the first speaker tag is spoken by the first host.
       </p>
+      </section>
 
+      <section id="stage-5" class="workflow-stage render-stage" aria-labelledby="render-title" data-workflow-stage>
+      <div class="section-heading"><div><p class="eyebrow">5 · RENDER AND DOWNLOAD</p><h2 id="render-title">Render and download</h2></div></div>
       <div class="actions">
         <button id="generate-episode" type="submit" disabled>Generate episode</button>
         <span id="progress"></span>
       </div>
+      </section>
     </form>
 
     <section id="result" class="card result" hidden></section>
@@ -165,11 +185,11 @@
       <div id="job-list" class="job-list"><p class="hint">Loading audio jobs...</p></div>
     </section>
 
-    <section id="clip-studio" class="card clip-studio" hidden>
+    <section id="clip-studio" class="card clip-studio workflow-stage" aria-labelledby="distribution-title" data-workflow-stage hidden>
       <div class="section-heading">
         <div>
-          <p class="eyebrow">SOCIAL DISTRIBUTION</p>
-          <h2>Clip Studio</h2>
+          <p class="eyebrow">6 · DISTRIBUTION</p>
+          <h2 id="distribution-title">Clip Studio</h2>
           <p class="hint">Every finished episode automatically includes a vertical opening clip and up to two top content moments with original editorial artwork. You can also create custom vertical, square, or horizontal clips here.</p>
         </div>
         <button id="suggest-clips" class="secondary" type="button">Find best moments</button>
@@ -221,8 +241,8 @@
         </label>
       </div>
 
-      <details class="voice-details" open>
-        <summary>Voice</summary>
+      <details class="voice-details">
+        <summary>Voice and advanced controls</summary>
         <p class="hint">Reference audio determines this host's voice, accent, pitch, and general vocal character.</p>
         <div class="reference-voice">
           <strong>Reference Voice</strong>
@@ -308,6 +328,7 @@
 
   <script src="/static/research-packets.js"></script>
   <script src="/static/episode-editor-state.js"></script>
+  <script src="/static/workflow-navigation.js"></script>
   <script>
     const initialProfiles = {{ host_profiles | tojson }};
     const hostsContainer = document.getElementById('hosts');
@@ -1079,6 +1100,7 @@
       serialize: serializeEditorState,
       confirm: window.confirm.bind(window),
     });
+    window.WorkflowNavigation.init({document, window});
     refreshVoices();
     updateHealth();
     refreshJobs().catch(err => { document.getElementById('job-list').innerHTML = `<p class="job-error">${escapeHtml(err.message)}</p>`; });
