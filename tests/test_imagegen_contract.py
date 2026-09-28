@@ -1,6 +1,9 @@
+import re
 from pathlib import Path
 
 import yaml
+
+from app.main import MAX_IMAGE_PROMPT_CHARS, clip_art_prompt
 
 
 ROOT = Path(__file__).parents[1]
@@ -21,6 +24,19 @@ def test_local_image_service_has_bounded_openai_compatible_contract():
     assert '"data": [{"b64_json":' in SERVER
 
 
+def test_local_image_service_accepts_largest_application_prompt():
+    configured_limit = int(
+        re.search(r'IMAGEGEN_MAX_PROMPT_CHARS", "(\d+)"', SERVER).group(1)
+    )
+    largest_prompt = clip_art_prompt(
+        "t" * 160,
+        "e" * 500,
+        "i" * MAX_IMAGE_PROMPT_CHARS,
+    )
+
+    assert len(largest_prompt) <= configured_limit
+
+
 def test_local_image_compose_service_is_profiled_and_not_host_published():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     service = compose["services"]["imagegen"]
@@ -28,6 +44,7 @@ def test_local_image_compose_service_is_profiled_and_not_host_published():
     assert service["profiles"] == ["local-image"]
     assert "ports" not in service
     assert service["environment"]["IMAGEGEN_DEVICE"] == "cuda"
+    assert service["environment"]["IMAGEGEN_MAX_PROMPT_CHARS"] == "${LOCAL_IMAGE_MAX_PROMPT_CHARS:-4000}"
     assert "imagegen-models:/models" in service["volumes"]
 
 

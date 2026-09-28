@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field
 DEVICE = os.getenv("IMAGEGEN_DEVICE", "cuda").casefold()
 MODEL_ID = os.getenv("IMAGEGEN_MODEL", "stabilityai/sdxl-turbo")
 STEPS = int(os.getenv("IMAGEGEN_STEPS", "2"))
-MAX_PROMPT_CHARS = int(os.getenv("IMAGEGEN_MAX_PROMPT_CHARS", "1200"))
+# The application adds editorial-safety instructions to as many as 2,000
+# characters of producer direction. Keep the service limit large enough for
+# that complete, application-generated prompt instead of rejecting it at the
+# request-validation boundary.
+MAX_PROMPT_CHARS = int(os.getenv("IMAGEGEN_MAX_PROMPT_CHARS", "4000"))
 CPU_OFFLOAD = os.getenv("IMAGEGEN_CPU_OFFLOAD", "true").casefold() in {"1", "true", "yes"}
 
 _pipeline: Any | None = None

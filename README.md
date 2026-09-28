@@ -685,6 +685,7 @@ provider in `.env`:
 CLIP_IMAGE_PROVIDER=local
 LOCAL_IMAGE_MODEL=stabilityai/sdxl-turbo
 LOCAL_IMAGE_STEPS=2
+LOCAL_IMAGE_MAX_PROMPT_CHARS=4000
 LOCAL_IMAGE_CPU_OFFLOAD=true
 ```
 
@@ -702,6 +703,10 @@ is enabled by default to reduce peak VRAM while Chatterbox shares the 3060; set
 prefer lower latency. Image requests are serialized, use two inference steps,
 and generate a smaller internal image that FFmpeg crops and scales for the
 requested social aspect ratio.
+The default prompt limit accommodates the application's safety framing plus
+the full 2,000-character producer direction. If customized, keep
+`LOCAL_IMAGE_MAX_PROMPT_CHARS` at `4000` or higher so valid episode image
+prompts are not rejected with HTTP 422.
 
 The local service is not published to the host network. The app calls its
 OpenAI-compatible endpoint over the Compose network. `OPENAI_API_KEY` remains
