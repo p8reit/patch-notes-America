@@ -443,6 +443,17 @@
       list.insertAdjacentHTML('beforeend', `<p class="hint worker-note">${workers} audio worker${workers === 1 ? '' : 's'} configured. CPU-only systems should normally use one.</p>`);
     }
 
+    function setActiveCompletedEpisode(job) {
+      const nextEpisode = job?.status === 'complete' ? job.id : null;
+      const episodeChanged = currentEpisode !== nextEpisode;
+      currentEpisode = nextEpisode;
+      document.getElementById('clip-studio').hidden = !currentEpisode;
+      if (!episodeChanged) return;
+      document.getElementById('clip-suggestions').innerHTML = '';
+      document.getElementById('clip-status').textContent = '';
+      document.getElementById('clip-result').innerHTML = '';
+    }
+
     async function refreshJobs() {
       const res = await fetch('/api/generation-jobs'); const data = await readJsonResponse(res, 'Could not load audio jobs');
       latestJobs = data.jobs;
@@ -450,7 +461,7 @@
       renderJobs(data.jobs, data.workers);
       data.jobs.filter(job => ['queued', 'running'].includes(job.status)).forEach(job => monitorJob(job.id));
       const latestComplete = data.jobs.find(job => job.status === 'complete');
-      if (latestComplete && !currentEpisode) currentEpisode = latestComplete.id;
+      setActiveCompletedEpisode(latestComplete);
     }
 
     function monitorJob(jobId) {
@@ -460,7 +471,7 @@
           const res = await fetch(`/api/generation-jobs/${encodeURIComponent(jobId)}`); const job = await readJsonResponse(res, 'Could not read generation status');
           await refreshJobs();
           if (job.status === 'complete') {
-            currentEpisode = job.id;
+            setActiveCompletedEpisode(job);
             const result = document.getElementById('result');
             const clipLinks = (job.clips || []).map((clip, index) => `<a class="download" href="${encodeURI(clip.download_url)}">Download clip ${index + 1}</a>`).join('');
             const clipNote = job.clip_error ? `<p class="job-error">Automatic clips could not be rendered: ${escapeHtml(job.clip_error)}</p>` : '';
@@ -955,7 +966,6 @@
           body: new FormData(event.target),
         });
         const data = await readJsonResponse(res, 'Generation failed');
-        currentEpisode = data.job_id;
         progress.textContent = `Submitted ${data.chunks} speech chunk${data.chunks === 1 ? '' : 's'}. You may close this page.`;
         await refreshJobs();
         monitorJob(data.job_id);
