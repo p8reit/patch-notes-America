@@ -17,7 +17,7 @@
     <section class="card status-card">
       <div>
         <strong>Services</strong>
-        <span id="health">Checking Chatterbox...</span>
+        <span id="health" role="status" aria-live="polite">Checking Chatterbox...</span>
         <a id="chatterbox-link" href="#" target="_blank" rel="noopener">Open ChatterboxTTS</a>
         <pre id="health-details" class="health-details" aria-live="polite"></pre>
       </div>
@@ -45,15 +45,15 @@
         <div class="episode-library-controls">
           <select id="saved-episode-select" aria-label="Saved episodes"><option value="">Choose a saved episode…</option></select>
           <button id="load-episode" class="secondary" type="button">Load</button>
-          <button id="save-episode" class="secondary" type="button">Save episode</button>
+          <button id="save-episode" class="secondary" type="button" aria-describedby="episode-save-status">Save episode</button>
         </div>
         <input id="saved-episode-id" name="saved_episode_id" type="hidden">
         <input id="omit-saved-intro" name="omit_saved_intro" type="hidden" value="false">
-        <p id="episode-save-status" class="hint" role="status"></p>
+        <p id="episode-save-status" class="hint" role="status" aria-live="polite"></p>
       </div>
       <label>
         Episode title
-        <input name="title" placeholder="My next great episode" required>
+        <input id="episode-title" name="title" placeholder="My next great episode" required>
       </label>
       </section>
 
@@ -69,10 +69,10 @@
           </div>
         </div>
         <p class="hint">Hosts are persistent characters. Audio settings drive Chatterbox; personality fields are retained for transcript generation and episode metadata.</p>
-        <p class="hint">Upload a unique reference recording for each host below. Legacy shared WAV choices remain available for existing profiles. <button id="refresh-voices" class="secondary compact-button" type="button">Refresh legacy voices</button> <span id="voice-status"></span></p>
+        <p class="hint">Upload a unique reference recording for each host below. Legacy shared WAV choices remain available for existing profiles. <button id="refresh-voices" class="secondary compact-button" type="button">Refresh legacy voices</button> <span id="voice-status" role="status" aria-live="polite"></span></p>
         <div id="hosts"></div>
         <input id="hosts-json" name="hosts_json" type="hidden">
-        <p id="cast-status" class="hint"></p>
+        <p id="cast-status" class="hint" role="status" aria-live="polite"></p>
       </section>
 
       <section id="stage-3" class="workflow-stage card conversation-builder" aria-labelledby="research-title" data-workflow-stage>
@@ -89,14 +89,14 @@
           <div class="episode-library-controls">
             <label for="saved-packet-select">Saved research packet</label>
             <select id="saved-packet-select"><option value="">Loading saved packets…</option></select>
-            <button id="load-packet" class="secondary" type="button" disabled>Load</button>
+            <button id="load-packet" class="secondary" type="button" disabled aria-describedby="packet-status">Load</button>
           </div>
           <label>Episode angle<input id="packet-angle" placeholder="What connects this week's stories?"></label>
           <div id="packet-stories"></div>
           <div class="section-actions">
             <button id="add-story" class="secondary" type="button">+ Add story</button>
             <button id="save-packet" class="secondary" type="button">Save research packet</button>
-            <button id="draft-packet" class="secondary" type="button">Draft full episode</button>
+            <button id="draft-packet" class="secondary" type="button" aria-describedby="packet-status">Draft full episode</button>
           </div>
           <p id="packet-status" class="hint" role="status" aria-live="polite">Loading saved packets…</p>
         </details>
@@ -115,8 +115,8 @@
           </label>
         </div>
         <div class="actions">
-          <button id="draft-conversation" class="secondary" type="button">Draft conversation</button>
-          <span id="conversation-status"></span>
+          <button id="draft-conversation" class="secondary" type="button" aria-describedby="conversation-status">Draft conversation</button>
+          <span id="conversation-status" role="status" aria-live="polite"></span>
         </div>
       </section>
 
@@ -167,8 +167,8 @@
       <section id="stage-5" class="workflow-stage render-stage" aria-labelledby="render-title" data-workflow-stage>
       <div class="section-heading"><div><p class="eyebrow">5 · RENDER AND DOWNLOAD</p><h2 id="render-title">Render and download</h2></div></div>
       <div class="actions">
-        <button id="generate-episode" type="submit" disabled>Generate episode</button>
-        <span id="progress"></span>
+        <button id="generate-episode" type="submit" disabled aria-describedby="progress">Generate episode</button>
+        <span id="progress" role="status" aria-live="polite">Checking audio generation availability…</span>
       </div>
       </section>
     </form>
@@ -221,8 +221,8 @@
         </div>
         <label>Clip headline<input id="clip-title" value="The part everyone will argue about"></label>
         <div class="actions">
-          <button id="render-clip" type="button">Render social clip</button>
-          <span id="clip-status" class="hint"></span>
+          <button id="render-clip" type="button" aria-describedby="clip-status">Render social clip</button>
+          <span id="clip-status" class="hint" role="status" aria-live="polite"></span>
         </div>
         <div id="clip-result" class="clip-result"></div>
       </div>
@@ -238,6 +238,7 @@
           <span class="voice-badge">Voice: Default</span>
         </div>
         <button class="remove-host danger-link" type="button">Remove</button>
+        <span class="remove-host-reason hint" hidden></span>
       </div>
 
       <div class="host-grid host-grid-primary">
@@ -278,7 +279,7 @@
             </div>
           </div>
           <p class="voice-missing bad" hidden>Reference voice file is missing. Upload a replacement.</p>
-          <p class="voice-upload-status hint"></p>
+          <p class="voice-upload-status hint" role="status" aria-live="polite"></p>
         </div>
         <div class="voice-grid primary-voice-controls">
           <label>Exaggeration <output class="exaggeration-value">0.50</output><input class="host-exaggeration" type="range" min="0" max="1" step="0.05" required value="0.5"></label>
@@ -286,7 +287,7 @@
         </div>
         <div class="actions voice-preview-actions">
           <button class="preview-voice secondary" type="button">Preview Voice</button>
-          <span class="preview-status hint"></span>
+          <span class="preview-status hint" role="status" aria-live="polite"></span>
         </div>
         <audio class="preview-player" controls hidden></audio>
         <details class="advanced-voice-controls">
@@ -344,6 +345,7 @@
     </article>
   </template>
 
+  <script src="/static/accessibility.js"></script>
   <script src="/static/research-packets.js"></script>
   <script src="/static/episode-editor-state.js"></script>
   <script src="/static/workflow-navigation.js"></script>
@@ -355,6 +357,7 @@
     const hostsJson = document.getElementById('hosts-json');
     const castStatus = document.getElementById('cast-status');
     const voiceStatus = document.getElementById('voice-status');
+    const a11y = window.Accessibility;
     let availableVoices = [{id: '{{ default_voice }}', label: 'Default (built in)'}];
     let currentEpisode = null;
     const activeJobPollers = new Map();
@@ -369,6 +372,24 @@
       const element = document.createElement('span');
       element.textContent = value == null ? '' : String(value);
       return element.innerHTML;
+    }
+
+    function reportStatus(element, message, error = false) {
+      a11y.setStatus(element, message, {error});
+    }
+
+    function fieldError(control, message) {
+      if (!control.id) control.id = `field-${crypto.randomUUID()}`;
+      let error = document.getElementById(`${control.id}-error`);
+      if (!error) {
+        error = document.createElement('span');
+        error.id = `${control.id}-error`;
+        error.className = 'field-error bad';
+        error.hidden = true;
+        control.insertAdjacentElement('afterend', error);
+      }
+      a11y.showFieldError(control, error, message);
+      return error;
     }
 
     async function readJsonResponse(response, fallbackMessage = 'Request failed') {
@@ -529,13 +550,13 @@
             const clipNote = job.clip_error ? `<p class="job-error">Automatic clips could not be rendered: ${escapeHtml(job.clip_error)}</p>` : '';
             const artNote = job.clip_art_error ? `<p class="job-error">Clips rendered without generated artwork: ${escapeHtml(job.clip_art_error)}</p>` : '';
             result.innerHTML = `<strong>Episode and social clips ready.</strong><p>${escapeHtml(job.title)}</p><a class="download" href="${encodeURI(job.download_url)}">Download MP3</a>${clipLinks}${clipNote}${artNote}`;
-            result.hidden = false; document.getElementById('progress').textContent = 'Background render complete.';
+            result.hidden = false; reportStatus(document.getElementById('progress'), 'Background render complete.');
             activeJobPollers.delete(jobId); return;
           }
-          if (job.status === 'failed') { document.getElementById('progress').textContent = job.error || 'Background render failed.'; activeJobPollers.delete(jobId); return; }
+          if (job.status === 'failed') { reportStatus(document.getElementById('progress'), job.error || 'Background render failed.', true); activeJobPollers.delete(jobId); return; }
           activeJobPollers.set(jobId, window.setTimeout(poll, 2500));
         } catch (err) {
-          document.getElementById('progress').textContent = `Job remains submitted; status refresh failed: ${err.message}`;
+          reportStatus(document.getElementById('progress'), `Job remains submitted; status refresh failed: ${err.message}`);
           activeJobPollers.set(jobId, window.setTimeout(poll, 5000));
         }
       };
@@ -564,7 +585,10 @@
       const rows = [...hostsContainer.querySelectorAll('.host-row')];
       rows.forEach((row, index) => {
         row.querySelector('.host-number').textContent = `Host ${index + 1}`;
-        row.querySelector('.remove-host').disabled = rows.length === 1;
+        const remove = row.querySelector('.remove-host');
+        const reason = row.querySelector('.remove-host-reason');
+        if (!reason.id) reason.id = `remove-host-reason-${row.dataset.hostId || index + 1}`;
+        a11y.setDisabledReason(remove, reason, rows.length === 1 ? 'At least one host is required.' : '');
       });
     }
 
@@ -591,18 +615,18 @@
     }
 
     async function refreshVoices() {
-      voiceStatus.textContent = 'Loading…';
+      reportStatus(voiceStatus, 'Loading voices…');
       try {
         const response = await fetch('/api/chatterbox-voices');
         const data = await readJsonResponse(response, 'Could not load voices');
         availableVoices = data.voices;
         document.querySelectorAll('.host-voice').forEach((select) => populateVoiceSelect(select, select.value));
         const referenceCount = Math.max(0, availableVoices.length - 1);
-        voiceStatus.textContent = referenceCount
+        reportStatus(voiceStatus, referenceCount
           ? `${referenceCount} reference voice${referenceCount === 1 ? '' : 's'} available.`
-          : 'Only the built-in default is available; add reference WAVs for distinct voices.';
+          : 'Only the built-in default is available; add reference WAVs for distinct voices.');
       } catch (err) {
-        voiceStatus.textContent = err.message;
+        reportStatus(voiceStatus, err.message, true);
       }
     }
 
@@ -643,12 +667,22 @@
         const file = fileInput.files[0];
         if (!file) return;
         if (!/\.(wav|mp3|flac|m4a)$/i.test(file.name)) {
-          status.textContent = 'Unsupported audio format. Please upload WAV, MP3, FLAC, or M4A.';
+          fieldError(fileInput, 'Upload a WAV, MP3, FLAC, or M4A file.');
+          reportStatus(status, 'Unsupported audio format. Please upload WAV, MP3, FLAC, or M4A.', true);
+          a11y.focusFirstInvalid([fileInput]);
           fileInput.value = ''; return;
         }
         const controls = row.querySelectorAll('button, input');
-        controls.forEach(control => control.disabled = true);
-        status.textContent = 'Uploading reference voice...';
+        controls.forEach((control) => {
+          control.disabled = true;
+          if (control.tagName === 'BUTTON') {
+            const descriptions = new Set((control.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean));
+            descriptions.add(status.id);
+            control.setAttribute('aria-describedby', [...descriptions].join(' '));
+          }
+        });
+        fieldError(fileInput, '');
+        reportStatus(status, 'Uploading reference voice...');
         try {
           await persistHosts();
           const form = new FormData();
@@ -661,24 +695,32 @@
           row.dataset.referenceFilename = data.reference_voice.filename;
           row.dataset.referenceAvailable = String(data.reference_voice.available);
           renderVoiceState(row);
-          status.textContent = 'Reference voice uploaded successfully.';
-        } catch (error) { status.textContent = error.message; }
+          reportStatus(status, 'Reference voice uploaded successfully.');
+        } catch (error) { reportStatus(status, error.message, true); }
         finally { controls.forEach(control => control.disabled = false); fileInput.value = ''; }
       });
       row.querySelector('.replace-reference').addEventListener('click', () => fileInput.click());
       row.querySelector('.play-reference').addEventListener('click', () => row.querySelector('.reference-player').play());
       row.querySelector('.remove-reference').addEventListener('click', async () => {
-        status.textContent = 'Removing reference voice...';
+        reportStatus(status, 'Removing reference voice…');
         try {
           const response = await fetch(`/api/hosts/${row.dataset.hostId}/voice`, {method: 'DELETE'});
           const data = await readJsonResponse(response, 'Could not remove reference voice');
           row.dataset.referencePath = ''; row.dataset.referenceFilename = ''; row.dataset.referenceAvailable = 'false';
-          renderVoiceState(row); status.textContent = 'Reference voice removed. This host now uses the default voice.';
-        } catch (error) { status.textContent = error.message; }
+          renderVoiceState(row); reportStatus(status, 'Reference voice removed. This host now uses the default voice.');
+        } catch (error) { reportStatus(status, error.message, true); }
       });
       row.querySelector('.preview-voice').addEventListener('click', async (event) => {
         const button = event.currentTarget; const previewStatus = row.querySelector('.preview-status');
-        button.disabled = true; previewStatus.textContent = 'Generating voice preview...';
+        const hostName = row.querySelector('.host-name');
+        if (!hostName.value.trim()) {
+          fieldError(hostName, 'Enter a host name before previewing this voice.');
+          reportStatus(previewStatus, 'Enter a host name before previewing this voice.', true);
+          a11y.focusFirstInvalid([hostName]);
+          return;
+        }
+        fieldError(hostName, '');
+        button.disabled = true; reportStatus(previewStatus, 'Generating voice preview…');
         try {
           const form = new FormData(); form.append('exaggeration', exaggeration.value); form.append('cfg_weight', cfg.value);
           const response = await fetch(`/api/hosts/${row.dataset.hostId}/voice/preview`, {method: 'POST', body: form});
@@ -686,8 +728,8 @@
           const player = row.querySelector('.preview-player');
           if (player.dataset.objectUrl) URL.revokeObjectURL(player.dataset.objectUrl);
           player.dataset.objectUrl = URL.createObjectURL(await response.blob()); player.src = player.dataset.objectUrl;
-          player.hidden = false; await player.play(); previewStatus.textContent = 'Voice preview ready.';
-        } catch (error) { previewStatus.textContent = error.message; }
+          player.hidden = false; await player.play(); reportStatus(previewStatus, 'Voice preview ready.');
+        } catch (error) { reportStatus(previewStatus, error.message, true); }
         finally { button.disabled = false; }
       });
     }
@@ -699,7 +741,16 @@
       row.dataset.referencePath = host.reference_audio_path || '';
       row.dataset.referenceFilename = host.reference_audio_filename || '';
       row.dataset.referenceAvailable = String(Boolean(host.reference_audio_available));
-      row.querySelector('.host-name').value = host.name || '';
+      const hostName = row.querySelector('.host-name');
+      hostName.id = `host-name-${row.dataset.hostId}`;
+      hostName.value = host.name || '';
+      const voiceFile = row.querySelector('.voice-file');
+      voiceFile.id = `voice-file-${row.dataset.hostId}`;
+      const uploadStatus = row.querySelector('.voice-upload-status');
+      uploadStatus.id = `voice-upload-status-${row.dataset.hostId}`;
+      const previewStatus = row.querySelector('.preview-status');
+      previewStatus.id = `preview-status-${row.dataset.hostId}`;
+      row.querySelector('.preview-voice').setAttribute('aria-describedby', previewStatus.id);
       row.querySelector('.host-role').value = host.role || '';
       populateVoiceSelect(row.querySelector('.host-voice'), host.voice || '{{ default_voice }}');
       row.querySelector('.host-tempo').value = host.tempo ?? {{ default_tempo }};
@@ -769,17 +820,29 @@
 
     document.getElementById('save-cast').addEventListener('click', async () => {
       const hosts = serializeHosts();
-      castStatus.textContent = 'Saving cast...';
+      const invalidNames = [...hostsContainer.querySelectorAll('.host-name')].filter((control) => !control.value.trim());
+      invalidNames.forEach((control) => fieldError(control, 'Enter a name for this host.'));
+      if (invalidNames.length) {
+        reportStatus(castStatus, 'Every host needs a name before the cast can be saved.', true);
+        a11y.focusFirstInvalid(invalidNames);
+        return;
+      }
+      reportStatus(castStatus, 'Saving cast…');
       try {
         const form = new FormData();
         form.append('hosts_json', JSON.stringify(hosts));
         const res = await fetch('/api/host-profiles', { method: 'POST', body: form });
         const data = await readJsonResponse(res, 'Could not save cast');
-        castStatus.textContent = `Saved ${data.count} host profile${data.count === 1 ? '' : 's'}.`;
+        reportStatus(castStatus, `Saved ${data.count} host profile${data.count === 1 ? '' : 's'}.`);
       } catch (err) {
-        castStatus.textContent = err.message;
+        reportStatus(castStatus, err.message, true);
       }
     });
+
+    document.getElementById('episode-form').addEventListener('invalid', (event) => {
+      fieldError(event.target, event.target.validationMessage || 'Correct this field.');
+      window.setTimeout(() => a11y.focusFirstInvalid(document.getElementById('episode-form').elements), 0);
+    }, true);
 
     async function updateHealth() {
       const el = document.getElementById('health');
@@ -791,7 +854,7 @@
         el.textContent = data.chatterbox.ok ? 'App ready · synthesis verified' : 'App ready · synthesis unavailable';
         el.className = data.chatterbox.ok ? 'ok' : 'bad';
         generateButton.disabled = !data.chatterbox.ok;
-        generateButton.title = data.chatterbox.ok ? '' : 'Episode generation is disabled until Chatterbox passes its synthesis smoke test.';
+        if (!data.chatterbox.ok) reportStatus(document.getElementById('progress'), 'Episode generation is unavailable until Chatterbox passes its synthesis smoke test.');
         const detail = document.getElementById('health-details');
         const parameter = (status.model_parameters || [])[0];
         detail.textContent = [
@@ -814,7 +877,7 @@
         el.className = 'bad';
         document.getElementById('health-details').textContent = err.message;
         generateButton.disabled = true;
-        generateButton.title = 'Episode generation is disabled while Chatterbox health is unavailable.';
+        reportStatus(document.getElementById('progress'), 'Episode generation is unavailable while Chatterbox health cannot be checked.', true);
       }
     }
 
@@ -926,7 +989,15 @@
     document.getElementById('save-episode').addEventListener('click', async (event) => {
       const button = event.currentTarget;
       const status = document.getElementById('episode-save-status');
-      button.disabled = true; status.textContent = 'Saving the complete episode…';
+      const title = document.getElementById('episode-title');
+      if (!title.value.trim()) {
+        fieldError(title, 'Enter an episode title before saving.');
+        reportStatus(status, 'Enter an episode title before saving.', true);
+        a11y.focusFirstInvalid([title]);
+        return;
+      }
+      fieldError(title, '');
+      button.disabled = true; reportStatus(status, 'Saving the complete episode…');
       try {
         const form = new FormData();
         form.append('episode_json', JSON.stringify(serializeEpisode()));
@@ -941,8 +1012,8 @@
         document.getElementById('intro-track').value = '';
         await refreshSavedEpisodes(data.id);
         editorState.markClean();
-        status.textContent = `Saved “${data.episode.title}”. You can safely return to it later.`;
-      } catch (error) { status.textContent = error.message; }
+        reportStatus(status, `Saved “${data.episode.title}”. You can safely return to it later.`);
+      } catch (error) { reportStatus(status, error.message, true); }
       finally { button.disabled = false; }
     });
 
@@ -962,7 +1033,7 @@
         loadEpisodeIntoEditor(data.episode, data.id);
         editorState.markClean();
         status.textContent = `Loaded “${data.episode.title}”.`;
-      } catch (error) { status.textContent = error.message; }
+      } catch (error) { reportStatus(status, error.message, true); }
     });
 
     document.getElementById('remove-saved-intro').addEventListener('click', () => {
@@ -1000,7 +1071,7 @@
         form.append('target_minutes', document.getElementById('target-minutes').value); form.append('tone', document.getElementById('conversation-tone').value);
         const res=await fetch('/api/conversation-draft-packet',{method:'POST',body:form}); const data=await readJsonResponse(res, 'Episode draft failed');
         document.getElementById('episode-script').value=data.script; status.textContent=`Draft ready: ${data.stories} stories, ${data.hosts} hosts.`;
-      } catch(err) { status.textContent=err.message; } finally { button.disabled=false; }
+      } catch(err) { reportStatus(status, err.message, true); } finally { button.disabled=false; }
     });
 
     document.getElementById('draft-conversation').addEventListener('click', async () => {
@@ -1008,16 +1079,20 @@
       const button = document.getElementById('draft-conversation');
       const storyNotes = document.getElementById('story-notes').value.trim();
       if (!storyNotes) {
-        status.textContent = 'Add story or source notes first.';
+        const notes = document.getElementById('story-notes');
+        fieldError(notes, 'Add story or source notes first.');
+        reportStatus(status, 'Add story or source notes first.', true);
+        a11y.focusFirstInvalid([notes]);
         return;
       }
+      fieldError(document.getElementById('story-notes'), '');
       if (!editorState.confirmScriptReplacement()) {
         status.textContent = 'Draft canceled; the existing script was kept.';
         return;
       }
       const hosts = serializeHosts();
       button.disabled = true;
-      status.textContent = `Writing a ${hosts.length}-host conversation...`;
+      reportStatus(status, `Writing a ${hosts.length}-host conversation…`);
       try {
         const form = new FormData();
         form.append('story_notes', storyNotes);
@@ -1027,9 +1102,9 @@
         const res = await fetch('/api/conversation-draft', { method: 'POST', body: form });
         const data = await readJsonResponse(res, 'Conversation generation failed');
         document.getElementById('episode-script').value = data.script;
-        status.textContent = `Draft ready using ${data.hosts} hosts. Review and edit it, then generate audio.`;
+        reportStatus(status, `Draft ready using ${data.hosts} hosts. Review and edit it, then generate audio.`);
       } catch (err) {
-        status.textContent = err.message;
+        reportStatus(status, err.message, true);
       } finally {
         button.disabled = false;
       }
@@ -1044,12 +1119,15 @@
 
       const missingName = hosts.find((host) => !host.name);
       if (missingName) {
-        progress.textContent = 'Every host needs a name.';
+        const invalidNames = [...hostsContainer.querySelectorAll('.host-name')].filter((control) => !control.value.trim());
+        invalidNames.forEach((control) => fieldError(control, 'Enter a name for this host.'));
+        reportStatus(progress, 'Every host needs a name.', true);
+        a11y.focusFirstInvalid(invalidNames);
         return;
       }
 
       button.disabled = true;
-      progress.textContent = `Generating ${hosts.length}-host episode...`;
+      reportStatus(progress, `Submitting ${hosts.length}-host episode…`);
       result.hidden = true;
 
       try {
@@ -1058,11 +1136,11 @@
           body: new FormData(event.target),
         });
         const data = await readJsonResponse(res, 'Generation failed');
-        progress.textContent = `Submitted ${data.chunks} speech chunk${data.chunks === 1 ? '' : 's'}. You may close this page.`;
+        reportStatus(progress, `Submitted ${data.chunks} speech chunk${data.chunks === 1 ? '' : 's'}. You may close this page.`);
         await refreshJobs();
         monitorJob(data.job_id);
       } catch (err) {
-        progress.textContent = err.message;
+        reportStatus(progress, err.message, true);
       } finally {
         await updateHealth();
       }
@@ -1095,7 +1173,7 @@
           container.appendChild(card);
         });
         status.textContent = data.suggestions.length ? 'Pick a suggested moment or enter your own times.' : 'No 20–60 second windows found.';
-      } catch (err) { status.textContent = err.message; }
+      } catch (err) { reportStatus(status, err.message, true); }
     });
 
     document.getElementById('render-clip').addEventListener('click', async () => {
@@ -1103,7 +1181,17 @@
       const status = document.getElementById('clip-status');
       const result = document.getElementById('clip-result');
       if (!currentEpisode) { status.textContent = 'Generate an episode first.'; return; }
-      button.disabled = true; status.textContent = 'Rendering captions and social video...'; result.innerHTML = '';
+      const start = document.getElementById('clip-start');
+      const end = document.getElementById('clip-end');
+      fieldError(start, ''); fieldError(end, '');
+      if (!start.checkValidity() || !end.checkValidity() || Number(end.value) <= Number(start.value)) {
+        if (!start.checkValidity()) fieldError(start, 'Enter a valid clip start time.');
+        if (!end.checkValidity() || Number(end.value) <= Number(start.value)) fieldError(end, 'Clip end must be later than its start.');
+        reportStatus(status, 'Correct the clip times before rendering.', true);
+        a11y.focusFirstInvalid([start, end]);
+        return;
+      }
+      button.disabled = true; reportStatus(status, 'Rendering captions and social video…'); result.innerHTML = '';
       try {
         const form = new FormData();
         form.append('start', document.getElementById('clip-start').value);
@@ -1114,10 +1202,10 @@
         const res = await fetch(`/api/episodes/${currentEpisode}/clips`, {method:'POST', body:form});
         const data = await readJsonResponse(res, 'Clip rendering failed');
         result.innerHTML = `<a class="download" href="${data.download_url}">Download ${data.aspect} MP4</a>`;
-        status.textContent = data.art_error
+        reportStatus(status, data.art_error
           ? `Clip ready without generated artwork: ${data.art_error}`
-          : `Clip ready with generated artwork: ${(data.end - data.start).toFixed(1)} seconds.`;
-      } catch (err) { status.textContent = err.message; }
+          : `Clip ready with generated artwork: ${(data.end - data.start).toFixed(1)} seconds.`);
+      } catch (err) { reportStatus(status, err.message, true); }
       finally { button.disabled = false; }
     });
 
