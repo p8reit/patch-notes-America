@@ -515,39 +515,100 @@ uvicorn app.main:app --reload --port 8081
 
 ## Initial roadmap
 
-### Phase 1 — audio MVP
+This roadmap is an inventory of the current implementation and the work needed
+to qualify an MVP release. Checked items are backed by the current routes and
+test suite; they are not promises that the deployment has completed production
+qualification. The rendering, persistence, and deployment contracts described
+elsewhere in this README and in the [application design map](docs/application-design-map.md)
+remain unchanged.
 
-- [x] Script editor
-- [x] Script chunking
-- [x] Chatterbox integration
-- [x] MP3 assembly
-- [x] Pilot seed script
-- [ ] Voice browser/preview
-- [ ] Regenerate one failed/bad chunk
-- [ ] Episode history page
-- [ ] Add intro/outro assets
-- [ ] Add sound-effect cue system
-- [ ] Loudness target suitable for podcast publishing
+### Implemented MVP capabilities
 
-### Phase 2 — production workflow
+- [x] Editable seeded script, TTS cleanup, safe chunking, Chatterbox synthesis,
+  durable background jobs, resumable completed chunks, progress polling, final
+  MP3 download, and podcast loudness mastering.
+- [x] Persistent multi-host cast profiles with reference-voice upload,
+  discovery, playback, preview, and per-host synthesis controls.
+- [x] Complete saved-episode documents, saved-episode selection/restoration,
+  and a persistent render queue that provides the current episode/job history.
+- [x] Intro audio and multi-host spoken-open controls, including mixing speech
+  over the intro or placing it after the track.
+- [x] Structured, multi-story research packets with per-story sources and
+  uncertainty, save/list/load routes, a resumable packet editor, and drafting
+  from either a packet or quick source notes. Loading another packet warns
+  before replacing packet edits.
+- [x] Conversation drafting and audio generation, with generated dialogue
+  returned to the script editor for producer review before rendering.
+- [x] Unsaved-work protection for episode, cast, research, show-open, image
+  prompt, and script edits when leaving the page or replacing work with a saved
+  episode or AI draft. Successful save/load snapshots reset the warning.
+- [x] Social-clip suggestion, custom-render, artwork, and download API routes,
+  plus automatic clip rendering that does not change a completed episode to a
+  failed render.
+- [x] Automated checks for core route round trips, render recovery and chunk
+  reuse, saved data, research-packet interactions, unsaved-work warnings,
+  accessibility wiring, responsive workflow structure, and a mocked primary
+  producer journey.
 
-- [ ] Structured episode format with narration/SFX/music cues
-- [ ] Source/reference metadata per political story
-- [ ] Script revision history
-- [ ] Approval state before publishing
-- [ ] Automated show notes
-- [ ] Artwork and episode metadata
+### MVP release blockers
 
-### Phase 3 — weekly automation
+- [ ] **Make Clip Studio reachable in the real browser journey.** Acceptance:
+  after a completed job is returned or selected, the Distribution region is
+  visible and keyboard-reachable; the producer can request suggestions, apply
+  one, render a custom clip, and follow the returned MP4 download link in a
+  browser-level test. The existing clip APIs and automatic-render behavior
+  remain unchanged.
+- [ ] **Qualify the supported deployment modes.** Acceptance: on the intended
+  release hosts, the documented CPU startup completes its readiness checks and
+  produces a downloadable MP3; the documented NVIDIA startup fails closed when
+  CUDA is unavailable and, on the target GPU host, reports the requested CUDA
+  device, passes synthesis readiness, and produces a downloadable MP3. Record
+  the tested OS, Docker/Compose, GPU/driver (when applicable), commands, and
+  results without weakening the existing device-safety contract.
+- [ ] **Complete primary-journey release regression coverage.** Acceptance: an
+  automated browser test exercises load or create episode → configure cast →
+  resume or save research → draft/edit → save → submit → observe queue progress
+  → download MP3 → open Clip Studio → render/download MP4, using controlled
+  provider boundaries and verifying recoverable-error states without requiring
+  live model or network access.
+- [ ] **Publish release documentation.** Acceptance: a release runbook names
+  prerequisites, supported CPU/GPU modes, configuration and secret handling,
+  storage/backup expectations, startup/readiness checks, the producer workflow,
+  known limitations, troubleshooting and rollback steps, and the exact release
+  validation commands; every internal link and command is checked against the
+  release candidate.
 
-- [ ] Research ingestion
-- [ ] US politics topic shortlist
-- [ ] North Carolina topic shortlist
-- [ ] Fact-check/source validation stage
-- [ ] Draft generation
-- [ ] Audio generation
-- [ ] Human approval
-- [ ] Podcast-host publishing integration
+### MVP hardening and usability
+
+- [ ] **Verify accessibility beyond source-level checks.** Acceptance: keyboard
+  operation, focus order/visibility, labels and descriptions, validation focus,
+  live-region announcements, contrast, zoom/reflow, and a representative screen
+  reader journey are manually or browser-automation audited; release-blocking
+  findings are resolved and the audit environment/results are recorded.
+- [ ] Exercise the resumable research-packet UI and unsaved-work protection in
+  the same real-browser coverage used for release qualification, including
+  canceling a replacement, confirming a replacement, leaving dirty work, and
+  confirming that a successful save/load establishes a clean snapshot.
+- [ ] Add producer-facing empty, loading, success, and recovery guidance where
+  deployment qualification or accessibility review finds gaps; retain entered
+  form data on recoverable failures.
+- [ ] Document and rehearse file-backed data backup/restore and interrupted-job
+  recovery on release-like storage, without changing persisted formats or job
+  recovery semantics.
+
+### Explicit post-MVP features
+
+These items are outside the release boundary unless product ownership
+explicitly promotes them:
+
+- [ ] Regenerate one failed or unsatisfactory speech chunk from the UI.
+- [ ] Outro assets and a structured narration/music/sound-effect cue system.
+- [ ] Script and saved-episode revision history.
+- [ ] User roles, editorial review, and approval workflows.
+- [ ] Podcast-host or social-platform publishing integrations.
+- [ ] Automated research ingestion, US-politics and North-Carolina topic
+  shortlists, and an independent fact-check/source-validation stage.
+- [ ] Automated show notes and expanded distribution metadata/templates.
 
 ## Repository creation
 
