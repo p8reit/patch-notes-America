@@ -39,3 +39,10 @@ def test_narrow_navigation_is_single_column_and_does_not_stick_over_controls():
 def test_completed_jobs_keep_direct_download_access_and_reveal_distribution():
     assert 'href="${encodeURI(job.download_url)}">Download MP3</a>' in TEMPLATE
     assert "document.getElementById('clip-studio').hidden = !currentEpisode" in TEMPLATE
+
+
+def test_render_queue_has_search_status_sort_and_refresh_controls():
+    assert 'aria-label="Render queue controls"' in TEMPLATE
+    for control_id in ("job-search", "job-status-filter", "job-sort-order", "refresh-jobs"):
+        assert f'id="{control_id}"' in TEMPLATE
+    assert 'id="job-summary"' in TEMPLATE and 'aria-live="polite"' in TEMPLATE

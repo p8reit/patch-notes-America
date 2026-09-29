@@ -175,14 +175,32 @@
 
     <section id="result" class="card result" hidden></section>
 
-    <section class="card jobs-card">
-      <div class="section-heading"><div><p class="eyebrow">BACKGROUND AUDIO</p><h2>Render queue</h2>
+    <section class="card jobs-card" aria-labelledby="render-queue-title">
+      <div class="section-heading"><div><p class="eyebrow">BACKGROUND AUDIO</p><h2 id="render-queue-title">Render queue</h2>
         <p class="hint">Submitted episodes keep rendering after this page is closed. Return later to download completed audio.</p>
-      </div><div class="queue-actions">
-        <label class="checkbox-label queue-filter"><input id="hide-completed" type="checkbox"> Hide completed runs</label>
-        <button id="refresh-jobs" class="secondary" type="button">Refresh jobs</button>
       </div></div>
-      <div id="job-list" class="job-list"><p class="hint">Loading audio jobs...</p></div>
+      <div class="queue-toolbar" aria-label="Render queue controls">
+        <label class="queue-control queue-search">Search episodes
+          <input id="job-search" type="search" placeholder="Search by episode title" autocomplete="off">
+        </label>
+        <label class="queue-control">Show
+          <select id="job-status-filter">
+            <option value="all">All runs</option>
+            <option value="active">Active</option>
+            <option value="complete">Completed</option>
+            <option value="failed">Failed</option>
+          </select>
+        </label>
+        <label class="queue-control">Order
+          <select id="job-sort-order">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+        </label>
+        <button id="refresh-jobs" class="secondary queue-refresh" type="button">Refresh</button>
+      </div>
+      <div id="job-summary" class="queue-summary" role="status" aria-live="polite">Loading audio jobs…</div>
+      <div id="job-list" class="job-list" aria-live="polite"><p class="hint">Loading audio jobs...</p></div>
     </section>
 
     <section id="clip-studio" class="card clip-studio workflow-stage" aria-labelledby="distribution-title" data-workflow-stage hidden>
@@ -329,6 +347,7 @@
   <script src="/static/research-packets.js"></script>
   <script src="/static/episode-editor-state.js"></script>
   <script src="/static/workflow-navigation.js"></script>
+  <script src="/static/render-queue-controls.js"></script>
   <script>
     const initialProfiles = {{ host_profiles | tojson }};
     const hostsContainer = document.getElementById('hosts');
@@ -415,7 +434,7 @@
 
     function addSettingInfo(root = document) {
       root.querySelectorAll('label').forEach((label) => {
-        if (label.querySelector('.setting-info')) return;
+        if (label.querySelector('.setting-info') || label.classList.contains('queue-control')) return;
         const control = label.querySelector('input, textarea, select');
         if (!control) return;
         const match = settingHelp.find(([selector]) => control.matches(selector));
@@ -448,10 +467,16 @@
 
     function renderJobs(jobs, workers = 1) {
       const list = document.getElementById('job-list');
-      const hideCompleted = document.getElementById('hide-completed').checked;
-      const visibleJobs = hideCompleted ? jobs.filter(job => job.status !== 'complete') : jobs;
+      const filters = {
+        query: document.getElementById('job-search').value,
+        status: document.getElementById('job-status-filter').value,
+        order: document.getElementById('job-sort-order').value,
+      };
+      const visibleJobs = window.RenderQueueControls.filterJobs(jobs, filters);
+      const counts = window.RenderQueueControls.summarizeJobs(jobs);
+      document.getElementById('job-summary').textContent = window.RenderQueueControls.summaryText(counts, visibleJobs.length, workers);
       if (!visibleJobs.length) {
-        list.innerHTML = `<p class="hint">${jobs.length ? 'All completed runs are hidden.' : 'No audio jobs have been submitted yet.'}</p>`;
+        list.innerHTML = `<div class="queue-empty"><strong>${jobs.length ? 'No matching renders' : 'No renders yet'}</strong><p class="hint">${jobs.length ? 'Try a different search or status filter.' : 'Generated episodes will appear here and remain available after you leave.'}</p></div>`;
         return;
       }
       list.innerHTML = visibleJobs.map(job => {
@@ -468,7 +493,6 @@
         return `<article class="job-row"><div><strong>${escapeHtml(job.title)}</strong><small>${escapeHtml(job.created_at || '')}</small>${timer}</div>
           <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${detail}</article>`;
       }).join('');
-      list.insertAdjacentHTML('beforeend', `<p class="hint worker-note">${workers} audio worker${workers === 1 ? '' : 's'} configured. CPU-only systems should normally use one.</p>`);
     }
 
     function setActiveCompletedEpisode(job) {
@@ -519,12 +543,17 @@
     }
 
     document.getElementById('refresh-jobs').addEventListener('click', () => refreshJobs());
-    const hideCompleted = document.getElementById('hide-completed');
-    hideCompleted.checked = localStorage.getItem('podcast-builder-hide-completed') === 'true';
-    hideCompleted.addEventListener('change', () => {
-      localStorage.setItem('podcast-builder-hide-completed', String(hideCompleted.checked));
+    const queueControlIds = ['job-search', 'job-status-filter', 'job-sort-order'];
+    const savedQueueView = window.RenderQueueControls.readView(localStorage);
+    document.getElementById('job-status-filter').value = savedQueueView.status;
+    document.getElementById('job-sort-order').value = savedQueueView.order;
+    queueControlIds.forEach((id) => document.getElementById(id).addEventListener(id === 'job-search' ? 'input' : 'change', () => {
+      window.RenderQueueControls.saveView(localStorage, {
+        status: document.getElementById('job-status-filter').value,
+        order: document.getElementById('job-sort-order').value,
+      });
       renderJobs(latestJobs, configuredWorkers);
-    });
+    }));
     window.setInterval(() => {
       document.querySelectorAll('.job-timer').forEach(timer => {
         timer.textContent = `Running for ${formatElapsed(timer.dataset.startedAt)}`;

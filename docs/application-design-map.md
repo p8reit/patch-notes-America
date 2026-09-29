@@ -87,6 +87,8 @@ Podcast Builder
 ├── 5. Render and download
 │   ├── Generate action and latest result
 │   └── Background render queue
+│       ├── Search, status filter, and chronological sort
+│       └── Persistent summary and episode download actions
 └── 6. Distribution
     └── Clip Studio (revealed after a completed episode is selected)
 ```
