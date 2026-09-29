@@ -106,6 +106,7 @@ Podcast Builder
 ### Episode and cast editing
 
 - The browser keeps the active form state and serializes host cards into `hosts_json` before saving or rendering.
+- Dynamic workflow feedback is announced politely to assistive technology. Actionable validation and job failures use assertive alerts, identify their related fields, and move keyboard focus to the first invalid control; disabled actions expose their reason in adjacent text.
 - The browser compares the active episode, cast, research, show-open, image-prompt, and script fields with the last successfully loaded or saved snapshot. It warns before navigation or replacing that work with another episode or AI draft; it does not autosave episode or research documents.
 - Saving an episode persists its editable document and copies its uploaded intro track into that saved episode's directory.
 - Host profiles are workspace-level entities. A host can use a legacy Chatterbox voice or a normalized, host-specific reference recording.
