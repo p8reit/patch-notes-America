@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const template = fs.readFileSync(
   path.join(__dirname, '../../app/templates/index.html'), 'utf8',
@@ -47,4 +48,38 @@ test('primary producer journey remains wired to mocked route boundaries', () => 
   const render = handler("document.getElementById('render-clip').addEventListener");
   assert.match(render, /`\/api\/episodes\/\$\{currentEpisode\}\/clips`/);
   assert.match(render, /href="\$\{data\.download_url\}">Download \$\{data\.aspect\} MP4<\/a>/);
+});
+
+test('healthy synthesis remains available when optional health diagnostics fail', async () => {
+  const health = handler('async function updateHealth()', '\n\n    function addPacketStory')
+    .replace("'{{ chatterbox_public_port }}'", "'8000'");
+  const elements = new Map([
+    ['health', {textContent: '', className: ''}],
+    ['generate-episode', {disabled: true}],
+    ['health-details', {textContent: ''}],
+    ['progress', {textContent: ''}],
+    ['chatterbox-link', {href: ''}],
+  ]);
+  const context = {
+    fetch: async () => ({ok: true}),
+    readJsonResponse: async () => ({
+      chatterbox: {
+        ok: true,
+        status: {model_loaded: true, synthesis_ready: true, model_parameters: []},
+      },
+      chatterbox_public_url: null,
+    }),
+    document: {getElementById: (id) => elements.get(id)},
+    reportStatus: (element, message) => { element.textContent = message; },
+    window: {location: {href: 'not a valid URL'}},
+    URL,
+  };
+  vm.runInNewContext(`${health}; this.updateHealth = updateHealth;`, context);
+
+  await context.updateHealth();
+
+  assert.equal(elements.get('health').textContent, 'App ready · synthesis verified');
+  assert.equal(elements.get('generate-episode').disabled, false);
+  assert.match(elements.get('health-details').textContent, /Health diagnostics could not be displayed/);
+  assert.doesNotMatch(elements.get('progress').textContent, /generation is unavailable/);
 });

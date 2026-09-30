@@ -847,15 +847,33 @@
     async function updateHealth() {
       const el = document.getElementById('health');
       const generateButton = document.getElementById('generate-episode');
+      let data;
       try {
         const res = await fetch('/api/health');
-        const data = await readJsonResponse(res, 'Health check failed');
-        const status = data.chatterbox.status || {};
-        el.textContent = data.chatterbox.ok ? 'App ready · synthesis verified' : 'App ready · synthesis unavailable';
-        el.className = data.chatterbox.ok ? 'ok' : 'bad';
-        generateButton.disabled = !data.chatterbox.ok;
-        if (!data.chatterbox.ok) reportStatus(document.getElementById('progress'), 'Episode generation is unavailable until Chatterbox passes its synthesis smoke test.');
-        const detail = document.getElementById('health-details');
+        data = await readJsonResponse(res, 'Health check failed');
+        if (!data.chatterbox || typeof data.chatterbox.ok !== 'boolean') {
+          throw new Error('The server returned an invalid Chatterbox health response.');
+        }
+      } catch (err) {
+        el.textContent = 'Health check failed';
+        el.className = 'bad';
+        document.getElementById('health-details').textContent = err.message;
+        generateButton.disabled = true;
+        reportStatus(document.getElementById('progress'), 'Episode generation is unavailable while Chatterbox health cannot be checked.', true);
+        return;
+      }
+
+      const chatterboxReady = data.chatterbox.ok;
+      const status = data.chatterbox.status || {};
+      el.textContent = chatterboxReady ? 'App ready · synthesis verified' : 'App ready · synthesis unavailable';
+      el.className = chatterboxReady ? 'ok' : 'bad';
+      generateButton.disabled = !chatterboxReady;
+      if (!chatterboxReady) {
+        reportStatus(document.getElementById('progress'), 'Episode generation is unavailable until Chatterbox passes its synthesis smoke test.');
+      }
+
+      const detail = document.getElementById('health-details');
+      try {
         const parameter = (status.model_parameters || [])[0];
         detail.textContent = [
           `CUDA visible: ${status.cuda_visible ?? 'unknown'}${status.gpu_name ? ` (${status.gpu_name}, compute ${status.gpu_compute_capability})` : ''}`,
@@ -873,11 +891,8 @@
         inferredChatterboxUrl.hash = '';
         chatterboxLink.href = data.chatterbox_public_url || inferredChatterboxUrl.toString();
       } catch (err) {
-        el.textContent = 'Health check failed';
-        el.className = 'bad';
-        document.getElementById('health-details').textContent = err.message;
-        generateButton.disabled = true;
-        reportStatus(document.getElementById('progress'), 'Episode generation is unavailable while Chatterbox health cannot be checked.', true);
+        const diagnosticError = `Health diagnostics could not be displayed: ${err.message}`;
+        detail.textContent = [detail.textContent, diagnosticError].filter(Boolean).join('\n');
       }
     }
 
