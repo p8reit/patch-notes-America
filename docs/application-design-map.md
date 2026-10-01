@@ -62,35 +62,40 @@ flowchart LR
 
 ## 3. Screen and information architecture
 
+The application has two top-level tabs: **Podcast Studio** contains the existing end-to-end episode workflow, while **Image Studio** creates one-off PNG artwork without reading or changing episode state.
+
 ```text
-Podcast Builder
-├── Product header
-├── Services status card
-├── Numbered workflow navigation
-├── 1. Episode setup
-│   ├── Episode file (new / load / save)
+Production Studio
+├── Podcast Studio
+│   ├── Services status card
+│   ├── Numbered workflow navigation
+│   ├── 1. Episode setup
+│   ├── Episode file (load / save)
 │   └── Episode title
-├── 2. Cast
+│   ├── 2. Cast
 │   │   └── Repeating host card
 │   │       ├── Identity and role
 │   │       ├── Reference voice and preview
 │   │       ├── Collapsed voice + advanced Chatterbox controls
 │   │       └── Character personality
-├── 3. Research and draft
+│   ├── 3. Research and draft
 │   │   ├── Collapsible research packet
 │   │   ├── Quick story / source notes
 │   │   └── Duration and tone
-├── 4. Script and show open
+│   ├── 4. Script and show open
 │   ├── Collapsed optional show-open settings
 │   ├── Episode image prompt
 │   └── Episode script
-├── 5. Render and download
+│   ├── 5. Render and download
 │   ├── Generate action and latest result
 │   └── Background render queue
 │       ├── Search, status filter, and chronological sort
 │       └── Persistent summary and episode download actions
-└── 6. Distribution
-    └── Clip Studio (revealed after a completed episode is selected)
+│   └── 6. Distribution
+│       └── Clip Studio (revealed after a completed episode is selected)
+└── Image Studio
+    ├── Prompt and aspect controls
+    └── Generated PNG preview and download
 ```
 
 ### Responsive behavior and visual language
@@ -259,6 +264,7 @@ Episode
 | Area | Methods and paths | Purpose |
 | --- | --- | --- |
 | Workspace | `GET /`, `GET /api/health` | Render the workspace and report end-to-end readiness |
+| Images | `POST /api/images/generations` | Generate a standalone portrait, square, or landscape PNG without episode state |
 | Cast | `GET/POST /api/host-profiles` | Load and replace persistent cast configuration |
 | Voices | `GET /api/chatterbox-voices`; `POST/DELETE /api/hosts/{id}/voice`; `GET .../voice/audio`; `POST .../voice/preview` | Discover legacy voices and manage per-host references |
 | Episodes | `GET/POST /api/saved-episodes`; `GET /api/saved-episodes/{id}` | List, save, and restore editable episodes |
