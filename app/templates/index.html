@@ -50,6 +50,7 @@
         </div>
         <div class="episode-library-controls">
           <select id="saved-episode-select" aria-label="Saved episodes"><option value="">Choose a saved episode…</option></select>
+          <button id="new-episode" class="secondary" type="button" aria-describedby="episode-save-status">New episode</button>
           <button id="load-episode" class="secondary" type="button">Load</button>
           <button id="save-episode" class="secondary" type="button" aria-describedby="episode-save-status">Save episode</button>
         </div>
@@ -1083,6 +1084,31 @@
       document.getElementById('saved-episode-id').value = episodeId;
       showSavedIntro(episode.intro_track || null);
     }
+
+    document.getElementById('new-episode').addEventListener('click', () => {
+      const status = document.getElementById('episode-save-status');
+      if (!editorState.confirmNewEpisode()) {
+        status.textContent = 'New episode canceled; your unsaved episode edits were kept.';
+        return;
+      }
+      loadEpisodeIntoEditor({
+        title: '',
+        hosts: initialProfiles,
+        research_packet: {episode_angle: '', stories: [{}]},
+        story_notes: '',
+        target_minutes: 8,
+        conversation_tone: 'smart, funny, conversational, politically non-tribal',
+        script: '',
+        image_prompt: '',
+        intro_lines: '',
+        intro_overlap: true,
+        intro_music_volume: 0.25,
+      }, '');
+      document.getElementById('saved-episode-select').value = '';
+      editorState.markClean();
+      status.textContent = 'Started a new episode.';
+      document.getElementById('episode-title').focus();
+    });
 
     document.getElementById('save-episode').addEventListener('click', async (event) => {
       const button = event.currentTarget;
