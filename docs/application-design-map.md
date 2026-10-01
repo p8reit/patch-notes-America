@@ -68,7 +68,7 @@ Podcast Builder
 ├── Services status card
 ├── Numbered workflow navigation
 ├── 1. Episode setup
-│   ├── Episode file (load / save)
+│   ├── Episode file (new / load / save)
 │   └── Episode title
 ├── 2. Cast
 │   │   └── Repeating host card

@@ -39,3 +39,11 @@ def test_accessibility_behavior_is_wired_to_requested_workflows():
     assert "job.error || 'Background render failed.', true" in TEMPLATE
     assert "'Correct the clip times before rendering.', true" in TEMPLATE
     assert "generateButton.title" not in TEMPLATE
+
+
+def test_new_episode_action_is_keyboard_accessible_and_announced():
+    assert 'id="new-episode"' in TEMPLATE
+    assert 'id="new-episode" class="secondary" type="button"' in TEMPLATE
+    assert 'aria-describedby="episode-save-status"' in TEMPLATE
+    assert "status.textContent = 'Started a new episode.'" in TEMPLATE
+    assert "document.getElementById('episode-title').focus()" in TEMPLATE
