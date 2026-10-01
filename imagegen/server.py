@@ -21,7 +21,7 @@ STEPS = int(os.getenv("IMAGEGEN_STEPS", "2"))
 # that complete, application-generated prompt instead of rejecting it at the
 # request-validation boundary.
 MAX_PROMPT_CHARS = int(os.getenv("IMAGEGEN_MAX_PROMPT_CHARS", "4000"))
-CPU_OFFLOAD = os.getenv("IMAGEGEN_CPU_OFFLOAD", "true").casefold() in {"1", "true", "yes"}
+CPU_OFFLOAD = os.getenv("IMAGEGEN_CPU_OFFLOAD", "false").casefold() in {"1", "true", "yes"}
 
 _pipeline: Any | None = None
 _lock = threading.Lock()

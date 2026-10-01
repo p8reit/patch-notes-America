@@ -17,6 +17,12 @@ def test_local_image_service_is_fail_closed_on_cuda():
     assert "_smoke_test(pipeline)" in SERVER
 
 
+def test_local_image_service_defaults_to_full_cuda_placement():
+    assert 'os.getenv("IMAGEGEN_CPU_OFFLOAD", "false")' in SERVER
+    assert 'pipeline.enable_model_cpu_offload()' in SERVER
+    assert 'pipeline.to("cuda")' in SERVER
+
+
 def test_local_image_service_has_bounded_openai_compatible_contract():
     assert '@app.post("/v1/images/generations")' in SERVER
     assert "max_length=MAX_PROMPT_CHARS" in SERVER
@@ -45,7 +51,16 @@ def test_local_image_compose_service_is_profiled_and_not_host_published():
     assert "ports" not in service
     assert service["environment"]["IMAGEGEN_DEVICE"] == "cuda"
     assert service["environment"]["IMAGEGEN_MAX_PROMPT_CHARS"] == "${LOCAL_IMAGE_MAX_PROMPT_CHARS:-4000}"
+    assert service["environment"]["IMAGEGEN_CPU_OFFLOAD"] == "${LOCAL_IMAGE_CPU_OFFLOAD:-false}"
     assert "imagegen-models:/models" in service["volumes"]
+
+
+def test_legacy_full_compose_defaults_to_full_cuda_placement():
+    compose = yaml.safe_load((ROOT / "docker-compose.full.yml").read_text())
+
+    assert compose["services"]["imagegen"]["environment"]["IMAGEGEN_CPU_OFFLOAD"] == (
+        "${LOCAL_IMAGE_CPU_OFFLOAD:-false}"
+    )
 
 
 def test_gpu_override_reserves_device_for_local_image_service():

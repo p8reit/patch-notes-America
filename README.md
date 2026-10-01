@@ -748,7 +748,7 @@ CLIP_IMAGE_PROVIDER=local
 LOCAL_IMAGE_MODEL=stabilityai/sdxl-turbo
 LOCAL_IMAGE_STEPS=2
 LOCAL_IMAGE_MAX_PROMPT_CHARS=4000
-LOCAL_IMAGE_CPU_OFFLOAD=true
+LOCAL_IMAGE_CPU_OFFLOAD=false
 ```
 
 Then start the CUDA stack and local image profile together:
@@ -759,10 +759,11 @@ Then start the CUDA stack and local image profile together:
 
 The first start downloads model weights into the persistent `imagegen-models`
 volume and can take several minutes. Startup does not succeed until CUDA is
-visible, SDXL Turbo is loaded, and a real image smoke test passes. CPU offload
-is enabled by default to reduce peak VRAM while Chatterbox shares the 3060; set
-`LOCAL_IMAGE_CPU_OFFLOAD=false` only if the card has enough free VRAM and you
-prefer lower latency. Image requests are serialized, use two inference steps,
+visible, SDXL Turbo is loaded, and a real image smoke test passes. The model is
+loaded fully onto CUDA by default so diffusion does not shuttle model components
+through the CPU. If the card cannot hold SDXL Turbo while Chatterbox shares the
+GPU, set `LOCAL_IMAGE_CPU_OFFLOAD=true` to reduce peak VRAM at the cost of CPU
+use and higher latency. Image requests are serialized, use two inference steps,
 and generate a smaller internal image that FFmpeg crops and scales for the
 requested social aspect ratio.
 The default prompt limit accommodates the application's safety framing plus
