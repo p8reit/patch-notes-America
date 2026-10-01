@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -1756,6 +1756,57 @@ async def index(request: Request):
             "chatterbox_public_port": CHATTERBOX_PUBLIC_PORT,
         },
     )
+
+
+@app.post("/api/images/generations")
+async def create_standalone_image(
+    prompt: str = Form(...),
+    aspect: str = Form("square"),
+):
+    """Generate a PNG for the standalone Image Studio without episode state."""
+    prompt = prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Image prompt is required")
+    if len(prompt) > MAX_IMAGE_PROMPT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image prompt must be {MAX_IMAGE_PROMPT_CHARS} characters or fewer",
+        )
+    sizes = {"portrait": "1024x1536", "square": "1024x1024", "landscape": "1536x1024"}
+    if aspect not in sizes:
+        raise HTTPException(status_code=400, detail="Image aspect must be portrait, square, or landscape")
+    if CLIP_IMAGE_PROVIDER not in {"openai", "local"}:
+        raise HTTPException(status_code=503, detail="Image provider must be 'openai' or 'local'")
+    if CLIP_IMAGE_PROVIDER == "openai" and not OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured for image creation")
+
+    payload = {
+        "model": LOCAL_IMAGE_MODEL if CLIP_IMAGE_PROVIDER == "local" else OPENAI_IMAGE_MODEL,
+        "prompt": prompt,
+        "size": sizes[aspect],
+        "quality": "low",
+        "n": 1,
+    }
+    endpoint = LOCAL_IMAGES_URL if CLIP_IMAGE_PROVIDER == "local" else OPENAI_IMAGES_URL
+    headers = {"Content-Type": "application/json"}
+    if CLIP_IMAGE_PROVIDER == "openai":
+        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=10)) as client:
+            upstream = await client.post(endpoint, headers=headers, json=payload)
+            upstream.raise_for_status()
+        body = upstream.json()
+        encoded = body.get("data", [{}])[0].get("b64_json") if isinstance(body, dict) else None
+        if not isinstance(encoded, str):
+            raise ValueError("Image generator returned no base64 image")
+        image_bytes = base64.b64decode(encoded, validate=True)
+    except (httpx.HTTPError, ValueError, binascii.Error, IndexError) as exc:
+        raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}") from exc
+    if len(image_bytes) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=502, detail="Generated image exceeds 25 MB")
+    if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(status_code=502, detail="Image generator returned an unsupported format; expected PNG")
+    return Response(content=image_bytes, media_type="image/png")
 
 
 @app.get("/api/host-profiles")

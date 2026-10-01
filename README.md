@@ -5,6 +5,7 @@ Initial podcast-production application for turning a narration script into a fin
 ## MVP features
 
 - Browser-based episode editor on port `8081`
+- Standalone Image Studio for generating downloadable portrait, square, or landscape PNG artwork outside the episode workflow
 - Complete editable episode saves, including the cast, research packet, source notes, script, conversation settings, show-open settings, and intro audio
 - Preloaded pilot narration script
 - Per-host Chatterbox reference voice, tempo, exaggeration, CFG weight, temperature, Min P, Top P, and repetition penalty
@@ -735,9 +736,9 @@ OPENAI_MODEL=gpt-5.6-luna
 OPENAI_IMAGE_MODEL=gpt-image-2
 ```
 
-The implementation uses the OpenAI Responses API for conversation drafting and the Images API for clip artwork. `OPENAI_RESPONSES_URL`, `OPENAI_MODEL`, `OPENAI_IMAGES_URL`, and `OPENAI_IMAGE_MODEL` are environment-configurable. If image generation is unavailable, the MP4 still renders with the existing branded background and reports the artwork error separately.
+The implementation uses the OpenAI Responses API for conversation drafting and the Images API for clip artwork and the standalone **Image Studio** tab. `OPENAI_RESPONSES_URL`, `OPENAI_MODEL`, `OPENAI_IMAGES_URL`, and `OPENAI_IMAGE_MODEL` are environment-configurable. Image Studio returns a downloadable PNG without attaching it to an episode or saving it on the server. If image generation is unavailable, the MP4 still renders with the existing branded background and reports the artwork error separately.
 
-### Generate clip artwork locally on NVIDIA
+### Generate artwork locally on NVIDIA
 
 An RTX 3060-class card can run the included SDXL Turbo service. Set the image
 provider in `.env`:
@@ -769,7 +770,7 @@ the full 2,000-character producer direction. If customized, keep
 `LOCAL_IMAGE_MAX_PROMPT_CHARS` at `4000` or higher so valid episode image
 prompts are not rejected with HTTP 422.
 
-The local service is not published to the host network. The app calls its
+The local service powers both clip artwork and Image Studio and is not published to the host network. The app calls its
 OpenAI-compatible endpoint over the Compose network. `OPENAI_API_KEY` remains
 optional for clip art when `CLIP_IMAGE_PROVIDER=local`; it is still required
 if conversation drafting uses the OpenAI provider.

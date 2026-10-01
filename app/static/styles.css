@@ -11,6 +11,15 @@ header { margin-bottom: 24px; }
 h1 { margin: 0; font-size: clamp(2.2rem, 6vw, 4.5rem); line-height: .95; }
 .lede { color: #8b949e; font-size: 1.1rem; }
 .card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 22px; margin: 18px 0; box-shadow: 0 12px 30px rgba(0,0,0,.2); }
+.workspace-tabs { display: flex; gap: 8px; margin: 24px 0 18px; padding: 6px; border: 1px solid #30363d; border-radius: 12px; background: #161b22; }
+.workspace-tab { flex: 1; background: transparent; color: #8b949e; }
+.workspace-tab[aria-selected="true"] { background: #238636; color: #fff; }
+.image-studio { min-height: 520px; }
+.image-studio form { margin-top: 24px; }
+.image-actions { margin-top: 22px; }
+.image-result { display: grid; justify-items: start; gap: 18px; margin-top: 24px; padding-top: 24px; border-top: 1px solid #30363d; }
+.image-result[hidden] { display: none; }
+.image-result img { display: block; width: min(100%, 720px); max-height: 760px; border: 1px solid #30363d; border-radius: 12px; object-fit: contain; background: #0d1117; }
 .episode-library { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px 24px; margin-bottom: 24px; padding-bottom: 22px; border-bottom: 1px solid #30363d; }
 .episode-library h2 { margin: 2px 0 0; }
 .episode-library .hint { margin: 8px 0 0; }

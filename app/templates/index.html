@@ -3,17 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Podcast Builder</title>
+  <title>Patch Notes: America Production Studio</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <main class="shell">
     <header>
-      <p class="eyebrow">PODCAST BUILDER</p>
-      <h1>Podcast Builder</h1>
-      <p class="lede">Build any character-driven, multi-host Chatterbox podcast with a persistent cast.</p>
+      <p class="eyebrow">PATCH NOTES: AMERICA</p>
+      <h1>Production Studio</h1>
+      <p class="lede">Build a character-driven podcast or create standalone artwork.</p>
     </header>
 
+    <div class="workspace-tabs" role="tablist" aria-label="Production tools">
+      <button id="podcast-tab" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="podcast-panel">Podcast Studio</button>
+      <button id="image-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="image-panel" tabindex="-1">Image Studio</button>
+    </div>
+
+    <div id="podcast-panel" role="tabpanel" aria-labelledby="podcast-tab">
     <section class="card status-card">
       <div>
         <strong>Services</strong>
@@ -227,6 +233,35 @@
         <div id="clip-result" class="clip-result"></div>
       </div>
     </section>
+    </div>
+
+    <section id="image-panel" class="card image-studio" role="tabpanel" aria-labelledby="image-tab" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">STANDALONE ARTWORK</p>
+          <h2>Create an image</h2>
+          <p class="hint">Generate artwork without creating or changing an episode. Images are not saved on the server.</p>
+        </div>
+      </div>
+      <form id="image-form">
+        <label for="standalone-image-prompt">Image prompt</label>
+        <textarea id="standalone-image-prompt" name="prompt" rows="8" maxlength="2000" required placeholder="Describe the subject, setting, composition, lighting, and visual style."></textarea>
+        <label for="standalone-image-aspect">Format</label>
+        <select id="standalone-image-aspect" name="aspect">
+          <option value="portrait">Portrait · 2:3</option>
+          <option value="square" selected>Square · 1:1</option>
+          <option value="landscape">Landscape · 3:2</option>
+        </select>
+        <div class="actions image-actions">
+          <button id="create-image" type="submit" aria-describedby="image-status">Create image</button>
+          <span id="image-status" class="hint" role="status" aria-live="polite"></span>
+        </div>
+      </form>
+      <div id="image-result" class="image-result" hidden>
+        <img id="generated-image" alt="Generated artwork based on the submitted prompt">
+        <a id="download-image" class="download" download="generated-image.png">Download PNG</a>
+      </div>
+    </section>
   </main>
 
   <template id="host-template">
@@ -363,6 +398,7 @@
     const activeJobPollers = new Map();
     let latestJobs = [];
     let configuredWorkers = 1;
+    let generatedImageUrl = null;
     const introMusicVolume = document.getElementById('intro-music-volume');
     introMusicVolume.addEventListener('input', () => {
       document.getElementById('intro-music-volume-value').textContent = `${Math.round(Number(introMusicVolume.value) * 100)}%`;
@@ -377,6 +413,53 @@
     function reportStatus(element, message, error = false) {
       a11y.setStatus(element, message, {error});
     }
+
+    const workspaceTabs = [document.getElementById('podcast-tab'), document.getElementById('image-tab')];
+    function selectWorkspace(tab) {
+      workspaceTabs.forEach(item => {
+        const selected = item === tab;
+        item.setAttribute('aria-selected', String(selected));
+        item.tabIndex = selected ? 0 : -1;
+        document.getElementById(item.getAttribute('aria-controls')).hidden = !selected;
+      });
+    }
+    workspaceTabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => selectWorkspace(tab));
+      tab.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const offset = event.key === 'ArrowRight' ? 1 : -1;
+        const next = workspaceTabs[(index + offset + workspaceTabs.length) % workspaceTabs.length];
+        selectWorkspace(next);
+        next.focus();
+      });
+    });
+
+    document.getElementById('image-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = document.getElementById('create-image');
+      const status = document.getElementById('image-status');
+      const result = document.getElementById('image-result');
+      button.disabled = true;
+      reportStatus(status, 'Creating image…');
+      try {
+        const response = await fetch('/api/images/generations', {method: 'POST', body: new FormData(event.target)});
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.detail || `Image generation failed (${response.status})`);
+        }
+        if (generatedImageUrl) URL.revokeObjectURL(generatedImageUrl);
+        generatedImageUrl = URL.createObjectURL(await response.blob());
+        document.getElementById('generated-image').src = generatedImageUrl;
+        document.getElementById('download-image').href = generatedImageUrl;
+        result.hidden = false;
+        reportStatus(status, 'Image ready to download.');
+      } catch (error) {
+        reportStatus(status, error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
 
     function fieldError(control, message) {
       if (!control.id) control.id = `field-${crypto.randomUUID()}`;
