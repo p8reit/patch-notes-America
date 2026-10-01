@@ -47,6 +47,22 @@ test('canceled replacement keeps the editor dirty', () => {
   assert.equal(ui.controller.isDirty(), true);
 });
 
+test('starting a new episode protects unsaved edits', () => {
+  let message = '';
+  const ui = setup((value) => { message = value; return false; });
+  ui.state = {...ui.state, title: 'Unsaved episode'};
+  assert.equal(ui.controller.confirmNewEpisode(), false);
+  assert.match(message, /start a new episode and replace your unsaved episode/i);
+  assert.equal(ui.controller.isDirty(), true);
+});
+
+test('starting a new episode without edits does not prompt', () => {
+  let calls = 0;
+  const ui = setup(() => { calls += 1; return true; });
+  assert.equal(ui.controller.confirmNewEpisode(), true);
+  assert.equal(calls, 0);
+});
+
 test('successful save snapshot resets the unload warning', () => {
   const ui = setup();
   ui.state = {...ui.state, research_packet: {episode_angle: 'Changed'}};

@@ -22,6 +22,11 @@
       return confirm(`Load “${title || 'the selected episode'}” and replace your unsaved episode, host, research, intro, image-prompt, and script edits?`);
     }
 
+    function confirmNewEpisode() {
+      if (!isDirty()) return true;
+      return confirm('Start a new episode and replace your unsaved episode, host, research, intro, image-prompt, and script edits?');
+    }
+
     function confirmScriptReplacement() {
       const state = serialize();
       const script = String(state.script || '').trim();
@@ -40,7 +45,7 @@
     form.addEventListener('change', isDirty);
     window.addEventListener('beforeunload', warnBeforeUnload);
 
-    return {isDirty, markClean, confirmEpisodeReplacement, confirmScriptReplacement, warnBeforeUnload};
+    return {isDirty, markClean, confirmEpisodeReplacement, confirmNewEpisode, confirmScriptReplacement, warnBeforeUnload};
   }
 
   return {init};
