@@ -300,6 +300,22 @@ Exaggeration/CFG Weight, and use **Preview Voice** before saving the cast. Do no
 clone a voice without the speaker's permission. `MAX_VOICE_UPLOAD_MB` controls
 the upload limit and defaults to 50 MB.
 
+### Single-host performance editor
+
+When an episode has exactly one host, **Analyze delivery** divides the spoken
+transcript into editable performance beats and suggests a deterministic delivery
+preset and intensity for each beat. The producer can change the text, split or
+merge beats, choose another preset, adjust intensity, and preview a beat before
+rendering. The host's saved voice controls remain the baseline; presets apply
+bounded adjustments to exaggeration and CFG weight.
+
+Performance editing is opt-in. Leaving **Apply approved performance beats when
+rendering** unchecked preserves the existing host-level rendering behavior.
+When enabled, the accepted beats and their resolved numeric settings are frozen
+in the generation job so retries and restart recovery use the same delivery.
+Saved episode documents retain disabled or enabled beats, while older documents
+load with performance editing disabled.
+
 ### Removing containers from older versions
 
 The recommended startup script removes orphaned services automatically. For a

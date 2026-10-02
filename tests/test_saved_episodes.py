@@ -97,6 +97,24 @@ def test_saved_episode_defaults_image_prompt_for_older_documents():
     assert main.parse_saved_episode(json.dumps(document))["image_prompt"] == ""
 
 
+def test_saved_episode_round_trips_performance_beats_and_defaults_old_documents():
+    document = episode_document()
+    document["performance"] = {
+        "enabled": True,
+        "beats": [{"id": "opening", "text": "Welcome to the show.", "preset": "warm", "intensity": 0.6}],
+    }
+
+    parsed = main.parse_saved_episode(json.dumps(document))
+
+    assert parsed["version"] == 2
+    assert parsed["performance"]["enabled"] is True
+    assert parsed["performance"]["beats"][0]["preset"] == "warm"
+    document.pop("performance")
+    assert main.parse_saved_episode(json.dumps(document))["performance"] == {
+        "version": 1, "enabled": False, "beats": [],
+    }
+
+
 def test_saved_episode_rejects_oversized_image_prompt():
     document = episode_document()
     document["image_prompt"] = "x" * (main.MAX_IMAGE_PROMPT_CHARS + 1)
@@ -116,3 +134,14 @@ def test_editor_places_intro_before_script_and_submits_image_prompt():
     assert template.index('class="intro-section"') < template.index('id="episode-script"')
     assert 'id="image-prompt" name="image_prompt"' in template
     assert "image_prompt: document.getElementById('image-prompt').value" in template
+
+
+def test_editor_exposes_single_host_performance_analysis_and_persistence():
+    template = (main.APP_ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="analyze-performance"' in template
+    assert 'id="performance-enabled"' in template
+    assert 'id="performance-status" class="hint" role="status" aria-live="polite"' in template
+    assert 'id="performance-json" name="performance_json"' in template
+    assert "fetch('/api/performance-analysis'" in template
+    assert "fetch('/api/performance-preview'" in template

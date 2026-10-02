@@ -104,6 +104,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .section-heading h2 { margin: 2px 0 0; }
 .hint { color: #8b949e; font-size: .92rem; line-height: 1.5; }
 .script-help { margin-top: -8px; }
+.performance-editor { margin-top: 24px; padding: 18px; border: 1px solid #30363d; border-radius: 12px; background: #0d1117; }
+.performance-editor h3 { margin: 0; }
+.performance-beats { display: grid; gap: 14px; margin-top: 16px; }
+.performance-beat { padding: 16px; border: 1px solid #30363d; border-radius: 10px; background: #161b22; }
+.performance-beat-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.performance-values { color: #58a6ff; font-size: .82rem; font-variant-numeric: tabular-nums; }
+.performance-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.performance-player { width: 100%; margin-top: 12px; }
+.checkbox-label { grid-template-columns: auto 1fr; align-items: center; justify-content: start; }
+.checkbox-label input { width: auto; }
+@media (max-width: 700px) { .performance-controls { grid-template-columns: 1fr; } .performance-beat-heading { display: grid; } }
 .intro-section { margin: 24px 0; padding: 18px; border: 1px solid #30363d; border-radius: 12px; background: #0d1117; }
 .intro-section h2 { margin: 2px 0 0; }
 code { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 2px 6px; }
