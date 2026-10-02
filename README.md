@@ -309,6 +309,15 @@ merge beats, choose another preset, adjust intensity, and preview a beat before
 rendering. The host's saved voice controls remain the baseline; presets apply
 bounded adjustments to exaggeration and CFG weight.
 
+Adjacent paragraphs with the same suggested delivery are grouped into one beat
+so ordinary narration does not restart the voice at every paragraph.
+
+Resolved controls are deliberately subtle and continuity-limited: each beat
+starts from the preceding beat's effective settings, and exaggeration/CFG
+changes are capped before synthesis. Repeated compatible beats may build
+gradually, while a return to baseline also happens gradually instead of jumping
+between paragraph-level performances.
+
 Performance editing is opt-in. Leaving **Apply approved performance beats when
 rendering** unchecked preserves the existing host-level rendering behavior.
 When enabled, the accepted beats and their resolved numeric settings are frozen

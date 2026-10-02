@@ -128,7 +128,9 @@ Production Studio
 ### Single-host performance editing
 
 - With exactly one host, the producer can deterministically analyze the editable transcript into performance beats.
+- Adjacent paragraphs with the same inferred delivery are grouped to avoid unnecessary synthesis boundaries.
 - Each beat retains editable spoken text, a delivery preset, intensity, and resolved exaggeration/CFG values derived from the host baseline.
+- Resolution is sequential and continuity-limited so adjacent beats cannot make abrupt control jumps; repeated intent can build gradually and baseline returns taper naturally.
 - Beats can be split, merged, previewed, saved with the episode, or disabled without being discarded.
 - Enabled settings are resolved before a generation job is accepted and stored on its speech chunks; workers and retries never re-run delivery inference.
 - Multi-host episodes continue to use the existing host-level controls and cannot enable performance beats.

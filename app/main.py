@@ -62,15 +62,16 @@ CHATTERBOX_DEFAULTS = {
 }
 PERFORMANCE_PRESETS = {
     "baseline": {"exaggeration": 0.0, "cfg_weight": 0.0},
-    "warm": {"exaggeration": 0.10, "cfg_weight": -0.03},
-    "excited": {"exaggeration": 0.25, "cfg_weight": -0.08},
-    "amused": {"exaggeration": 0.15, "cfg_weight": -0.06},
-    "dry": {"exaggeration": 0.03, "cfg_weight": 0.02},
-    "skeptical": {"exaggeration": 0.06, "cfg_weight": 0.0},
-    "concerned": {"exaggeration": -0.05, "cfg_weight": -0.04},
-    "reflective": {"exaggeration": -0.10, "cfg_weight": -0.05},
-    "emphatic": {"exaggeration": 0.20, "cfg_weight": -0.03},
+    "warm": {"exaggeration": 0.04, "cfg_weight": -0.005},
+    "excited": {"exaggeration": 0.12, "cfg_weight": -0.02},
+    "amused": {"exaggeration": 0.06, "cfg_weight": -0.015},
+    "dry": {"exaggeration": 0.01, "cfg_weight": 0.005},
+    "skeptical": {"exaggeration": 0.025, "cfg_weight": 0.0},
+    "concerned": {"exaggeration": -0.025, "cfg_weight": -0.01},
+    "reflective": {"exaggeration": -0.035, "cfg_weight": -0.01},
+    "emphatic": {"exaggeration": 0.08, "cfg_weight": -0.01},
 }
+PERFORMANCE_MAX_STEP = {"exaggeration": 0.05, "cfg_weight": 0.01}
 # Chatterbox's acoustic token generation has a finite output window. Large
 # prose chunks can exhaust it before the text is finished, at which point the
 # model commonly degenerates into a sustained or repeating sound.
@@ -125,27 +126,38 @@ def infer_delivery(text: str) -> tuple[str, float]:
     """Return a deterministic delivery suggestion for one performance beat."""
     normalized = text.casefold()
     if re.search(r"\b(unbelievable|incredible|amazing|finally|huge|wow)\b", normalized) or "!" in text:
-        return "excited", 0.7
+        return "excited", 0.45
     if re.search(r"\b(ridiculous|absurd|seriously|enough|outrage)\b", normalized):
-        return "emphatic", 0.65
+        return "emphatic", 0.45
     if re.search(r"\b(worry|worried|danger|risk|harm|crisis|concerning)\b", normalized):
-        return "concerned", 0.6
+        return "concerned", 0.4
     if re.search(r"\b(laugh|funny|hilarious|joke|somehow)\b", normalized):
-        return "amused", 0.55
+        return "amused", 0.4
     if "?" in text or re.search(r"\b(really|apparently|supposedly|claim)\b", normalized):
-        return "skeptical", 0.5
+        return "skeptical", 0.35
     if re.search(r"\b(remember|consider|perhaps|history|meaning|reflect)\b", normalized):
-        return "reflective", 0.45
+        return "reflective", 0.35
     return "baseline", 0.0
 
 
-def resolve_delivery(host: dict[str, Any], preset: str, intensity: float) -> dict[str, float]:
-    """Apply a bounded preset adjustment to one host's baseline controls."""
+def resolve_delivery(
+    host: dict[str, Any], preset: str, intensity: float,
+    previous: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Apply subtle controls while limiting changes between adjacent beats."""
     adjustment = PERFORMANCE_PRESETS[preset]
-    return {
-        "exaggeration": round(min(1.0, max(0.0, float(host.get("exaggeration", 0.5)) + adjustment["exaggeration"] * intensity)), 3),
-        "cfg_weight": round(min(1.0, max(0.0, float(host.get("cfg_weight", 0.5)) + adjustment["cfg_weight"] * intensity)), 3),
+    baseline = {
+        "exaggeration": float(host.get("exaggeration", 0.5)),
+        "cfg_weight": float(host.get("cfg_weight", 0.5)),
     }
+    previous = previous or baseline
+    resolved = {}
+    for field in ("exaggeration", "cfg_weight"):
+        target = baseline[field] + adjustment[field] * intensity
+        maximum_step = PERFORMANCE_MAX_STEP[field]
+        continuous = min(previous[field] + maximum_step, max(previous[field] - maximum_step, target))
+        resolved[field] = round(min(1.0, max(0.0, continuous)), 3)
+    return resolved
 
 
 def analyze_performance(script: str, hosts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -157,16 +169,29 @@ def analyze_performance(script: str, hosts: list[dict[str, Any]]) -> dict[str, A
     if not spoken:
         raise HTTPException(status_code=400, detail="No speakable text found")
     paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", spoken) if paragraph.strip()]
-    beats = []
+    suggestions: list[dict[str, Any]] = []
     for paragraph in paragraphs:
         preset, intensity = infer_delivery(paragraph)
+        if suggestions and suggestions[-1]["preset"] == preset:
+            suggestions[-1]["text"] += f"\n\n{paragraph}"
+            suggestions[-1]["intensity"] = max(suggestions[-1]["intensity"], intensity)
+        else:
+            suggestions.append({"text": paragraph, "preset": preset, "intensity": intensity})
+
+    beats = []
+    previous = None
+    for suggestion in suggestions:
+        preset = suggestion["preset"]
+        intensity = suggestion["intensity"]
+        resolved = resolve_delivery(hosts[0], preset, intensity, previous)
         beats.append({
             "id": uuid4().hex,
-            "text": paragraph,
+            "text": suggestion["text"],
             "preset": preset,
             "intensity": intensity,
-            "resolved": resolve_delivery(hosts[0], preset, intensity),
+            "resolved": resolved,
         })
+        previous = resolved
     return {"version": 1, "enabled": True, "host_id": hosts[0].get("id"), "beats": beats}
 
 
@@ -191,6 +216,7 @@ def parse_performance(performance_json: str, script: str, hosts: list[dict[str, 
     if not isinstance(raw_beats, list) or not raw_beats:
         raise HTTPException(status_code=400, detail="Emotional delivery needs at least one performance beat")
     beats = []
+    previous = None
     for index, item in enumerate(raw_beats, start=1):
         if not isinstance(item, dict):
             raise HTTPException(status_code=400, detail=f"Performance beat {index} is invalid")
@@ -202,10 +228,12 @@ def parse_performance(performance_json: str, script: str, hosts: list[dict[str, 
             raise HTTPException(status_code=400, detail=f"Performance beat {index} intensity must be a number") from exc
         if not text or preset not in PERFORMANCE_PRESETS or not 0 <= intensity <= 1:
             raise HTTPException(status_code=400, detail=f"Performance beat {index} has invalid text, preset, or intensity")
+        resolved = resolve_delivery(hosts[0], preset, intensity, previous)
         beats.append({
             "id": str(item.get("id") or uuid4().hex), "text": text, "preset": preset,
-            "intensity": intensity, "resolved": resolve_delivery(hosts[0], preset, intensity),
+            "intensity": intensity, "resolved": resolved,
         })
+        previous = resolved
     if enabled:
         spoken = "\n\n".join(section["text"] for section in parse_speaker_script(script, hosts))
         if clean_script("\n\n".join(beat["text"] for beat in beats)) != clean_script(spoken):
@@ -2200,6 +2228,8 @@ async def performance_analysis(script: str = Form(...), hosts_json: str = Form(.
 async def performance_preview(
     text: str = Form(...), hosts_json: str = Form(...),
     preset: str = Form("baseline"), intensity: float = Form(0.0),
+    resolved_exaggeration: float | None = Form(None),
+    resolved_cfg_weight: float | None = Form(None),
 ):
     """Render one transient single-host beat with its resolved delivery."""
     hosts = parse_hosts(hosts_json)
@@ -2211,7 +2241,14 @@ async def performance_preview(
     if preset not in PERFORMANCE_PRESETS or not 0 <= intensity <= 1:
         raise HTTPException(status_code=400, detail="Performance preview settings are invalid")
     host = hosts[0]
-    resolved = resolve_delivery(host, preset, intensity)
+    if (resolved_exaggeration is None) != (resolved_cfg_weight is None):
+        raise HTTPException(status_code=400, detail="Both resolved preview controls are required together")
+    if resolved_exaggeration is not None and resolved_cfg_weight is not None:
+        if not 0 <= resolved_exaggeration <= 1 or not 0 <= resolved_cfg_weight <= 1:
+            raise HTTPException(status_code=400, detail="Resolved preview controls must be between 0 and 1")
+        resolved = {"exaggeration": resolved_exaggeration, "cfg_weight": resolved_cfg_weight}
+    else:
+        resolved = resolve_delivery(host, preset, intensity)
     voice = host["voice"]
     if host.get("reference_audio_path") and reference_path(host).is_file():
         voice = f"host-{host['id']}"

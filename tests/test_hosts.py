@@ -56,8 +56,18 @@ def test_single_host_performance_analysis_is_deterministic_and_bounded():
     performance = analyze_performance("[Alex]\nThis is incredible!\n\nConsider what it means.", host)
 
     assert [beat["preset"] for beat in performance["beats"]] == ["excited", "reflective"]
-    assert performance["beats"][0]["resolved"]["exaggeration"] == 1.0
+    assert performance["beats"][0]["resolved"]["exaggeration"] == 0.95
     assert performance["beats"][1]["resolved"]["cfg_weight"] >= 0.0
+
+
+def test_performance_analysis_groups_adjacent_paragraphs_with_the_same_delivery():
+    host = [{"id": "a" * 32, "name": "Alex", "voice": "default", "tempo": 1.0}]
+
+    performance = analyze_performance("First factual paragraph.\n\nSecond factual paragraph.", host)
+
+    assert len(performance["beats"]) == 1
+    assert performance["beats"][0]["preset"] == "baseline"
+    assert performance["beats"][0]["text"] == "First factual paragraph.\n\nSecond factual paragraph."
 
 
 def test_performance_settings_are_frozen_on_every_child_chunk():
@@ -74,8 +84,28 @@ def test_performance_settings_are_frozen_on_every_child_chunk():
 
     assert len(chunks) > 1
     assert all(chunk["performance"]["beat_id"] == "beat-1" for chunk in chunks)
-    assert all(chunk["exaggeration"] == 0.7 and chunk["cfg_weight"] == 0.436 for chunk in chunks)
-    assert all(chunk["synthesis_settings"]["exaggeration"] == 0.7 for chunk in chunks)
+    assert all(chunk["exaggeration"] == 0.55 and chunk["cfg_weight"] == 0.49 for chunk in chunks)
+    assert all(chunk["synthesis_settings"]["exaggeration"] == 0.55 for chunk in chunks)
+
+
+def test_performance_resolution_limits_adjacent_changes_and_tapers_to_baseline():
+    host = [{"id": "a" * 32, "name": "Alex", "voice": "default", "tempo": 1.0,
+             "exaggeration": 0.5, "cfg_weight": 0.5}]
+    script = "[Alex]\nBig reveal!\n\nStill exciting!\n\nBack to the facts."
+    raw = {"enabled": True, "beats": [
+        {"text": "Big reveal!", "preset": "excited", "intensity": 1},
+        {"text": "Still exciting!", "preset": "excited", "intensity": 1},
+        {"text": "Back to the facts.", "preset": "baseline", "intensity": 0},
+    ]}
+
+    performance = parse_performance(json.dumps(raw), script, host)
+    resolved = [beat["resolved"] for beat in performance["beats"]]
+
+    assert resolved == [
+        {"exaggeration": 0.55, "cfg_weight": 0.49},
+        {"exaggeration": 0.6, "cfg_weight": 0.48},
+        {"exaggeration": 0.55, "cfg_weight": 0.49},
+    ]
 
 
 def test_performance_rejects_stale_beats_and_multihost_analysis():

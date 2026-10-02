@@ -145,8 +145,29 @@ def test_generation_job_persists_resolved_single_host_performance(tmp_path, monk
     job = json.loads((tmp_path / response.json()["job_id"] / "job.json").read_text())
     assert job["performance"]["enabled"] is True
     assert job["chunks"][0]["performance"]["beat_id"] == "beat-one"
-    assert job["chunks"][0]["exaggeration"] == 0.7
-    assert job["chunks"][0]["cfg_weight"] == 0.436
+    assert job["chunks"][0]["exaggeration"] == 0.55
+    assert job["chunks"][0]["cfg_weight"] == 0.49
+
+
+def test_performance_preview_uses_the_smoothed_controls_shown_in_editor(tmp_path, monkeypatch):
+    received = {}
+
+    async def synthesize(text, voice, tempo, destination, **settings):
+        received.update(text=text, voice=voice, tempo=tempo, **settings)
+        destination.write_bytes(_wav_bytes())
+
+    monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(main, "synthesize_chunk", synthesize)
+
+    response = TestClient(main.app).post("/api/performance-preview", data={
+        "text": "A continuous performance.", "hosts_json": json.dumps(HOSTS),
+        "preset": "excited", "intensity": "1",
+        "resolved_exaggeration": "0.60", "resolved_cfg_weight": "0.48",
+    })
+
+    assert response.status_code == 200
+    assert received["exaggeration"] == 0.6
+    assert received["cfg_weight"] == 0.48
 
 
 def test_restart_requeues_interrupted_work_and_preserves_valid_completed_chunk(tmp_path, monkeypatch):

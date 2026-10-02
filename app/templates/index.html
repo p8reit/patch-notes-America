@@ -174,7 +174,7 @@
         <div class="section-heading">
           <div>
             <h3 id="performance-title">Single-host performance</h3>
-            <p class="hint">Analyze the transcript into editable delivery beats. Host voice settings remain the baseline.</p>
+            <p class="hint">Analyze the transcript into subtle delivery beats. Host settings remain the baseline, and adjacent beats are smoothed to avoid robotic jumps.</p>
           </div>
           <button id="analyze-performance" class="secondary" type="button" aria-describedby="performance-status">Analyze delivery</button>
         </div>
@@ -914,18 +914,39 @@
     }
 
     const performancePresets = {
-      baseline: [0, 0], warm: [0.10, -0.03], excited: [0.25, -0.08],
-      amused: [0.15, -0.06], dry: [0.03, 0.02], skeptical: [0.06, 0],
-      concerned: [-0.05, -0.04], reflective: [-0.10, -0.05], emphatic: [0.20, -0.03],
+      baseline: [0, 0], warm: [0.04, -0.005], excited: [0.12, -0.02],
+      amused: [0.06, -0.015], dry: [0.01, 0.005], skeptical: [0.025, 0],
+      concerned: [-0.025, -0.01], reflective: [-0.035, -0.01], emphatic: [0.08, -0.01],
     };
 
-    function resolvedPerformance(preset, intensity) {
+    function resolvedPerformance(preset, intensity, previous = null) {
       const host = serializeHosts()[0] || {};
       const adjustment = performancePresets[preset] || performancePresets.baseline;
-      return {
-        exaggeration: Math.min(1, Math.max(0, Number(host.exaggeration ?? 0.5) + adjustment[0] * intensity)),
-        cfg_weight: Math.min(1, Math.max(0, Number(host.cfg_weight ?? 0.5) + adjustment[1] * intensity)),
+      const baseline = [Number(host.exaggeration ?? 0.5), Number(host.cfg_weight ?? 0.5)];
+      const prior = previous || baseline;
+      const maximumStep = [0.05, 0.01];
+      const resolve = (index) => {
+        const target = baseline[index] + adjustment[index] * intensity;
+        return Math.min(1, Math.max(0, Math.min(prior[index] + maximumStep[index], Math.max(prior[index] - maximumStep[index], target))));
       };
+      return {
+        exaggeration: resolve(0),
+        cfg_weight: resolve(1),
+      };
+    }
+
+    function refreshPerformanceValues() {
+      let previous = null;
+      document.querySelectorAll('.performance-beat').forEach((article) => {
+        const preset = article.querySelector('.performance-preset').value;
+        const intensity = Number(article.querySelector('.performance-intensity').value);
+        const resolved = resolvedPerformance(preset, intensity, previous);
+        previous = [resolved.exaggeration, resolved.cfg_weight];
+        article.dataset.resolvedExaggeration = String(resolved.exaggeration);
+        article.dataset.resolvedCfgWeight = String(resolved.cfg_weight);
+        article.querySelector('.performance-intensity-value').textContent = `${Math.round(intensity * 100)}%`;
+        article.querySelector('.performance-values').textContent = `Smoothed · Exaggeration ${resolved.exaggeration.toFixed(2)} · CFG ${resolved.cfg_weight.toFixed(2)}`;
+      });
     }
 
     function serializePerformance() {
@@ -976,11 +997,7 @@
         article.querySelector('.performance-preset').value = beat.preset || 'baseline';
         article.querySelector('.performance-intensity').value = beat.intensity ?? 0;
         const update = () => {
-          const preset = article.querySelector('.performance-preset').value;
-          const intensity = Number(article.querySelector('.performance-intensity').value);
-          const resolved = resolvedPerformance(preset, intensity);
-          article.querySelector('.performance-intensity-value').textContent = `${Math.round(intensity * 100)}%`;
-          article.querySelector('.performance-values').textContent = `Exaggeration ${resolved.exaggeration.toFixed(2)} · CFG ${resolved.cfg_weight.toFixed(2)}`;
+          refreshPerformanceValues();
           serializePerformance();
         };
         article.querySelectorAll('.performance-preset, .performance-intensity').forEach(control => control.addEventListener('input', update));
@@ -1003,6 +1020,8 @@
           const form = new FormData(); const current = serializePerformance().beats[index];
           form.append('text', current.text.slice(0, 300)); form.append('hosts_json', JSON.stringify(serializeHosts()));
           form.append('preset', current.preset); form.append('intensity', current.intensity);
+          form.append('resolved_exaggeration', article.dataset.resolvedExaggeration);
+          form.append('resolved_cfg_weight', article.dataset.resolvedCfgWeight);
           button.disabled = true; reportStatus(status, 'Generating beat preview…');
           try {
             const response = await fetch('/api/performance-preview', {method: 'POST', body: form});
