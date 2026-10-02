@@ -1338,8 +1338,7 @@ async def process_generation_job(job_id: str) -> None:
             job["clips"] = await render_automatic_social_clips(
                 job_dir, job["title"], metadata, str(job.get("image_prompt", ""))
             )
-            art_errors = [clip["art_error"] for clip in job["clips"] if clip.get("art_error")]
-            job["clip_art_error"] = "; ".join(art_errors) if art_errors else None
+            job["clip_art_error"] = summarize_clip_art_errors(job["clips"])
             metadata["clips"] = job["clips"]
             metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         except Exception as clip_exc:  # Clip failures must not discard a completed episode.
@@ -1557,6 +1556,14 @@ def clip_art_prompt(title: str, excerpt: str, image_prompt: str = "") -> str:
         "Cinematic composition, dark navy and warm amber palette, strong central subject, generous safe area, "
         "no words, no lettering, no logos, no watermark, no UI, no podcast microphones."
     )
+
+
+def summarize_clip_art_errors(clips: list[dict[str, Any]]) -> str | None:
+    """Return each distinct automatic-clip artwork error once, in clip order."""
+    errors = dict.fromkeys(
+        str(clip["art_error"]) for clip in clips if clip.get("art_error")
+    )
+    return "; ".join(errors) if errors else None
 
 
 async def generate_clip_art(

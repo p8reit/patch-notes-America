@@ -5,6 +5,20 @@ from fastapi.testclient import TestClient
 from app import main
 
 
+def test_clip_art_error_summary_deduplicates_repeated_failures_in_clip_order():
+    unavailable = "Local clip artwork service is unreachable."
+    invalid = "Image generator returned invalid base64 data"
+
+    summary = main.summarize_clip_art_errors([
+        {"id": "clip-1", "art_error": unavailable},
+        {"id": "clip-2", "art_error": unavailable},
+        {"id": "clip-3", "art_error": invalid},
+        {"id": "clip-4", "art_error": None},
+    ])
+
+    assert summary == f"{unavailable}; {invalid}"
+
+
 def test_completed_job_reveals_clip_studio_and_targets_suggestions(monkeypatch, tmp_path):
     job_id = "completed-browser-job"
     job_dir = tmp_path / job_id
