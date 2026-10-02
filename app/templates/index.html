@@ -169,6 +169,23 @@
         Switch speakers with the exact host name on its own line, such as <code>[Alex Rivera]</code> or <code>[Jordan Lee]</code>.
         Text before the first speaker tag is spoken by the first host.
       </p>
+
+      <section class="performance-editor" aria-labelledby="performance-title">
+        <div class="section-heading">
+          <div>
+            <h3 id="performance-title">Single-host performance</h3>
+            <p class="hint">Analyze the transcript into subtle delivery beats. Host settings remain the baseline, and adjacent beats are smoothed to avoid robotic jumps.</p>
+          </div>
+          <button id="analyze-performance" class="secondary" type="button" aria-describedby="performance-status">Analyze delivery</button>
+        </div>
+        <label class="checkbox-label">
+          <input id="performance-enabled" type="checkbox" disabled>
+          Apply approved performance beats when rendering
+        </label>
+        <p id="performance-status" class="hint" role="status" aria-live="polite">Available when exactly one host is configured.</p>
+        <div id="performance-beats" class="performance-beats"></div>
+        <input id="performance-json" name="performance_json" type="hidden" value="">
+      </section>
       </section>
 
       <section id="stage-5" class="workflow-stage render-stage" aria-labelledby="render-title" data-workflow-stage>
@@ -400,6 +417,7 @@
     let latestJobs = [];
     let configuredWorkers = 1;
     let generatedImageUrl = null;
+    let performanceState = {version: 1, enabled: false, beats: []};
     const introMusicVolume = document.getElementById('intro-music-volume');
     introMusicVolume.addEventListener('input', () => {
       document.getElementById('intro-music-volume-value').textContent = `${Math.round(Number(introMusicVolume.value) * 100)}%`;
@@ -674,6 +692,9 @@
         if (!reason.id) reason.id = `remove-host-reason-${row.dataset.hostId || index + 1}`;
         a11y.setDisabledReason(remove, reason, rows.length === 1 ? 'At least one host is required.' : '');
       });
+      const performanceEnabled = document.getElementById('performance-enabled');
+      performanceEnabled.disabled = rows.length !== 1 || !performanceState.beats?.length;
+      if (rows.length !== 1) performanceEnabled.checked = false;
     }
 
     function bindRoleLabel(row) {
@@ -892,6 +913,144 @@
       return hosts;
     }
 
+    const performancePresets = {
+      baseline: [0, 0], warm: [0.04, -0.005], excited: [0.12, -0.02],
+      amused: [0.06, -0.015], dry: [0.01, 0.005], skeptical: [0.025, 0],
+      concerned: [-0.025, -0.01], reflective: [-0.035, -0.01], emphatic: [0.08, -0.01],
+    };
+
+    function resolvedPerformance(preset, intensity, previous = null) {
+      const host = serializeHosts()[0] || {};
+      const adjustment = performancePresets[preset] || performancePresets.baseline;
+      const baseline = [Number(host.exaggeration ?? 0.5), Number(host.cfg_weight ?? 0.5)];
+      const prior = previous || baseline;
+      const maximumStep = [0.05, 0.01];
+      const resolve = (index) => {
+        const target = baseline[index] + adjustment[index] * intensity;
+        return Math.min(1, Math.max(0, Math.min(prior[index] + maximumStep[index], Math.max(prior[index] - maximumStep[index], target))));
+      };
+      return {
+        exaggeration: resolve(0),
+        cfg_weight: resolve(1),
+      };
+    }
+
+    function refreshPerformanceValues() {
+      let previous = null;
+      document.querySelectorAll('.performance-beat').forEach((article) => {
+        const preset = article.querySelector('.performance-preset').value;
+        const intensity = Number(article.querySelector('.performance-intensity').value);
+        const resolved = resolvedPerformance(preset, intensity, previous);
+        previous = [resolved.exaggeration, resolved.cfg_weight];
+        article.dataset.resolvedExaggeration = String(resolved.exaggeration);
+        article.dataset.resolvedCfgWeight = String(resolved.cfg_weight);
+        article.querySelector('.performance-intensity-value').textContent = `${Math.round(intensity * 100)}%`;
+        article.querySelector('.performance-values').textContent = `Smoothed · Exaggeration ${resolved.exaggeration.toFixed(2)} · CFG ${resolved.cfg_weight.toFixed(2)}`;
+      });
+    }
+
+    function serializePerformance() {
+      const enabled = document.getElementById('performance-enabled').checked;
+      const beats = [...document.querySelectorAll('.performance-beat')].map((beat) => ({
+        id: beat.dataset.beatId,
+        text: beat.querySelector('.performance-text').value.trim(),
+        preset: beat.querySelector('.performance-preset').value,
+        intensity: Number(beat.querySelector('.performance-intensity').value),
+      }));
+      performanceState = {version: 1, enabled, host_id: serializeHosts()[0]?.id, beats};
+      document.getElementById('performance-json').value = JSON.stringify(performanceState);
+      return performanceState;
+    }
+
+    function syncScriptFromPerformance() {
+      const host = serializeHosts()[0];
+      if (!host) return;
+      const text = [...document.querySelectorAll('.performance-text')].map((control) => control.value.trim()).filter(Boolean).join('\n\n');
+      document.getElementById('episode-script').value = text ? `[${host.name}]\n${text}` : '';
+      serializePerformance();
+    }
+
+    function invalidatePerformance() {
+      if (!performanceState.beats?.length) return;
+      performanceState.enabled = false;
+      document.getElementById('performance-enabled').checked = false;
+      serializePerformance();
+      reportStatus(document.getElementById('performance-status'), 'Transcript changed. Analyze delivery again before enabling performance beats.');
+    }
+
+    function renderPerformanceBeats() {
+      const container = document.getElementById('performance-beats');
+      const enabled = document.getElementById('performance-enabled');
+      container.replaceChildren();
+      enabled.disabled = !performanceState.beats?.length || serializeHosts().length !== 1;
+      enabled.checked = Boolean(performanceState.enabled && !enabled.disabled);
+      (performanceState.beats || []).forEach((beat, index) => {
+        const article = document.createElement('article');
+        article.className = 'performance-beat'; article.dataset.beatId = beat.id || crypto.randomUUID().replaceAll('-', '');
+        article.innerHTML = `<div class="performance-beat-heading"><strong>Beat ${index + 1}</strong><span class="performance-values"></span></div>
+          <label>Spoken text<textarea class="performance-text" rows="3" required></textarea></label>
+          <div class="performance-controls"><label>Delivery<select class="performance-preset">${Object.keys(performancePresets).map(name => `<option value="${name}">${name[0].toUpperCase() + name.slice(1)}</option>`).join('')}</select></label>
+          <label>Intensity <output class="performance-intensity-value"></output><input class="performance-intensity" type="range" min="0" max="1" step="0.05"></label></div>
+          <div class="section-actions"><button class="preview-performance secondary" type="button">Preview beat</button><button class="split-performance secondary" type="button">Split beat</button><button class="merge-performance secondary" type="button" ${index ? '' : 'disabled'}>Merge with previous</button></div>
+          <audio class="performance-player" controls hidden></audio><p class="performance-preview-status hint" role="status" aria-live="polite"></p>`;
+        article.querySelector('.performance-text').value = beat.text || '';
+        article.querySelector('.performance-preset').value = beat.preset || 'baseline';
+        article.querySelector('.performance-intensity').value = beat.intensity ?? 0;
+        const update = () => {
+          refreshPerformanceValues();
+          serializePerformance();
+        };
+        article.querySelectorAll('.performance-preset, .performance-intensity').forEach(control => control.addEventListener('input', update));
+        article.querySelector('.performance-text').addEventListener('input', syncScriptFromPerformance);
+        article.querySelector('.split-performance').addEventListener('click', () => {
+          const current = serializePerformance(); const item = current.beats[index];
+          const sentences = item.text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [item.text];
+          if (sentences.length < 2) { reportStatus(document.getElementById('performance-status'), 'This beat needs at least two sentences to split.', true); return; }
+          const midpoint = Math.ceil(sentences.length / 2);
+          current.beats.splice(index, 1, {...item, id: crypto.randomUUID().replaceAll('-', ''), text: sentences.slice(0, midpoint).join(' ').trim()}, {...item, id: crypto.randomUUID().replaceAll('-', ''), text: sentences.slice(midpoint).join(' ').trim()});
+          performanceState = current; renderPerformanceBeats(); syncScriptFromPerformance();
+        });
+        article.querySelector('.merge-performance').addEventListener('click', () => {
+          const current = serializePerformance();
+          current.beats[index - 1].text = `${current.beats[index - 1].text}\n\n${current.beats[index].text}`;
+          current.beats.splice(index, 1); performanceState = current; renderPerformanceBeats(); syncScriptFromPerformance();
+        });
+        article.querySelector('.preview-performance').addEventListener('click', async (event) => {
+          const status = article.querySelector('.performance-preview-status'); const button = event.currentTarget;
+          const form = new FormData(); const current = serializePerformance().beats[index];
+          form.append('text', current.text.slice(0, 300)); form.append('hosts_json', JSON.stringify(serializeHosts()));
+          form.append('preset', current.preset); form.append('intensity', current.intensity);
+          form.append('resolved_exaggeration', article.dataset.resolvedExaggeration);
+          form.append('resolved_cfg_weight', article.dataset.resolvedCfgWeight);
+          button.disabled = true; reportStatus(status, 'Generating beat preview…');
+          try {
+            const response = await fetch('/api/performance-preview', {method: 'POST', body: form});
+            if (!response.ok) await readJsonResponse(response, 'Performance preview failed');
+            const player = article.querySelector('.performance-player');
+            if (player.dataset.objectUrl) URL.revokeObjectURL(player.dataset.objectUrl);
+            player.dataset.objectUrl = URL.createObjectURL(await response.blob()); player.src = player.dataset.objectUrl; player.hidden = false;
+            await player.play(); reportStatus(status, 'Beat preview ready.');
+          } catch (error) { reportStatus(status, error.message, true); } finally { button.disabled = false; }
+        });
+        container.appendChild(article); update();
+      });
+      serializePerformance();
+    }
+
+    document.getElementById('performance-enabled').addEventListener('change', serializePerformance);
+    document.getElementById('episode-script').addEventListener('input', invalidatePerformance);
+    document.getElementById('analyze-performance').addEventListener('click', async (event) => {
+      const button = event.currentTarget; const status = document.getElementById('performance-status'); const hosts = serializeHosts();
+      if (hosts.length !== 1) { reportStatus(status, 'Performance editing currently requires exactly one host.', true); return; }
+      button.disabled = true; reportStatus(status, 'Analyzing delivery beats…');
+      try {
+        const form = new FormData(); form.append('script', document.getElementById('episode-script').value); form.append('hosts_json', JSON.stringify(hosts));
+        const response = await fetch('/api/performance-analysis', {method: 'POST', body: form});
+        performanceState = await readJsonResponse(response, 'Could not analyze performance'); renderPerformanceBeats();
+        reportStatus(status, `Suggested ${performanceState.beats.length} editable performance beat${performanceState.beats.length === 1 ? '' : 's'}.`);
+      } catch (error) { reportStatus(status, error.message, true); } finally { button.disabled = false; }
+    });
+
     document.getElementById('add-host').addEventListener('click', () => addHost({
       name: '',
       role: '',
@@ -1023,6 +1182,7 @@
         target_minutes: Number(document.getElementById('target-minutes').value),
         conversation_tone: document.getElementById('conversation-tone').value,
         script: document.getElementById('episode-script').value,
+        performance: serializePerformance(),
         image_prompt: document.getElementById('image-prompt').value,
         intro_lines: document.getElementById('intro-lines').value,
         intro_overlap: document.getElementById('intro-overlap').checked,
@@ -1075,6 +1235,8 @@
       document.getElementById('target-minutes').value = episode.target_minutes ?? 8;
       document.getElementById('conversation-tone').value = episode.conversation_tone || '';
       document.getElementById('episode-script').value = episode.script || '';
+      performanceState = episode.performance || {version: 1, enabled: false, beats: []};
+      renderPerformanceBeats();
       document.getElementById('image-prompt').value = episode.image_prompt || '';
       document.getElementById('intro-lines').value = episode.intro_lines || '';
       document.getElementById('intro-overlap').checked = Boolean(episode.intro_overlap);
@@ -1099,6 +1261,7 @@
         target_minutes: 8,
         conversation_tone: 'smart, funny, conversational, politically non-tribal',
         script: '',
+        performance: {version: 1, enabled: false, beats: []},
         image_prompt: '',
         intro_lines: '',
         intro_overlap: true,
@@ -1194,7 +1357,7 @@
       try { const form = new FormData(); form.append('packet_json', JSON.stringify(serializePacket())); form.append('hosts_json', JSON.stringify(serializeHosts()));
         form.append('target_minutes', document.getElementById('target-minutes').value); form.append('tone', document.getElementById('conversation-tone').value);
         const res=await fetch('/api/conversation-draft-packet',{method:'POST',body:form}); const data=await readJsonResponse(res, 'Episode draft failed');
-        document.getElementById('episode-script').value=data.script; status.textContent=`Draft ready: ${data.stories} stories, ${data.hosts} hosts.`;
+        document.getElementById('episode-script').value=data.script; invalidatePerformance(); status.textContent=`Draft ready: ${data.stories} stories, ${data.hosts} hosts.`;
       } catch(err) { reportStatus(status, err.message, true); } finally { button.disabled=false; }
     });
 
@@ -1226,6 +1389,7 @@
         const res = await fetch('/api/conversation-draft', { method: 'POST', body: form });
         const data = await readJsonResponse(res, 'Conversation generation failed');
         document.getElementById('episode-script').value = data.script;
+        invalidatePerformance();
         reportStatus(status, `Draft ready using ${data.hosts} hosts. Review and edit it, then generate audio.`);
       } catch (err) {
         reportStatus(status, err.message, true);
@@ -1255,6 +1419,7 @@
       result.hidden = true;
 
       try {
+        serializePerformance();
         const res = await fetch('/api/generation-jobs', {
           method: 'POST',
           body: new FormData(event.target),
@@ -1334,6 +1499,7 @@
     });
 
     initialProfiles.forEach(addHost);
+    renderPerformanceBeats();
     addSettingInfo();
     editorState = window.EpisodeEditorState.init({
       window,

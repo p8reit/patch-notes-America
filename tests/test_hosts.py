@@ -10,6 +10,9 @@ from app.main import (
     parse_hosts,
     parse_speaker_script,
     remove_accidental_transcript_repetition,
+    analyze_performance,
+    build_performance_speech_chunks,
+    parse_performance,
 )
 
 
@@ -44,6 +47,74 @@ def test_build_chunks_preserves_voice_and_tempo():
     assert chunks[0]["voice"] == "am_michael"
     assert chunks[1]["voice"] == "af_heart"
     assert chunks[1]["tempo"] == 1.05
+
+
+def test_single_host_performance_analysis_is_deterministic_and_bounded():
+    host = [{"id": "a" * 32, "name": "Alex", "voice": "default", "tempo": 1.0,
+             "exaggeration": 0.9, "cfg_weight": 0.1}]
+
+    performance = analyze_performance("[Alex]\nThis is incredible!\n\nConsider what it means.", host)
+
+    assert [beat["preset"] for beat in performance["beats"]] == ["excited", "reflective"]
+    assert performance["beats"][0]["resolved"]["exaggeration"] == 0.95
+    assert performance["beats"][1]["resolved"]["cfg_weight"] >= 0.0
+
+
+def test_performance_analysis_groups_adjacent_paragraphs_with_the_same_delivery():
+    host = [{"id": "a" * 32, "name": "Alex", "voice": "default", "tempo": 1.0}]
+
+    performance = analyze_performance("First factual paragraph.\n\nSecond factual paragraph.", host)
+
+    assert len(performance["beats"]) == 1
+    assert performance["beats"][0]["preset"] == "baseline"
+    assert performance["beats"][0]["text"] == "First factual paragraph.\n\nSecond factual paragraph."
+
+
+def test_performance_settings_are_frozen_on_every_child_chunk():
+    host = [{"id": "a" * 32, "name": "Alex", "voice": "default", "tempo": 1.0,
+             "exaggeration": 0.5, "cfg_weight": 0.5}]
+    script = "[Alex]\nThis is incredible and this sentence is deliberately long. Another exciting sentence!"
+    raw = {"enabled": True, "beats": [{
+        "id": "beat-1", "text": "This is incredible and this sentence is deliberately long. Another exciting sentence!",
+        "preset": "excited", "intensity": 0.8,
+    }]}
+
+    performance = parse_performance(json.dumps(raw), script, host)
+    chunks = build_performance_speech_chunks(script, host, performance, max_chars=45)
+
+    assert len(chunks) > 1
+    assert all(chunk["performance"]["beat_id"] == "beat-1" for chunk in chunks)
+    assert all(chunk["exaggeration"] == 0.55 and chunk["cfg_weight"] == 0.49 for chunk in chunks)
+    assert all(chunk["synthesis_settings"]["exaggeration"] == 0.55 for chunk in chunks)
+
+
+def test_performance_resolution_limits_adjacent_changes_and_tapers_to_baseline():
+    host = [{"id": "a" * 32, "name": "Alex", "voice": "default", "tempo": 1.0,
+             "exaggeration": 0.5, "cfg_weight": 0.5}]
+    script = "[Alex]\nBig reveal!\n\nStill exciting!\n\nBack to the facts."
+    raw = {"enabled": True, "beats": [
+        {"text": "Big reveal!", "preset": "excited", "intensity": 1},
+        {"text": "Still exciting!", "preset": "excited", "intensity": 1},
+        {"text": "Back to the facts.", "preset": "baseline", "intensity": 0},
+    ]}
+
+    performance = parse_performance(json.dumps(raw), script, host)
+    resolved = [beat["resolved"] for beat in performance["beats"]]
+
+    assert resolved == [
+        {"exaggeration": 0.55, "cfg_weight": 0.49},
+        {"exaggeration": 0.6, "cfg_weight": 0.48},
+        {"exaggeration": 0.55, "cfg_weight": 0.49},
+    ]
+
+
+def test_performance_rejects_stale_beats_and_multihost_analysis():
+    single = [{"id": "a" * 32, "name": "Alex", "voice": "default", "tempo": 1.0}]
+    raw = {"enabled": True, "beats": [{"text": "Old text.", "preset": "baseline", "intensity": 0}]}
+    with pytest.raises(HTTPException, match="no longer match"):
+        parse_performance(json.dumps(raw), "New text.", single)
+    with pytest.raises(HTTPException, match="exactly one host"):
+        analyze_performance("Hello.", hosts())
 
 
 def test_utterances_have_stable_manifest_identity_and_order_fields():
