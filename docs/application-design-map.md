@@ -86,6 +86,7 @@ Production Studio
 │   ├── Collapsed optional show-open settings
 │   ├── Episode image prompt
 │   └── Episode script
+│       └── Single-host performance editor and beat previews
 │   ├── 5. Render and download
 │   ├── Generate action and latest result
 │   └── Background render queue
@@ -123,6 +124,14 @@ Production Studio
 - The backend builds a cast-aware prompt containing personalities, target duration, tone, source constraints, and required speaker-tag syntax.
 - Generation uses the configured OpenAI provider by default or an optional local Ollama-compatible service.
 - Generated dialogue always returns to the editable script field; it is not sent directly to rendering.
+
+### Single-host performance editing
+
+- With exactly one host, the producer can deterministically analyze the editable transcript into performance beats.
+- Each beat retains editable spoken text, a delivery preset, intensity, and resolved exaggeration/CFG values derived from the host baseline.
+- Beats can be split, merged, previewed, saved with the episode, or disabled without being discarded.
+- Enabled settings are resolved before a generation job is accepted and stored on its speech chunks; workers and retries never re-run delivery inference.
+- Multi-host episodes continue to use the existing host-level controls and cannot enable performance beats.
 
 ### Rendering and recovery
 
@@ -256,6 +265,8 @@ Episode
 ├── story_notes
 ├── target_minutes + conversation_tone
 ├── script
+├── performance { version, enabled, host_id, beats[] }
+│   └── beat { id, text, preset, intensity, resolved controls }
 └── intro_lines + overlap + music volume + optional audio file
 ```
 
@@ -270,6 +281,7 @@ Episode
 | Episodes | `GET/POST /api/saved-episodes`; `GET /api/saved-episodes/{id}` | List, save, and restore editable episodes |
 | Research | `GET/POST /api/research-packets`; `GET /api/research-packets/{id}` | Persist structured source packets |
 | Drafting | `POST /api/conversation-draft`; `POST /api/conversation-draft-packet` | Generate an editable multi-host script |
+| Performance | `POST /api/performance-analysis`; `POST /api/performance-preview` | Suggest and audition deterministic single-host delivery beats |
 | Rendering | `POST/GET /api/generation-jobs`; `GET /api/generation-jobs/{id}` | Create, list, and monitor durable jobs |
 | Compatibility | `POST /api/generate`; `POST /api/chunk-preview` | Synchronous generation and chunk inspection paths |
 | Downloads | `GET /api/episodes/{slug}/download` | Serve the completed MP3 |

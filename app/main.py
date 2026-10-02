@@ -60,6 +60,17 @@ CHATTERBOX_DEFAULTS = {
     "top_p": 1.0,
     "repetition_penalty": 1.2,
 }
+PERFORMANCE_PRESETS = {
+    "baseline": {"exaggeration": 0.0, "cfg_weight": 0.0},
+    "warm": {"exaggeration": 0.10, "cfg_weight": -0.03},
+    "excited": {"exaggeration": 0.25, "cfg_weight": -0.08},
+    "amused": {"exaggeration": 0.15, "cfg_weight": -0.06},
+    "dry": {"exaggeration": 0.03, "cfg_weight": 0.02},
+    "skeptical": {"exaggeration": 0.06, "cfg_weight": 0.0},
+    "concerned": {"exaggeration": -0.05, "cfg_weight": -0.04},
+    "reflective": {"exaggeration": -0.10, "cfg_weight": -0.05},
+    "emphatic": {"exaggeration": 0.20, "cfg_weight": -0.03},
+}
 # Chatterbox's acoustic token generation has a finite output window. Large
 # prose chunks can exhaust it before the text is finished, at which point the
 # model commonly degenerates into a sustained or repeating sound.
@@ -110,6 +121,98 @@ def clean_script(text: str) -> str:
     return text.strip()
 
 
+def infer_delivery(text: str) -> tuple[str, float]:
+    """Return a deterministic delivery suggestion for one performance beat."""
+    normalized = text.casefold()
+    if re.search(r"\b(unbelievable|incredible|amazing|finally|huge|wow)\b", normalized) or "!" in text:
+        return "excited", 0.7
+    if re.search(r"\b(ridiculous|absurd|seriously|enough|outrage)\b", normalized):
+        return "emphatic", 0.65
+    if re.search(r"\b(worry|worried|danger|risk|harm|crisis|concerning)\b", normalized):
+        return "concerned", 0.6
+    if re.search(r"\b(laugh|funny|hilarious|joke|somehow)\b", normalized):
+        return "amused", 0.55
+    if "?" in text or re.search(r"\b(really|apparently|supposedly|claim)\b", normalized):
+        return "skeptical", 0.5
+    if re.search(r"\b(remember|consider|perhaps|history|meaning|reflect)\b", normalized):
+        return "reflective", 0.45
+    return "baseline", 0.0
+
+
+def resolve_delivery(host: dict[str, Any], preset: str, intensity: float) -> dict[str, float]:
+    """Apply a bounded preset adjustment to one host's baseline controls."""
+    adjustment = PERFORMANCE_PRESETS[preset]
+    return {
+        "exaggeration": round(min(1.0, max(0.0, float(host.get("exaggeration", 0.5)) + adjustment["exaggeration"] * intensity)), 3),
+        "cfg_weight": round(min(1.0, max(0.0, float(host.get("cfg_weight", 0.5)) + adjustment["cfg_weight"] * intensity)), 3),
+    }
+
+
+def analyze_performance(script: str, hosts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create editable, deterministic performance beats for a single host."""
+    if len(hosts) != 1:
+        raise HTTPException(status_code=400, detail="Performance editing currently requires exactly one host")
+    sections = parse_speaker_script(remove_accidental_transcript_repetition(script), hosts)
+    spoken = "\n\n".join(section["text"] for section in sections).strip()
+    if not spoken:
+        raise HTTPException(status_code=400, detail="No speakable text found")
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", spoken) if paragraph.strip()]
+    beats = []
+    for paragraph in paragraphs:
+        preset, intensity = infer_delivery(paragraph)
+        beats.append({
+            "id": uuid4().hex,
+            "text": paragraph,
+            "preset": preset,
+            "intensity": intensity,
+            "resolved": resolve_delivery(hosts[0], preset, intensity),
+        })
+    return {"version": 1, "enabled": True, "host_id": hosts[0].get("id"), "beats": beats}
+
+
+def parse_performance(performance_json: str, script: str, hosts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate performance beats and resolve their controls against the host baseline."""
+    if not performance_json.strip():
+        return {"version": 1, "enabled": False, "beats": []}
+    try:
+        raw = json.loads(performance_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Performance settings are invalid JSON") from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="Performance settings must be an object")
+    enabled = bool(raw.get("enabled"))
+    if "beats" not in raw:
+        return {"version": 1, "enabled": False, "beats": []}
+    if len(hosts) != 1 and enabled:
+        raise HTTPException(status_code=400, detail="Emotional delivery currently requires exactly one host")
+    raw_beats = raw.get("beats")
+    if raw_beats == [] and not enabled:
+        return {"version": 1, "enabled": False, "beats": []}
+    if not isinstance(raw_beats, list) or not raw_beats:
+        raise HTTPException(status_code=400, detail="Emotional delivery needs at least one performance beat")
+    beats = []
+    for index, item in enumerate(raw_beats, start=1):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail=f"Performance beat {index} is invalid")
+        text = clean_script(str(item.get("text", "")))
+        preset = str(item.get("preset", "baseline")).strip().lower()
+        try:
+            intensity = float(item.get("intensity", 0.0))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Performance beat {index} intensity must be a number") from exc
+        if not text or preset not in PERFORMANCE_PRESETS or not 0 <= intensity <= 1:
+            raise HTTPException(status_code=400, detail=f"Performance beat {index} has invalid text, preset, or intensity")
+        beats.append({
+            "id": str(item.get("id") or uuid4().hex), "text": text, "preset": preset,
+            "intensity": intensity, "resolved": resolve_delivery(hosts[0], preset, intensity),
+        })
+    if enabled:
+        spoken = "\n\n".join(section["text"] for section in parse_speaker_script(script, hosts))
+        if clean_script("\n\n".join(beat["text"] for beat in beats)) != clean_script(spoken):
+            raise HTTPException(status_code=400, detail="Performance beats no longer match the episode script; analyze it again")
+    return {"version": 1, "enabled": enabled, "host_id": hosts[0].get("id"), "beats": beats}
+
+
 def parse_saved_episode(episode_json: str) -> dict[str, Any]:
     """Validate and normalize a complete, editable episode document."""
     try:
@@ -144,8 +247,11 @@ def parse_saved_episode(episode_json: str) -> dict[str, Any]:
             status_code=400,
             detail=f"Episode image prompt must be {MAX_IMAGE_PROMPT_CHARS} characters or fewer",
         )
+    performance = parse_performance(
+        json.dumps(raw.get("performance", {})), str(raw.get("script", "")), hosts,
+    )
     return {
-        "version": 1,
+        "version": 2,
         "title": title,
         "hosts": hosts,
         "research_packet": packet,
@@ -153,6 +259,7 @@ def parse_saved_episode(episode_json: str) -> dict[str, Any]:
         "target_minutes": target_minutes,
         "conversation_tone": str(raw.get("conversation_tone", "")),
         "script": str(raw.get("script", "")),
+        "performance": performance,
         "image_prompt": image_prompt,
         "intro_lines": str(raw.get("intro_lines", "")),
         "intro_overlap": bool(raw.get("intro_overlap", False)),
@@ -659,6 +766,43 @@ def build_episode_speech_chunks(
     episode_chunks = build_speech_chunks(canonical_script, hosts, max_chars, "episode")
     if intro_chunks and episode_chunks:
         episode_chunks[0] = {**episode_chunks[0], "boundary_reason": "section_break"}
+    utterances = [*intro_chunks, *episode_chunks]
+    for sequence, utterance in enumerate(utterances, start=1):
+        utterance["sequence"] = sequence
+        utterance["section"] = utterance["section_id"]
+    return utterances
+
+
+def build_performance_speech_chunks(
+    script: str,
+    hosts: list[dict[str, Any]],
+    performance: dict[str, Any],
+    intro_lines: str = "",
+    max_chars: int = MAX_CHARS,
+) -> list[dict[str, Any]]:
+    """Build a single-host episode with frozen delivery settings per beat."""
+    if not performance.get("enabled"):
+        return build_episode_speech_chunks(script, hosts, intro_lines, max_chars)
+    canonical_script = remove_accidental_transcript_repetition(script)
+    canonical_intro = remove_intro_episode_overlap(intro_lines, canonical_script)
+    intro_chunks = build_speech_chunks(canonical_intro, hosts, max_chars, "host_intro") if canonical_intro else []
+    episode_chunks: list[dict[str, Any]] = []
+    for beat_index, beat in enumerate(performance["beats"], start=1):
+        beat_chunks = build_speech_chunks(beat["text"], hosts, max_chars, "episode")
+        if beat_index > 1 and beat_chunks:
+            beat_chunks[0]["boundary_reason"] = "paragraph_break"
+        for chunk in beat_chunks:
+            resolved = beat["resolved"]
+            chunk.update(resolved)
+            chunk["synthesis_settings"].update(resolved)
+            chunk["performance"] = {
+                "beat_id": beat["id"], "beat_index": beat_index,
+                "preset": beat["preset"], "intensity": beat["intensity"],
+                "resolved": resolved,
+            }
+        episode_chunks.extend(beat_chunks)
+    if intro_chunks and episode_chunks:
+        episode_chunks[0]["boundary_reason"] = "section_break"
     utterances = [*intro_chunks, *episode_chunks]
     for sequence, utterance in enumerate(utterances, start=1):
         utterance["sequence"] = sequence
@@ -2045,11 +2189,49 @@ async def chunk_preview(
     return {"count": len(chunks), "hosts": hosts, "utterances": chunks}
 
 
+@app.post("/api/performance-analysis")
+async def performance_analysis(script: str = Form(...), hosts_json: str = Form(...)):
+    """Suggest editable delivery beats without calling an external model."""
+    hosts = parse_hosts(hosts_json)
+    return analyze_performance(script, hosts)
+
+
+@app.post("/api/performance-preview")
+async def performance_preview(
+    text: str = Form(...), hosts_json: str = Form(...),
+    preset: str = Form("baseline"), intensity: float = Form(0.0),
+):
+    """Render one transient single-host beat with its resolved delivery."""
+    hosts = parse_hosts(hosts_json)
+    if len(hosts) != 1:
+        raise HTTPException(status_code=400, detail="Performance preview requires exactly one host")
+    text = clean_script(text)
+    if not text or len(text) > 300:
+        raise HTTPException(status_code=400, detail="Preview text must be between 1 and 300 characters")
+    if preset not in PERFORMANCE_PRESETS or not 0 <= intensity <= 1:
+        raise HTTPException(status_code=400, detail="Performance preview settings are invalid")
+    host = hosts[0]
+    resolved = resolve_delivery(host, preset, intensity)
+    voice = host["voice"]
+    if host.get("reference_audio_path") and reference_path(host).is_file():
+        voice = f"host-{host['id']}"
+    preview = OUTPUT_DIR / f"performance-preview-{uuid4().hex}.wav"
+    try:
+        await synthesize_chunk(text, voice, host["tempo"], preview, **resolved)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=describe_chatterbox_error(exc)) from exc
+    return FileResponse(
+        preview, media_type="audio/wav", filename="performance-preview.wav",
+        background=BackgroundTask(preview.unlink, missing_ok=True),
+    )
+
+
 @app.post("/api/generation-jobs", status_code=202)
 async def create_generation_job(
     title: str = Form(...),
     script: str = Form(...),
     hosts_json: str = Form(...),
+    performance_json: str = Form(""),
     image_prompt: str = Form(""),
     intro_lines: str = Form(""),
     intro_overlap: bool = Form(False),
@@ -2070,7 +2252,8 @@ async def create_generation_job(
     hosts = parse_hosts(hosts_json)
     script = remove_accidental_transcript_repetition(script)
     intro_lines = remove_intro_episode_overlap(intro_lines, script)
-    speech_chunks = build_episode_speech_chunks(script, hosts, intro_lines)
+    performance = parse_performance(performance_json, script, hosts)
+    speech_chunks = build_performance_speech_chunks(script, hosts, performance, intro_lines)
     if not speech_chunks:
         raise HTTPException(status_code=400, detail="No speakable text found")
     if not 0.0 <= intro_music_volume <= 1.0:
@@ -2134,6 +2317,7 @@ async def create_generation_job(
         "image_prompt": image_prompt.strip(),
         "media": ["audio"],
         "intro": intro,
+        "performance": performance,
         "chunks": chunks,
         "download_url": None,
         "error": None,

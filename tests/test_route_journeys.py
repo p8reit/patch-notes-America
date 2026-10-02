@@ -121,6 +121,34 @@ def test_generation_job_create_list_and_read_without_external_services(tmp_path,
     assert detail["chunks"][0]["text"] == "A deterministic line."
 
 
+def test_generation_job_persists_resolved_single_host_performance(tmp_path, monkeypatch):
+    async def ready():
+        return None
+
+    async def enqueue(_job_id):
+        return None
+
+    monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(main, "require_chatterbox_ready", ready)
+    monkeypatch.setattr(main, "queue_generation_job", enqueue)
+    performance = {
+        "enabled": True,
+        "beats": [{"id": "beat-one", "text": "This is incredible!", "preset": "excited", "intensity": 0.8}],
+    }
+
+    response = TestClient(main.app).post("/api/generation-jobs", data={
+        "title": "Expressive render", "script": "[Alex]\nThis is incredible!",
+        "hosts_json": json.dumps(HOSTS), "performance_json": json.dumps(performance),
+    })
+
+    assert response.status_code == 202
+    job = json.loads((tmp_path / response.json()["job_id"] / "job.json").read_text())
+    assert job["performance"]["enabled"] is True
+    assert job["chunks"][0]["performance"]["beat_id"] == "beat-one"
+    assert job["chunks"][0]["exaggeration"] == 0.7
+    assert job["chunks"][0]["cfg_weight"] == 0.436
+
+
 def test_restart_requeues_interrupted_work_and_preserves_valid_completed_chunk(tmp_path, monkeypatch):
     job_dir = tmp_path / "recover-me"
     chunk_dir = job_dir / "chunks"
