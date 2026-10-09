@@ -62,7 +62,7 @@ flowchart LR
 
 ## 3. Screen and information architecture
 
-The application has two top-level tabs: **Podcast Studio** contains the existing end-to-end episode workflow, while **Image Studio** creates one-off PNG artwork without reading or changing episode state.
+The application has two top-level tabs: **Podcast Studio** contains the existing end-to-end episode workflow, while **Image Studio** creates one-off PNG artwork without reading or changing episode state. Image Studio's Creation activity panel reports elapsed time and observed request/response events, including HTTP status, PNG size, and errors. It does not report the provider's internal generation progress.
 
 ```text
 Production Studio
