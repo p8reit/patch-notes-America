@@ -275,6 +275,11 @@
           <span id="image-status" class="hint" role="status" aria-live="polite"></span>
         </div>
       </form>
+      <section id="image-progress" class="image-progress" aria-labelledby="image-progress-heading" hidden>
+        <h3 id="image-progress-heading">Creation activity</h3>
+        <p id="image-elapsed" class="hint"></p>
+        <ol id="image-activity" role="log" aria-live="polite" aria-relevant="additions" aria-label="Image creation activity"></ol>
+      </section>
       <div id="image-result" class="image-result" hidden>
         <img id="generated-image" alt="Generated artwork based on the submitted prompt">
         <a id="download-image" class="download" download="generated-image.png">Download PNG</a>
@@ -403,6 +408,7 @@
   <script src="/static/episode-editor-state.js"></script>
   <script src="/static/workflow-navigation.js"></script>
   <script src="/static/render-queue-controls.js"></script>
+  <script src="/static/image-creation-progress.js"></script>
   <script>
     const initialProfiles = {{ host_profiles | tojson }};
     const hostsContainer = document.getElementById('hosts');
@@ -454,27 +460,45 @@
       });
     });
 
+    const imageProgress = window.ImageCreationProgress.create({
+      panel: document.getElementById('image-progress'),
+      elapsed: document.getElementById('image-elapsed'),
+      log: document.getElementById('image-activity'),
+    });
     document.getElementById('image-form').addEventListener('submit', async event => {
       event.preventDefault();
       const button = document.getElementById('create-image');
       const status = document.getElementById('image-status');
       const result = document.getElementById('image-result');
+      if (button.disabled) return;
       button.disabled = true;
+      const request = new FormData(event.target);
+      imageProgress.start({aspect: request.get('aspect'), promptLength: String(request.get('prompt') || '').length});
       reportStatus(status, 'Creating image…');
       try {
-        const response = await fetch('/api/images/generations', {method: 'POST', body: new FormData(event.target)});
+        const response = await fetch('/api/images/generations', {method: 'POST', body: request});
+        imageProgress.response(response.status);
         if (!response.ok) {
           const body = await response.json().catch(() => ({}));
           throw new Error(body.detail || `Image generation failed (${response.status})`);
         }
+        imageProgress.record('Receiving image data…');
+        const image = await response.blob();
+        if (!image.size || image.type.split(';')[0] !== 'image/png') {
+          throw new Error('The server returned an empty or unsupported image; expected PNG.');
+        }
+        imageProgress.record(`PNG received (${Math.ceil(image.size / 1024)} KB). Preparing preview and download.`);
+        const imageUrl = URL.createObjectURL(image);
         if (generatedImageUrl) URL.revokeObjectURL(generatedImageUrl);
-        generatedImageUrl = URL.createObjectURL(await response.blob());
+        generatedImageUrl = imageUrl;
         document.getElementById('generated-image').src = generatedImageUrl;
         document.getElementById('download-image').href = generatedImageUrl;
         result.hidden = false;
         reportStatus(status, 'Image ready to download.');
+        imageProgress.finish('Complete. Image ready to download.');
       } catch (error) {
         reportStatus(status, error.message, true);
+        imageProgress.finish(`Failed: ${error.message}`);
       } finally {
         button.disabled = false;
       }

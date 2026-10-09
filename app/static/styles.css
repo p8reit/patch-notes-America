@@ -17,6 +17,11 @@ h1 { margin: 0; font-size: clamp(2.2rem, 6vw, 4.5rem); line-height: .95; }
 .image-studio { min-height: 520px; }
 .image-studio form { margin-top: 24px; }
 .image-actions { margin-top: 22px; }
+.image-progress { margin-top: 20px; padding: 16px; border: 1px solid #30363d; border-radius: 12px; }
+.image-progress[hidden] { display: none; }
+.image-progress h3 { margin: 0; }
+.image-progress ol { padding-left: 24px; overflow-wrap: anywhere; }
+.image-progress li { margin: 8px 0; }
 .image-result { display: grid; justify-items: start; gap: 18px; margin-top: 24px; padding-top: 24px; border-top: 1px solid #30363d; }
 .image-result[hidden] { display: none; }
 .image-result img { display: block; width: min(100%, 720px); max-height: 760px; border: 1px solid #30363d; border-radius: 12px; object-fit: contain; background: #0d1117; }

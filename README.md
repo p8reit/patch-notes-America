@@ -761,7 +761,7 @@ OPENAI_MODEL=gpt-5.6-luna
 OPENAI_IMAGE_MODEL=gpt-image-2
 ```
 
-The implementation uses the OpenAI Responses API for conversation drafting and the Images API for clip artwork and the standalone **Image Studio** tab. `OPENAI_RESPONSES_URL`, `OPENAI_MODEL`, `OPENAI_IMAGES_URL`, and `OPENAI_IMAGE_MODEL` are environment-configurable. Image Studio returns a downloadable PNG without attaching it to an episode or saving it on the server. If image generation is unavailable, the MP4 still renders with the existing branded background and reports the artwork error separately.
+The implementation uses the OpenAI Responses API for conversation drafting and the Images API for clip artwork and the standalone **Image Studio** tab. `OPENAI_RESPONSES_URL`, `OPENAI_MODEL`, `OPENAI_IMAGES_URL`, and `OPENAI_IMAGE_MODEL` are environment-configurable. Image Studio returns a downloadable PNG without attaching it to an episode or saving it on the server. Its Creation activity panel shows elapsed seconds, submitted format and prompt length, HTTP response status, received PNG size, and completion or failure details. A notice appears after a minute while waiting; the provider does not expose internal generation stages or a completion percentage through this request. Activity resets on each new request and stays visible after completion or failure. If image generation is unavailable, the MP4 still renders with the existing branded background and reports the artwork error separately.
 
 ### Generate artwork locally on NVIDIA
 
