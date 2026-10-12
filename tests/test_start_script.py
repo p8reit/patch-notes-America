@@ -27,3 +27,8 @@ def test_local_image_mode_requires_gpu_and_enables_the_profile():
 def test_startup_rejects_a_running_service_with_the_wrong_device():
     assert '[[ "${resolved_request}" != "${requested_device}" ]]' in SCRIPT
     assert "stale or different Compose deployment" in SCRIPT
+
+
+def test_parked_image_startup_requires_cuda_and_does_not_claim_inference_readiness():
+    assert "d.get('parked') and d.get('cuda_visible')" in SCRIPT
+    assert "a parked model must pass its smoke test" in SCRIPT

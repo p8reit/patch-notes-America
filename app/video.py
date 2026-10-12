@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -26,6 +27,7 @@ ASPECTS = {"horizontal": (1920, 1080), "vertical": (1080, 1920), "square": (1080
 queue: asyncio.Queue | None = None
 worker: asyncio.Task | None = None
 tasks: dict[str, asyncio.Task] = {}
+logger = logging.getLogger(__name__)
 
 
 def child(root: Path, identifier: str) -> Path:
@@ -136,6 +138,17 @@ def validate_scenes(scenes: Any, duration: float) -> list[dict]:
                         "locked": bool(row.get("locked", False)),
                         **{key: str(row.get(key, ""))[:limit] for key, limit in
                            [("text", 6000), ("caption", 6000), ("intent", 500), ("query", 100), ("prompt", 2000)]}})
+        seed = row.get("seed")
+        if seed is not None and (not isinstance(seed,int) or isinstance(seed,bool) or not 0 <= seed <= 2147483647):
+            raise HTTPException(400,"Image seed must be an integer between 0 and 2147483647")
+        cleaned[-1]["seed"] = seed
+        crops = row.get("format_crops", {})
+        if not isinstance(crops,dict) or any(key not in ASPECTS for key in crops):
+            raise HTTPException(400,"Invalid format crop overrides")
+        if any(not isinstance(value,dict) for value in crops.values()):
+            raise HTTPException(400,"Invalid format crop values")
+        cleaned[-1]["format_crops"] = {key:{"x":number(value.get("x",.5),maximum=1),"y":number(value.get("y",.5),maximum=1)}
+                                       for key,value in crops.items() if isinstance(value,dict)}
         cursor = end
     if abs(cursor - duration) > .002:
         raise HTTPException(400, "Scenes must cover the full audio duration")
@@ -205,6 +218,10 @@ async def save_project(project_id: str, body: dict = Body(...)):
         raise HTTPException(409, "Project changed. Reload before saving your edits.")
     project["scenes"] = validate_scenes(body.get("scenes"), project["duration"])
     project["style"] = str(body.get("style", project["style"]))[:1000]
+    preset = body.get("image_preset",project.get("image_preset","draft"))
+    if preset not in {"draft","detail"}:
+        raise HTTPException(400,"Image preset must be draft or detail")
+    project["image_preset"] = preset
     project["revision"] += 1
     atomic(project_path(project_id), project)
     return project
@@ -273,10 +290,14 @@ async def scene_image(project_id: str, body: dict = Body(...)):
         raise HTTPException(409, "Choose an unlocked scene")
     revision = project["revision"]
     prompt = f"{project['style']}. Illustrative editorial artwork. {scene['prompt']}. No text."
+    seed = scene.get("seed")
+    if seed is None:
+        seed = uuid4().int & 2147483647
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
             response = await client.post(main.LOCAL_IMAGES_URL, json={"model": main.LOCAL_IMAGE_MODEL,
-                             "prompt": prompt[:4000], "size": "1536x1024", "n": 1})
+                             "prompt": prompt[:4000], "size": "1536x1024", "n": 1,
+                             "seed":seed,"preset":project.get("image_preset","draft")})
             response.raise_for_status()
         data = base64.b64decode(response.json()["data"][0]["b64_json"], validate=True)
     except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
@@ -288,13 +309,16 @@ async def scene_image(project_id: str, body: dict = Body(...)):
     try:
         path.write_bytes(data)
         item = await store_asset(path, "image", {"provider": "local", "model": main.LOCAL_IMAGE_MODEL,
-                                "prompt": prompt, "license": "See the installed model's license"})
+                                "prompt": prompt, "seed":seed,"preset":project.get("image_preset","draft"),
+                                "model_revision":response.json().get("model_revision","unrecorded"),
+                                "license": "See the installed model's license"})
     finally:
         path.unlink(missing_ok=True)
     current = read(project_path(project_id))
     if current["revision"] != revision:
         raise HTTPException(409, "Image saved to the library; project changed. Select it after reloading.")
     scene["asset_id"] = item["id"]
+    scene["seed"] = seed
     project["revision"] += 1
     atomic(project_path(project_id), project)
     return project
@@ -340,7 +364,7 @@ async def command(arguments: list[str], cwd: Path) -> None:
 
 
 async def render(project: dict, destination: Path, start: float, end: float, aspect: str, preview: bool,
-                 checkpoint: Any = None) -> None:
+                 checkpoint: Any = None, encoder: str = "libx264", captions: str = "standard") -> None:
     scenes = await asyncio.to_thread(render_inputs, project, start, end)
     audio = await asyncio.to_thread(audio_file, project)
     width, height = ASPECTS[aspect]
@@ -352,7 +376,8 @@ async def render(project: dict, destination: Path, start: float, end: float, asp
         item = asset(scene["asset_id"])
         length = min(scene["end"], end) - max(scene["start"], start)
         inputs = ["-loop", "1", "-framerate", "30"] if item["kind"] == "image" else ["-ss", str(scene["trim"] + max(scene["start"], start) - scene["start"])]
-        scale = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:(iw-ow)*{scene['crop_x']}:(ih-oh)*{scene['crop_y']},setsar=1,fps=30"
+        crop = scene.get("format_crops",{}).get(aspect,{"x":scene['crop_x'],"y":scene['crop_y']})
+        scale = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:(iw-ow)*{crop['x']}:(ih-oh)*{crop['y']},setsar=1,fps=30"
         if item["kind"] == "image" and scene["motion"] == "zoom":
             scale += f",zoompan=z='min(zoom+0.0003,1.08)':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s={width}x{height}:fps=30"
         signature = {"renderer": 1, "asset": item["hash"], "inputs": inputs, "length": length, "filter": scale}
@@ -382,11 +407,17 @@ async def render(project: dict, destination: Path, start: float, end: float, asp
     write_sidecars(project, scenes, destination, start, end)
     if checkpoint:
         checkpoint(len(scenes), len(scenes), "assembling video")
-    caption_filter = ["-vf", "subtitles=captions.srt"] if (destination / "captions.srt").read_text().strip() else []
-    await command(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-ss", str(start),
+    caption_filter = ["-vf", "subtitles=captions.srt:force_style='Fontsize="+str(24 if captions=='large' else 18)+",Outline=2,MarginV=24'"] if captions!='none' and (destination / "captions.srt").read_text().strip() else []
+    async def assemble():
+        await command(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-ss", str(start),
                    "-i", str(audio), "-i", "chapters.ffmeta", "-map_metadata", "2", "-map", "0:v:0", "-map", "1:a:0",
-                   "-t", str(end-start), *caption_filter, "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                   "-t", str(end-start), *caption_filter, "-c:v", encoder, "-preset", "p4" if encoder=='h264_nvenc' else "veryfast", "-profile:v","baseline","-level:v","4.1", "-pix_fmt","yuv420p", "-c:a", "aac",
                    "-b:a", "192k", "-movflags", "+faststart", "episode.partial.mp4"], destination)
+    if encoder == "h264_nvenc":
+        async with gpu.lease("encoder"):
+            await assemble()
+    else:
+        await assemble()
     (destination / "episode.partial.mp4").replace(destination / "episode.mp4")
 
 
@@ -440,13 +471,16 @@ async def export(project_id: str, body: dict = Body(...)):
     start, end = number(body.get("start", 0), maximum=project["duration"]), number(body.get("end", project["duration"]), maximum=project["duration"])
     if end <= start:
         raise HTTPException(400, "Export end must follow its start")
+    aspect, encoder, captions = body.get("aspect","horizontal"), body.get("encoder","libx264"), body.get("captions","standard")
+    if aspect not in ASPECTS or encoder not in {"libx264","h264_nvenc"} or captions not in {"standard","large","none"}:
+        raise HTTPException(400,"Invalid video format, encoder, or caption style")
     if queue is None:
         raise HTTPException(503, "Video worker is not ready")
     await asyncio.to_thread(render_inputs, project, start, end)
     await asyncio.to_thread(audio_file, project)
     identifier = uuid4().hex
     job = {"id": identifier, "project_id": project_id, "project": project, "revision": project["revision"],
-           "start": start, "end": end, "aspect": "horizontal", "preview": bool(body.get("preview", True)),
+           "start": start, "end": end, "aspect":aspect,"encoder":encoder,"captions":captions,"preview":bool(body.get("preview",True)),
            "status": "queued", "phase": "queued", "done": 0, "total": 0, "error": None,
            "created_at": datetime.now(timezone.utc).isoformat()}
     atomic(child(ROOT / "exports", identifier) / "job.json", job)
@@ -464,8 +498,14 @@ async def download(export_id: str):
 
 @router.get("/jobs")
 async def jobs():
-    return {"jobs": [{k: v for k, v in read(p).items() if k != "project"}
-                     for p in sorted((ROOT / "exports").glob("*/job.json"), key=lambda p: p.stat().st_mtime, reverse=True)][:100]}
+    result = []
+    for path in sorted((ROOT / "exports").glob("*/job.json"), key=lambda p:p.stat().st_mtime, reverse=True):
+        try:
+            result.append({k:v for k,v in read(path).items() if k!="project"})
+        except (ValueError,OSError):
+            result.append({"id":path.parent.name,"project_id":path.parent.name,"status":"corrupt",
+                           "phase":"needs repair","done":0,"total":0,"error":"Video job manifest is unreadable. Retain its media and restore its manifest from a backup."})
+    return {"jobs":result[:100]}
 
 
 @router.get("/jobs/{job_id}")
@@ -522,7 +562,8 @@ async def process_job(identifier: str) -> None:
                     checkpoint(index+1,len(scenes),"generating local images")
             job.update(status="complete",phase="images complete")
             return
-        await render(job["project"], folder, job["start"], job["end"], job["aspect"], job["preview"], checkpoint)
+        await render(job["project"], folder, job["start"], job["end"], job["aspect"], job["preview"], checkpoint,
+                     job.get("encoder","libx264"),job.get("captions","standard"))
         job.update(status="complete", phase="complete", download_url=f"/api/video/exports/{identifier}/download")
     except asyncio.CancelledError:
         persisted = read(path)
@@ -530,8 +571,14 @@ async def process_job(identifier: str) -> None:
         job["phase"] = job["status"]
         raise
     except Exception as exc:
+        if asyncio.current_task().cancelling():
+            job["status"] = "cancelled" if read(path)["status"] == "cancelled" else "queued"
+            job["phase"] = job["status"]
+            raise asyncio.CancelledError() from exc
         job.update(status="failed", error=exc.detail if isinstance(exc, HTTPException) else str(exc), phase="failed")
     finally:
+        if read(path)["status"] == "cancelled":
+            job.update(status="cancelled",phase="cancelled",error=None)
         (folder / "episode.partial.mp4").unlink(missing_ok=True)
         atomic(path, job)
 
@@ -546,6 +593,8 @@ async def consume() -> None:
         except asyncio.CancelledError:
             if asyncio.current_task().cancelling():
                 raise
+        except Exception:
+            logger.exception("Video worker could not read job %s; retaining remaining queue",identifier)
         finally:
             tasks.pop(identifier, None)
             queue.task_done()
@@ -555,7 +604,11 @@ async def start_workers() -> None:
     global queue, worker
     queue = asyncio.Queue()
     for path in (ROOT / "exports").glob("*/job.json"):
-        job = read(path)
+        try:
+            job = read(path)
+        except (ValueError,OSError):
+            logger.warning("Unreadable video job manifest: %s",path)
+            continue
         if job["status"] in {"queued", "running"}:
             job.update(status="queued", phase="recovering")
             atomic(path, job)

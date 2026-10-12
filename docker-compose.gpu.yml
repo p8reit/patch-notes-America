@@ -1,4 +1,14 @@
 services:
+  app:
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   ollama:
     deploy:
       resources:

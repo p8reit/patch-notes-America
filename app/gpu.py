@@ -41,6 +41,7 @@ async def control(client: httpx.AsyncClient, url: str, operation: str) -> None:
     response = await client.post(url.rstrip("/") + "/models/" + operation,
                                  headers={"Authorization": "Bearer " + token_file.read_text().strip()})
     if response.status_code == 409:
+        state["pending"] = True
         raise HTTPException(503, "A model is still finishing cancelled work. Retry after its current step.")
     response.raise_for_status()
     body = response.json()
@@ -71,6 +72,7 @@ async def lease(kind: str):
         raise RuntimeError("Cannot acquire another model inside a GPU lease")
     from app import main
     async with lock:
+        state["pending"] = False
         state["active"] = kind
         context = owner.set(kind)
         image_url = main.LOCAL_IMAGES_URL.rsplit("/v1/", 1)[0]
@@ -99,4 +101,4 @@ async def lease(kind: str):
             raise HTTPException(503, "GPU model handoff failed. Check local service readiness and shared model-control mounts.") from exc
         finally:
             owner.reset(context)
-            state["active"] = "idle"
+            state["active"] = "finishing cancelled inference" if state.get("pending") else "idle"

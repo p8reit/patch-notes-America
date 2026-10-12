@@ -251,6 +251,41 @@ def test_completed_chunk_is_reused_during_processing(tmp_path, monkeypatch):
     assert (job_dir / "reuse.mp3").read_bytes() == b"ID3mock"
 
 
+def test_overlapped_intro_captions_use_voice_timing_instead_of_music_duration(tmp_path, monkeypatch):
+    job_dir=tmp_path/"intro-video"
+    chunks=job_dir/"chunks"
+    chunks.mkdir(parents=True)
+    (job_dir/"intro.wav").write_bytes(_wav_bytes())
+    rows=[]
+    for number,section in enumerate(["host_intro","episode"],1):
+        name=f"voice-{number}.wav"
+        (chunks/name).write_bytes(_wav_bytes())
+        rows.append({"id":f"chunk-{number}","status":"complete","output":"chunks/"+name,
+            "normalized_output":"chunks/"+name,"audio_metrics":{"raw_duration":1},
+            "section":section,"host":"Alex","text":"Intro line" if number==1 else "Body line"})
+    job={"id":"intro-video","title":"Intro","status":"queued","intro":{"track":"intro.wav","overlap":True},"chunks":rows}
+    main._write_job(job_dir,job)
+    monkeypatch.setattr(main,"OUTPUT_DIR",tmp_path)
+    monkeypatch.setattr(main,"AUTO_SOCIAL_CLIPS",False)
+    monkeypatch.setattr(main,"validate_audio_segment",lambda p:(True,""))
+    def concatenate(paths,segments,destination):
+        destination.write_bytes(_wav_bytes())
+        if destination.name=="intro-voice.wav":
+            return [{"duration":1,"start":0,"end":1}]
+        return [{"index":1,"speaker":"intro","text_length":10,"duration":10,"start":0,"end":10,"pause_after_ms":500},
+                {"index":2,"speaker":"Alex","text_length":9,"duration":1,"start":10.5,"end":11.5,"pause_after_ms":0}]
+    monkeypatch.setattr(main,"concatenate_wav_segments",concatenate)
+    monkeypatch.setattr(main,"mix_intro_track_and_voice",lambda track,voice,destination,volume:destination.write_bytes(_wav_bytes()))
+    monkeypatch.setattr(main,"analyze_final_audio_silence",lambda path:[])
+    monkeypatch.setattr(main,"assemble_mp3",lambda paths,destination,segments:destination.write_bytes(b"ID3audio"))
+    asyncio.run(main.process_generation_job("intro-video"))
+    metadata=json.loads((job_dir/"metadata.json").read_text())
+    assert metadata["video_timeline"][0]["text"]=="Intro line"
+    assert metadata["video_timeline"][0]["end"]==1
+    assert metadata["video_timeline"][1]["start"]==10.5
+    assert metadata["duration"]==11.5
+
+
 def test_episode_and_clip_downloads_and_missing_assets(tmp_path, monkeypatch):
     episode = tmp_path / "done"
     clips = episode / "clips"
