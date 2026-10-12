@@ -120,3 +120,32 @@ def test_connected_request_keeps_openai_compatible_png_response(service):
     assert result["model"] == service.MODEL_ID
     assert received["width"] == 512 and received["height"] == 512
     assert base64.b64decode(result["data"][0]["b64_json"]).startswith(b"\x89PNG")
+
+
+def test_model_control_requires_secret_and_refuses_active_inference(service, tmp_path, monkeypatch):
+    path = tmp_path / "control.key"
+    path.write_text("test-only-secret")
+    monkeypatch.setenv("MODEL_CONTROL_FILE", str(path))
+    with pytest.raises(HTTPException) as error:
+        service.unload_model("Bearer wrong")
+    assert error.value.status_code == 403
+    service._pipeline = object()
+    with service._lock:
+        with pytest.raises(HTTPException) as error:
+            service.unload_model("Bearer test-only-secret")
+        assert error.value.status_code == 409
+    service.unload_model("Bearer test-only-secret")
+    assert service._pipeline is None and not service._readiness["ok"]
+
+
+def test_model_reload_cannot_bypass_cuda_smoke_readiness(service, tmp_path, monkeypatch):
+    path = tmp_path / "control.key"
+    path.write_text("test-only-secret")
+    monkeypatch.setenv("MODEL_CONTROL_FILE", str(path))
+    service._readiness["ok"] = False
+    monkeypatch.setattr(service, "_load_pipeline", lambda: object())
+    def failed(_pipeline): raise RuntimeError("CUDA smoke failed")
+    monkeypatch.setattr(service, "_smoke_test", failed)
+    with pytest.raises(HTTPException) as error:
+        service.load_model("Bearer test-only-secret")
+    assert error.value.status_code == 503 and not service._readiness["ok"]

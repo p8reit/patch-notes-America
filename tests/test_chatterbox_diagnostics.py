@@ -19,6 +19,9 @@ class FakeCuda:
     def get_device_capability(self, _index):
         return (8, 9)
 
+    def empty_cache(self):
+        pass
+
 
 @pytest.fixture
 def server(monkeypatch):
@@ -63,6 +66,27 @@ def test_requested_cuda_reports_actionable_failure_when_cuda_is_unavailable(serv
     assert result["model_loaded"] is False
     assert result["synthesis_ready"] is False
     assert "driver" in result["failure"]
+
+
+def test_model_parking_requires_auth_and_reload_requires_verified_speech(server, tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    path = tmp_path / "control.key"
+    path.write_text("test-only-secret")
+    monkeypatch.setenv("MODEL_CONTROL_FILE", str(path))
+    with pytest.raises(HTTPException) as error:
+        server.unload_model("Bearer wrong")
+    assert error.value.status_code == 403
+    server._model = object()
+    with server._model_lock:
+        with pytest.raises(HTTPException) as error:
+            server.unload_model("Bearer test-only-secret")
+        assert error.value.status_code == 409
+    server.unload_model("Bearer test-only-secret")
+    assert server._model is None and not server._readiness["synthesis_ready"]
+    monkeypatch.setattr(server, "run_startup_smoke_test", lambda: None)
+    with pytest.raises(HTTPException) as error:
+        server.load_model("Bearer test-only-secret")
+    assert error.value.status_code == 503
 
 
 def test_model_device_mismatch_is_rejected(server):

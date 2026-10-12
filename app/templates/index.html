@@ -294,7 +294,11 @@
       <div class="actions"><label>Finished episode<select id="video-episode"></select></label><button id="video-create" type="button">Create storyboard</button><label>Saved video project<select id="video-project"></select></label><button id="video-load" type="button">Load project</button></div>
       <label>Visual direction<textarea id="video-style" rows="2"></textarea></label>
       <div class="actions"><button id="video-save" type="button">Save storyboard</button><button id="video-refresh" type="button" class="secondary">Refresh library</button></div>
+      <div class="actions"><button id="video-plan" type="button" class="secondary">Suggest visuals locally</button><button id="video-batch" type="button" class="secondary">Generate missing images</button><label>Free footage source<select id="video-provider"><option value="pixabay">Pixabay</option><option value="pexels">Pexels (existing API key)</option></select></label></div>
+      <p class="hint">Review suggestions before searching. Search results link to their provider and creator. Lock approved footage scenes before generating missing images.</p>
+      <div id="video-stock-results"></div>
       <p id="video-status" class="hint" role="status" aria-live="polite"></p>
+      <p id="video-resources" class="hint" aria-live="polite"></p>
       <div id="video-scenes"></div>
       <details><summary>Import free B-roll</summary>
         <form id="video-import"><label>MP4, MOV, or WebM<input name="file" type="file" accept="video/mp4,video/quicktime,video/webm" required></label>

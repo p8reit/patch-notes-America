@@ -10,11 +10,14 @@ services:
       IMAGEGEN_STEPS: ${LOCAL_IMAGE_STEPS:-2}
       IMAGEGEN_MAX_PROMPT_CHARS: ${LOCAL_IMAGE_MAX_PROMPT_CHARS:-4000}
       IMAGEGEN_CPU_OFFLOAD: ${LOCAL_IMAGE_CPU_OFFLOAD:-false}
+      IMAGEGEN_LAZY_LOAD: ${GPU_MODEL_HANDOFF:-true}
+      MODEL_CONTROL_FILE: /control/model-control.key
       NVIDIA_DRIVER_CAPABILITIES: compute
     volumes:
       - imagegen-models:/models
+      - ./data/video:/control:ro
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import json,urllib.request; assert json.load(urllib.request.urlopen('http://localhost:8000/health'))['ok']\""]
+      test: ["CMD-SHELL", "python3 -c \"import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8000/health')); assert d['ok'] or (d.get('parked') and d.get('cuda_visible'))\""]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -39,11 +42,13 @@ services:
       CHATTERBOX_DEVICE: ${CHATTERBOX_DEVICE:-cpu}
       CHATTERBOX_EXAGGERATION: ${CHATTERBOX_EXAGGERATION:-0.5}
       CHATTERBOX_CFG_WEIGHT: ${CHATTERBOX_CFG_WEIGHT:-0.5}
+      MODEL_CONTROL_FILE: /control/model-control.key
     ports:
       - "${CHATTERBOX_BIND_ADDRESS:-127.0.0.1}:${CHATTERBOX_PORT:-8000}:8000"
     volumes:
       - ./data/voices:/voices:ro
       - chatterbox-models:/models
+      - ./data/video:/control:ro
     healthcheck:
       test:
         - CMD
@@ -72,6 +77,11 @@ services:
       JOB_WORKERS: ${JOB_WORKERS:-1}
       AUTO_SOCIAL_CLIPS: ${AUTO_SOCIAL_CLIPS:-false}
       VIDEO_DIR: /app/data/video
+      GPU_MODEL_HANDOFF: ${GPU_MODEL_HANDOFF:-true}
+      MODEL_CONTROL_FILE: /app/data/video/model-control.key
+      PIXABAY_API_KEY: ${PIXABAY_API_KEY:-}
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      VIDEO_PLANNER_MODEL: ${VIDEO_PLANNER_MODEL:-llama3.1:8b}
       TTS_MAX_ATTEMPTS: ${TTS_MAX_ATTEMPTS:-5}
       TTS_RETRY_DELAY_SECONDS: ${TTS_RETRY_DELAY_SECONDS:-15}
       DEFAULT_VOICE: ${DEFAULT_VOICE:-default}

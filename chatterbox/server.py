@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import gc
+import hmac
 import importlib.metadata
 import inspect
 import os
@@ -13,7 +15,7 @@ from typing import Any, Iterable, NamedTuple
 import torch
 import torchaudio
 from chatterbox.tts import ChatterboxTTS
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -31,6 +33,7 @@ app = FastAPI(title="Patch Notes Chatterbox TTS")
 _model: ChatterboxTTS | None = None
 _generation_contract: GenerationContract | None = None
 _model_lock = threading.Lock()
+_control_lock = threading.Lock()
 _readiness: dict[str, Any] = {
     "model_loaded": False,
     "synthesis_ready": False,
@@ -428,6 +431,51 @@ def health() -> dict[str, Any]:
 @app.get("/voices")
 def voices() -> dict[str, list[dict[str, str | bool]]]:
     return {"voices": available_voices()}
+
+
+def authorize_control(authorization: str) -> None:
+    path = Path(os.getenv("MODEL_CONTROL_FILE", "/control/model-control.key"))
+    if not path.is_file() or not hmac.compare_digest(authorization, "Bearer " + path.read_text().strip()):
+        raise HTTPException(403, "Model control is not authorized")
+
+
+@app.post("/models/unload")
+def unload_model(authorization: str = Header("")):
+    global _model, _generation_contract
+    authorize_control(authorization)
+    if not _control_lock.acquire(blocking=False):
+        raise HTTPException(409, "Model control is busy")
+    try:
+        if not _model_lock.acquire(blocking=False):
+            raise HTTPException(409, "Speech inference is still active")
+        try:
+            _model = None
+            _generation_contract = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            _readiness.update(model_loaded=False, synthesis_ready=False, model_parameters=[], smoke_audio=None,
+                              failure="Speech model parked while Video Studio uses the GPU")
+            return {"parked": True}
+        finally:
+            _model_lock.release()
+    finally:
+        _control_lock.release()
+
+
+@app.post("/models/load")
+def load_model(authorization: str = Header("")):
+    authorize_control(authorization)
+    if not _control_lock.acquire(blocking=False):
+        raise HTTPException(409, "Model control is busy")
+    try:
+        if not _readiness["synthesis_ready"]:
+            run_startup_smoke_test()
+        if not _readiness["synthesis_ready"]:
+            raise HTTPException(503, "Speech model failed synthesis readiness")
+        return health()
+    finally:
+        _control_lock.release()
 
 
 @app.post("/v1/audio/speech")

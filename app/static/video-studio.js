@@ -5,7 +5,7 @@
   if (!root.document) return;
   const doc = root.document;
   const el = id => doc.getElementById(id);
-  let project = null, library = [], dirty = false, jobsTimer = null, lastExport = null;
+  let project = null, library = [], dirty = false, jobsTimer = null, lastExport = null, stockSearch = null, stockScene = null;
   async function api(path, options = {}) {
     const response = await fetch('/api/video' + path, options);
     const data = await response.json().catch(() => ({}));
@@ -53,6 +53,7 @@
       <label>Image motion<select data-field="motion"><option value="still">Still</option><option value="zoom" ${s.motion==='zoom'?'selected':''}>Slow zoom</option></select></label></div>
       <label><input type="checkbox" data-field="locked" ${s.locked?'checked':''}> Lock approved scene</label>
       <button type="button" data-image="${escape(s.id)}">Generate local image</button>
+      <button type="button" data-search="${escape(s.id)}" class="secondary">Find free B-roll</button>
       ${s.asset_id ? `<details><summary>View selected media and source</summary>${(() => {const a=library.find(a=>a.id===s.asset_id);return a ? (a.kind==='broll'?`<video controls preload="metadata" src="${escape(a.url)}"></video>`:`<img alt="Scene illustration" src="${escape(a.url)}">`)+`<p>${escape(a.source.creator || a.source.model)} · ${escape(a.source.license)}</p>`:'';})()}</details>` : '<p class="hint">Media unresolved</p>'}
       </article>`).join('');
     dirty = false;
@@ -66,10 +67,12 @@
     if (selected) el('video-project').value = selected;
   }
   async function refreshJobs() {
+    const resources=await api('/resources');
+    el('video-resources').textContent=`GPU stage: ${resources.active} · Model handoffs ${resources.handoff_enabled?'enabled':'disabled'}${resources.free_vram_mb!==null?' · Last observed free VRAM: '+resources.free_vram_mb+' MB':''}`;
     const data = await api('/jobs');
     el('video-jobs').innerHTML = data.jobs.map(j=>`<article class="video-scene"><strong>${escape(j.project_id.slice(0,8))} · ${escape(j.status)}</strong><p>${escape(j.phase)} · ${j.done}/${j.total} scenes prepared</p>${j.error?`<p class="bad">${escape(j.error)}</p>`:''}
       ${['queued','running'].includes(j.status)?`<button type="button" data-cancel-video="${escape(j.id)}">Cancel video</button>`:''}
-      ${j.status==='complete'?`<a class="download" href="${escape(j.download_url)}">Download MP4</a> <a href="/api/video/exports/${escape(j.id)}/sidecar/captions.srt">Captions</a> · <a href="/api/video/exports/${escape(j.id)}/sidecar/credits.txt">Credits</a> · <a href="/api/video/exports/${escape(j.id)}/sidecar/chapters.ffmeta">Chapters</a>`:''}</article>`).join('') || '<p class="hint">No video jobs yet.</p>';
+      ${j.status==='complete'&&j.download_url?`<a class="download" href="${escape(j.download_url)}">Download MP4</a> <a href="/api/video/exports/${escape(j.id)}/sidecar/captions.srt">Captions</a> · <a href="/api/video/exports/${escape(j.id)}/sidecar/credits.txt">Credits</a> · <a href="/api/video/exports/${escape(j.id)}/sidecar/chapters.ffmeta">Chapters</a>`:''}</article>`).join('') || '<p class="hint">No video jobs yet.</p>';
     const completed = data.jobs.find(j=>j.id===lastExport && j.status==='complete');
     if(completed && el('video-preview-player').getAttribute('src')!==completed.download_url){
       el('video-preview-player').src=completed.download_url;el('video-preview-player').hidden=false;
@@ -102,6 +105,19 @@
   el('video-scenes').addEventListener('click', e=>{const button=e.target.closest('[data-image]');if(!button)return;
     operation(button,async()=>{await save();project=await api('/projects/'+project.id+'/images',json('POST',{scene_id:button.dataset.image}));await lists();draw();});
   });
+  el('video-plan').addEventListener('click',e=>operation(e.currentTarget,async()=>{await save();project=await api('/projects/'+project.id+'/plan',{method:'POST'});draw();}));
+  el('video-batch').addEventListener('click',e=>operation(e.currentTarget,async()=>{await save();await api('/projects/'+project.id+'/batch-images',{method:'POST'});await refreshJobs();}));
+  el('video-scenes').addEventListener('click',e=>{const b=e.target.closest('[data-search]');if(!b)return;operation(b,async()=>{
+    await save();stockScene=b.dataset.search;const s=project.scenes.find(s=>s.id===stockScene);
+    stockSearch=await api('/stock/search',json('POST',{provider:el('video-provider').value,query:s.query}));
+    el('video-stock-results').innerHTML=`<h3>${escape(stockSearch.provider)} footage candidates</h3><p>Review source pages before choosing footage.</p>`+stockSearch.candidates.map(c=>`<article class="video-scene"><p>${escape(c.creator)} · ${c.duration}s · ${c.width}×${c.height}</p><a target="_blank" rel="noopener" href="${/^https:\/\//.test(c.source_url)?escape(c.source_url):'#'}">Source and creator on ${escape(c.provider)}</a> <button type="button" data-stock="${escape(c.id)}">Download and use this footage</button></article>`).join('');
+    if(!stockSearch.candidates.length)el('video-stock-results').innerHTML+='<p>No matching footage. Try a broader query or import a file.</p>';
+  });});
+  el('video-stock-results').addEventListener('click',e=>{const b=e.target.closest('[data-stock]');if(!b)return;operation(b,async()=>{
+    const item=await api('/stock/import',json('POST',{search_id:stockSearch.id,candidate_id:b.dataset.stock}));
+    collect();const scene=project.scenes.find(s=>s.id===stockScene);if(!scene)throw new Error('Project changed; select this footage from the library.');
+    scene.asset_id=item.id;project=await api('/projects/'+project.id,json('PUT',project));await lists();draw();
+  });});
   for (const id of ['video-preview','video-export']) el(id).addEventListener('click',e=>operation(e.currentTarget,async()=>{
     await save();const result=await api('/projects/'+project.id+'/exports',json('POST',{start:Number(el('video-start').value),end:Number(el('video-end').value),preview:id==='video-preview'}));
     lastExport=result.id;await refreshJobs();
