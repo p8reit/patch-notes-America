@@ -17,11 +17,26 @@
     result[index].caption=left.caption===right.caption?left.caption:left.caption+' '+right.caption;
     result.splice(index+1,1);return result;
   }
-  if (typeof module === 'object') module.exports = {escape,split,merge};
+  function needsAttention(s) {return !s.asset_id && (s.media_type==='broll'?!s.stock_id:s.locked);}
+  function scenePage(scenes,filter,page,size=5) {
+    const entries=scenes.map((scene,index)=>({scene,index})).filter(({scene})=>filter==='attention'?needsAttention(scene):['image','broll'].includes(filter)?scene.media_type===filter:true);
+    const pages=Math.max(1,Math.ceil(entries.length/size)), selected=Math.max(0,Math.min(pages-1,page));
+    return {entries:entries.slice(selected*size,(selected+1)*size),page:selected,pages,count:entries.length};
+  }
+  function buildIssue(project,start,end) {
+    if(!Number.isFinite(start)||!Number.isFinite(end)||start<0||end>project.duration||end<=start)return {message:'Choose an export range within the episode, with its end after its start.'};
+    const selected=project.scenes.filter(s=>s.end>start&&s.start<end);
+    if(!selected.some(s=>s.media_type==='broll')||!selected.some(s=>s.media_type==='image'))return {message:'Choose both local images and B-roll in the export range. New storyboards default to images; change a scene to Find free B-roll and select footage.',scene_id:selected[0]?.id};
+    const index=project.scenes.findIndex(needsAttention);
+    if(index>=0){const s=project.scenes[index];return {message:`Scene ${index+1}: ${s.media_type==='broll'?'search and select B-roll, or choose imported footage.':'unlock the scene to generate its missing image.'}`,scene_id:s.id};}
+    return null;
+  }
+  if (typeof module === 'object') module.exports = {escape,split,merge,scenePage,buildIssue};
   if (!root.document) return;
   const doc = root.document;
   const el = id => doc.getElementById(id);
   let project = null, library = [], dirty = false, jobsTimer = null, lastExport = null, stockSearch = null, stockScene = null, stockProject = null;
+  let viewPage=0;
   async function api(path, options = {}) {
     const response = await fetch('/api/video' + path, options);
     const data = await response.json().catch(() => ({}));
@@ -33,15 +48,16 @@
     el('video-status').textContent = message;
     el('video-status').classList.toggle('bad', failed);
     el('video-status').setAttribute('role', failed ? 'alert' : 'status');
+    if(failed)el('video-status').scrollIntoView?.({block:'nearest'});
   }
   async function operation(button, work) {
     if (button.disabled) return;
     const buttons = [...el('video-panel').querySelectorAll('button')];
     buttons.forEach(b => b.disabled = true);
     status('Working…');
-    try { const message=await work(); status(message || 'Ready.'); }
+    try { const result=await work(); if(result?.message)status(result.message,result.failed);else status(result || 'Ready.'); }
     catch(error) { status(error.message, true); }
-    finally { buttons.forEach(b => b.disabled = false); }
+    finally { buttons.forEach(b => b.disabled = false); navigation(); }
   }
   function collect() {
     if (!project) throw new Error('Create or load a storyboard first.');
@@ -59,13 +75,27 @@
       });
     });
   }
+  function navigation() {
+    if(!project)return;
+    const view=scenePage(project.scenes,el('video-scene-filter').value,viewPage);
+    viewPage=view.page;
+    el('video-page-prev').disabled=view.page===0;
+    el('video-page-next').disabled=view.page+1===view.pages;
+    el('video-page-label').textContent=`Page ${view.page+1} of ${view.pages} · ${view.count} matching scenes`;
+    el('video-scene-jump').max=project.scenes.length;
+    const images=project.scenes.filter(s=>s.media_type==='image').length;
+    const prepared=project.scenes.filter(s=>s.asset_id||s.stock_id).length;
+    const issue=buildIssue(project,Number(el('video-start').value),Number(el('video-end').value));
+    el('video-readiness').textContent=`${project.scenes.length} scenes · ${images} local images · ${project.scenes.length-images} B-roll · ${prepared} media selected. ${issue?issue.message:'Ready to queue: missing local images will be generated automatically.'}`;
+  }
   function draw() {
     el('video-style').value = project.style;
     el('video-image-preset').value=project.image_preset || 'draft';
     const format=el('video-format').value;
     project.scenes.forEach(s=>{s.media_type ||= library.find(a=>a.id===s.asset_id)?.kind || 'image';});
-    el('video-scenes').innerHTML = project.scenes.map((s,i) => `<article class="video-scene" data-scene="${escape(s.id)}">
-      <h3>Scene ${i+1} · ${s.start.toFixed(1)}–${s.end.toFixed(1)}s</h3><p>${escape(s.text || 'Music / introduction')}</p>
+    const view=scenePage(project.scenes,el('video-scene-filter').value,viewPage);viewPage=view.page;
+    el('video-scenes').innerHTML = view.entries.map(({scene:s,index:i},position) => `<details class="video-scene" data-scene="${escape(s.id)}" ${position===0?'open':''}>
+      <summary>Scene ${i+1} · ${s.start.toFixed(1)}–${s.end.toFixed(1)}s · ${s.asset_id?'Media ready':s.stock_id?'B-roll prepared':needsAttention(s)?'Needs attention':'Image will generate'}</summary><p>${escape(s.text || 'Music / introduction')}</p>
       <div class="video-grid"><label>Scene start<input type="number" data-field="start" step="0.001" value="${s.start}"></label><label>Scene end<input type="number" data-field="end" step="0.001" value="${s.end}"></label></div>
       <label>Visual purpose<input data-field="intent" value="${escape(s.intent)}"></label>
       <label>Visual source<select data-field="media_type"><option value="image" ${s.media_type==='image'?'selected':''}>Create a local image</option><option value="broll" ${s.media_type==='broll'?'selected':''}>Find free B-roll</option></select></label>
@@ -80,7 +110,8 @@
       <button type="button" data-split="${escape(s.id)}" class="secondary">Split scene</button><button type="button" data-merge="${escape(s.id)}" class="secondary">Merge with next</button>
       ${s.media_type==='image'?`<button type="button" data-image="${escape(s.id)}" class="secondary">Generate this image now</button>`:`<button type="button" data-search="${escape(s.id)}">Search free B-roll</button>`}
       ${s.asset_id ? `<details><summary>View selected media and source</summary>${(() => {const a=library.find(a=>a.id===s.asset_id);return a ? (a.kind==='broll'?`<video controls preload="metadata" src="${escape(a.url)}"></video>`:`<img alt="Scene illustration" src="${escape(a.url)}">`)+`<p>${escape(a.source.creator || a.source.model)} · ${escape(a.source.license)}</p>`:'';})()}</details>` : s.stock_id?`<p class="hint">B-roll selected: ${escape(s.stock?.creator)} · ${escape(s.stock?.duration)}s. It will download when you build the video.</p><button type="button" data-clear-stock="${escape(s.id)}" class="secondary">Clear footage selection</button>`:`<p class="hint">${s.media_type==='image'?'Local image will be generated with the video build.':'Search and select B-roll before building.'}</p>`}
-      </article>`).join('');
+      </details>`).join('') || '<p class="hint">No scenes match this filter.</p>';
+    navigation();
     dirty = false;
   }
   async function lists() {
@@ -92,8 +123,10 @@
     if (selected) el('video-project').value = selected;
   }
   async function refreshJobs() {
-    const resources=await api('/resources');
-    el('video-resources').textContent=`GPU stage: ${resources.active} · Model handoffs ${resources.handoff_enabled?'enabled':'disabled'}${resources.free_vram_mb!==null?' · Last observed free VRAM: '+resources.free_vram_mb+' MB':''}`;
+    // Optional GPU diagnostics must never prevent job polling or cancellation.
+    api('/resources').then(resources=>{
+      el('video-resources').textContent=`GPU stage: ${resources.active} · Model handoffs ${resources.handoff_enabled?'enabled':'disabled'}${resources.free_vram_mb!==null?' · Last observed free VRAM: '+resources.free_vram_mb+' MB':''}`;
+    }).catch(()=>{el('video-resources').textContent='GPU diagnostics unavailable; video jobs are still shown below.';});
     const data = await api('/jobs');
     el('video-jobs').innerHTML = data.jobs.map(j=>`<article class="video-scene"><strong>${escape(j.project_id.slice(0,8))} · ${escape(j.status)}</strong><p>${escape(j.phase)} · ${j.done}/${j.total} scenes prepared</p>${j.error?`<p class="bad">${escape(j.error)}</p>`:''}
       ${['queued','running'].includes(j.status)?`<button type="button" data-cancel-video="${escape(j.id)}">Cancel video</button>`:''}
@@ -105,6 +138,11 @@
     if(data.jobs.some(j=>['queued','running'].includes(j.status)) && !jobsTimer){
       jobsTimer=root.setTimeout(()=>{jobsTimer=null;refreshJobs().catch(e=>status(e.message,true));},2000);
     }
+    const active=data.jobs.find(j=>j.id===lastExport);
+    if(active){
+      const message=active.status==='failed'?`Video failed: ${active.error || 'Check the job details.'}`:active.status==='complete'?'Video complete. Download MP4 below; reload the project to inspect prepared assets.':active.status==='cancelled'?'Video cancelled.':`Video ${active.status}: ${active.phase} · ${active.done}/${active.total} scenes.`;
+      const feedback={message,failed:active.status==='failed'};status(message,feedback.failed);return feedback;
+    }
   }
   el('video-jobs').addEventListener('click',e=>{const b=e.target.closest('[data-cancel-video]');if(!b)return;
     operation(b,async()=>{await api('/jobs/'+b.dataset.cancelVideo+'/cancel',{method:'POST'});await refreshJobs();});
@@ -113,6 +151,22 @@
     collect(); project = await api('/projects/'+project.id, json('PUT', project)); dirty = false;
   }
   const replaceAllowed = () => !dirty || root.confirm('Replace your unsaved video storyboard edits?');
+  function changeView(work) {if(!project)return;collect();const wasDirty=dirty;work();draw();dirty=wasDirty;}
+  el('video-page-prev').addEventListener('click',()=>changeView(()=>{viewPage--;}));
+  el('video-page-next').addEventListener('click',()=>changeView(()=>{viewPage++;}));
+  el('video-scene-filter').addEventListener('change',()=>changeView(()=>{viewPage=0;}));
+  function showScene(id) {
+    el('video-scene-filter').value='all';viewPage=Math.floor(project.scenes.findIndex(s=>s.id===id)/5);
+    const wasDirty=dirty;draw();dirty=wasDirty;
+    const row=el('video-scenes').querySelector?.(`[data-scene="${id}"]`);
+    if(row){row.open=true;row.scrollIntoView?.({block:'nearest'});}
+  }
+  el('video-jump').addEventListener('click',()=>{
+    if(!project)return;collect();const index=Number(el('video-scene-jump').value)-1;
+    if(!Number.isInteger(index)||index<0||index>=project.scenes.length){status('Enter a scene number within this storyboard.',true);return;}
+    showScene(project.scenes[index].id);
+  });
+  for(const id of ['video-start','video-end'])el(id).addEventListener('input',()=>{if(project){collect();navigation();}});
   el('video-scenes').addEventListener('change',e=>{
     const field=e.target.dataset.field;if(!['media_type','asset_id'].includes(field))return;
     const row=e.target.closest('[data-scene]'), scene=project.scenes.find(s=>s.id===row.dataset.scene);
@@ -130,11 +184,12 @@
   el('video-create').addEventListener('click', e=>operation(e.currentTarget, async()=>{
     if (!replaceAllowed()) return;
     project=await api('/projects',json('POST',{episode_id:el('video-episode').value}));
+    viewPage=0;el('video-scene-filter').value='all';
     el('video-start').value=0;el('video-end').value=project.duration;await lists();draw();
   }));
   el('video-load').addEventListener('click', e=>operation(e.currentTarget, async()=>{
     if (!replaceAllowed()) return;
-    project=await api('/projects/'+el('video-project').value);el('video-start').value=0;el('video-end').value=project.duration;await lists();draw();
+    project=await api('/projects/'+el('video-project').value);viewPage=0;el('video-scene-filter').value='all';el('video-start').value=0;el('video-end').value=project.duration;await lists();draw();
   }));
   el('video-save').addEventListener('click', e=>operation(e.currentTarget, async()=>{await save();draw();}));
   el('video-refresh').addEventListener('click', e=>operation(e.currentTarget, async()=>{if(project)collect();const wasDirty=dirty;await lists();if(project)draw();dirty=wasDirty;}));
@@ -145,7 +200,7 @@
     operation(button,async()=>{await save();project=await api('/projects/'+project.id+'/images',json('POST',{scene_id:button.dataset.image}));await lists();draw();});
   });
   el('video-scenes').addEventListener('click',e=>{const b=e.target.closest('[data-split],[data-merge]');if(!b)return;
-    try{collect();project.scenes=b.dataset.split?split(project.scenes,b.dataset.split,root.crypto.randomUUID()):merge(project.scenes,b.dataset.merge,library.find(a=>a.id===project.scenes.find(s=>s.id===b.dataset.merge)?.asset_id)?.kind||'image');draw();dirty=true;status('Scene edit ready; save the storyboard.');}catch(error){status(error.message,true);}
+    try{collect();const scene=project.scenes.find(s=>s.id===b.dataset.merge);project.scenes=b.dataset.split?split(project.scenes,b.dataset.split,root.crypto.randomUUID()):merge(project.scenes,b.dataset.merge,library.find(a=>a.id===scene?.asset_id)?.kind||scene?.media_type||'image');draw();dirty=true;status('Scene edit ready; save the storyboard.');}catch(error){status(error.message,true);}
   });
   el('video-format').addEventListener('change',()=>{if(project){collect();const wasDirty=dirty;draw();dirty=wasDirty;}});
   el('video-plan').addEventListener('click',e=>operation(e.currentTarget,async()=>{await save();project=await api('/projects/'+project.id+'/plan',{method:'POST'});draw();}));
@@ -164,8 +219,12 @@
     return 'B-roll prepared. It will download when you build the video.';
   });});
   el('video-build').addEventListener('click',e=>operation(e.currentTarget,async()=>{
+    collect();const issue=buildIssue(project,Number(el('video-start').value),Number(el('video-end').value));
+    if(issue){if(issue.scene_id)showScene(issue.scene_id);throw new Error(issue.message);}
     await save();const result=await api('/projects/'+project.id+'/build',json('POST',{start:Number(el('video-start').value),end:Number(el('video-end').value),preview:false,aspect:el('video-format').value,encoder:el('video-encoder').value,captions:el('video-caption-style').value}));
-    lastExport=result.id;await refreshJobs();return 'Queued: download selected B-roll, generate missing local images, then create the video. You can cancel it in Video jobs.';
+    lastExport=result.id;
+    try{return await refreshJobs() || 'Queued: download selected B-roll, generate missing local images, then create the video. You can cancel it in Video jobs.';}
+    catch(error){if(!jobsTimer)jobsTimer=root.setTimeout(()=>{jobsTimer=null;refreshJobs().catch(e=>status(e.message,true));},2000);return `Video queued (${result.id}). Status refresh failed: ${error.message}. Polling will retry; do not queue it again.`;}
   }));
   for (const id of ['video-preview','video-export']) el(id).addEventListener('click',e=>operation(e.currentTarget,async()=>{
     await save();const result=await api('/projects/'+project.id+'/exports',json('POST',{start:Number(el('video-start').value),end:Number(el('video-end').value),preview:id==='video-preview',aspect:el('video-format').value,encoder:el('video-encoder').value,captions:el('video-caption-style').value}));

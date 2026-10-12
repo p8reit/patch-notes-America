@@ -893,6 +893,20 @@ Both B-roll and local images are required in an export range. Crop focal points,
 footage trims and gentle image zooms are editable. Source podcast audio is
 hashed and left unchanged; source changes require a new video project.
 
+For long episodes, review five collapsible scene cards at a time. Filter to
+**Needs attention**, **B-roll**, or **Local images**, or jump directly to a scene
+number. Navigation retains edits across pages; **Save storyboard** persists all
+scenes. The readiness summary explains missing footage or locked image scenes.
+Image scenes with no asset are valid plans: their images generate during the
+build. The selected export range must include both kinds of visuals.
+
+The build button and live feedback stay together in a sticky bar. Validation
+errors appear there and open the relevant scene when identified locally. New
+storyboards default to images, so choose and select B-roll before building.
+Job progress, errors and downloads appear above the scene editor. GPU diagnostics
+are optional and cannot block job polling. If a build is accepted but refreshing
+status fails, the confirmation keeps its job ID and polling retries.
+
 Click **Generate assets and create video** when the storyboard is ready. One
 durable job downloads selected footage, generates missing local illustrations,
 and renders the selected range after all storyboard assets are ready. Existing
