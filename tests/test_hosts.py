@@ -393,11 +393,13 @@ def test_automatic_clip_rendering_returns_durable_downloads(tmp_path, monkeypatc
     assert clips[0]["download_url"] == "/api/episodes/episode-1/clips/auto-1-intro/download"
 
 
-def test_generate_clip_art_persists_valid_image_bytes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("quality", ["low", "medium", "high"])
+def test_generate_clip_art_persists_valid_image_bytes(tmp_path, monkeypatch, quality):
     import asyncio
     import base64
     from app import main
 
+    monkeypatch.setattr(main, "OPENAI_IMAGE_QUALITY", quality)
     captured = {}
     image_bytes = b"\x89PNG\r\n\x1a\n" + b"image-data"
 
@@ -433,6 +435,8 @@ def test_generate_clip_art_persists_valid_image_bytes(tmp_path, monkeypatch):
     assert destination.read_bytes() == image_bytes
     assert captured["payload"]["size"] == "1024x1536"
     assert captured["payload"]["model"] == main.OPENAI_IMAGE_MODEL
+    assert captured["payload"]["quality"] == main.OPENAI_IMAGE_QUALITY
+    assert "preset" not in captured["payload"]
     assert "no words" in captured["payload"]["prompt"]
     assert captured["headers"]["Authorization"] == "Bearer test-key"
 
@@ -475,7 +479,9 @@ def test_generate_clip_art_can_use_local_provider_without_api_key(tmp_path, monk
 
     assert captured["url"] == main.LOCAL_IMAGES_URL
     assert "Authorization" not in captured["headers"]
-    assert captured["payload"]["model"] == main.LOCAL_IMAGE_MODEL
+    assert captured["payload"]["model"] == main.LOCAL_IMAGE_DETAIL_MODEL
+    assert captured["payload"]["preset"] == "detail"
+    assert "quality" not in captured["payload"]
 
 
 def test_generate_clip_art_explains_how_to_start_unreachable_local_provider(tmp_path, monkeypatch):
@@ -582,9 +588,10 @@ def test_clip_art_prompt_requests_photorealistic_people_not_illustrations():
     prompt = clip_art_prompt("Virtual reality", "People meet in a shared digital world.")
 
     assert "hyper-realistic" in prompt
-    assert "lifelike fictional people" in prompt
+    assert "People must be fictional" in prompt
     assert "natural anatomy" in prompt
-    assert "rather than cartoons" in prompt
+    assert "Follow the producer visual style" in prompt
+    assert "rather than cartoons" not in prompt
 
 
 def test_clip_art_prompt_includes_producer_visual_direction_as_reference():

@@ -26,7 +26,7 @@
   function buildIssue(project,start,end) {
     if(!Number.isFinite(start)||!Number.isFinite(end)||start<0||end>project.duration||end<=start)return {message:'Choose an export range within the episode, with its end after its start.'};
     const selected=project.scenes.filter(s=>s.end>start&&s.start<end);
-    if(!selected.some(s=>s.media_type==='broll')||!selected.some(s=>s.media_type==='image'))return {message:'Choose both local images and B-roll in the export range. New storyboards default to images; change a scene to Find free B-roll and select footage.',scene_id:selected[0]?.id};
+    if(!selected.some(s=>s.media_type==='broll')||!selected.some(s=>s.media_type==='image'))return {message:'Choose both images and B-roll in the export range. New storyboards default to images; change a scene to Find free B-roll and select footage.',scene_id:selected[0]?.id};
     const index=project.scenes.findIndex(needsAttention);
     if(index>=0){const s=project.scenes[index];return {message:`Scene ${index+1}: ${s.media_type==='broll'?'search and select B-roll, or choose imported footage.':'unlock the scene to generate its missing image.'}`,scene_id:s.id};}
     return null;
@@ -63,6 +63,8 @@
     if (!project) throw new Error('Create or load a storyboard first.');
     project.style = el('video-style').value;
     project.image_preset=el('video-image-preset').value;
+    project.image_provider=el('video-image-provider').value || 'local';
+    project.image_quality=el('video-image-quality').value || el('video-image-quality').dataset?.default || 'high';
     el('video-scenes').querySelectorAll('[data-scene]').forEach(row => {
       const scene = project.scenes.find(s => s.id === row.dataset.scene);
       row.querySelectorAll('[data-field]').forEach(input => {
@@ -86,11 +88,13 @@
     const images=project.scenes.filter(s=>s.media_type==='image').length;
     const prepared=project.scenes.filter(s=>s.asset_id||s.stock_id).length;
     const issue=buildIssue(project,Number(el('video-start').value),Number(el('video-end').value));
-    el('video-readiness').textContent=`${project.scenes.length} scenes · ${images} local images · ${project.scenes.length-images} B-roll · ${prepared} media selected. ${issue?issue.message+' Auto-create plans unassigned, unlocked scenes for you.':'Ready to queue: missing local images will be generated automatically.'}`;
+    el('video-readiness').textContent=`${project.scenes.length} scenes · ${images} images · ${project.scenes.length-images} B-roll · ${prepared} media selected. ${issue?issue.message+' Auto-create plans unassigned, unlocked scenes for you.':'Ready to queue: missing images will be generated automatically.'}`;
   }
   function draw() {
     el('video-style').value = project.style;
     el('video-image-preset').value=project.image_preset || 'draft';
+    el('video-image-provider').value=project.image_provider || 'local';
+    el('video-image-quality').value=project.image_quality || el('video-image-quality').dataset?.default || 'high';
     const format=el('video-format').value;
     project.scenes.forEach(s=>{s.media_type ||= library.find(a=>a.id===s.asset_id)?.kind || 'image';});
     const view=scenePage(project.scenes,el('video-scene-filter').value,viewPage);viewPage=view.page;
@@ -98,15 +102,15 @@
       <summary>Scene ${i+1} · ${s.start.toFixed(1)}–${s.end.toFixed(1)}s · ${s.asset_id?'Media ready':s.stock_id?'B-roll prepared':needsAttention(s)?'Needs attention':'Image will generate'}</summary><p>${escape(s.text || 'Music / introduction')}</p>
       <div class="video-grid"><label>Scene start<input type="number" data-field="start" step="0.001" value="${s.start}"></label><label>Scene end<input type="number" data-field="end" step="0.001" value="${s.end}"></label></div>
       <label>Visual purpose<input data-field="intent" value="${escape(s.intent)}"></label>
-      <label>Visual source<select data-field="media_type"><option value="image" ${s.media_type==='image'?'selected':''}>Create a local image</option><option value="broll" ${s.media_type==='broll'?'selected':''}>Find free B-roll</option></select></label>
-      ${s.media_type==='broll'?`<label>Quick footage search<input data-field="query" maxlength="100" value="${escape(s.query)}"></label>`:`<label>Local image prompt<textarea data-field="prompt" maxlength="2000">${escape(s.prompt)}</textarea></label>`}
+      <label>Visual source<select data-field="media_type"><option value="image" ${s.media_type==='image'?'selected':''}>Create an image</option><option value="broll" ${s.media_type==='broll'?'selected':''}>Find free B-roll</option></select></label>
+      ${s.media_type==='broll'?`<label>Quick footage search<input data-field="query" maxlength="100" value="${escape(s.query)}"></label>`:`<label>Image prompt<textarea data-field="prompt" maxlength="2000">${escape(s.prompt)}</textarea></label>`}
       <label>Caption<textarea data-field="caption">${escape(s.caption)}</textarea></label>
       <label>Reuse media from library<select data-field="asset_id"><option value="">${s.stock_id?'Selected B-roll · download queued with build':s.media_type==='image'?'Generate with build':'Find footage below or choose an import'}</option>${library.filter(a=>a.kind===s.media_type).map(a => `<option value="${escape(a.id)}" ${a.id===s.asset_id?'selected':''}>${escape(a.kind+' · '+(a.source.creator || a.source.model || a.id.slice(0,8)))}</option>`).join('')}</select></label>
       <div class="video-grid"><label>Footage trim start<input type="number" data-field="trim" min="0" step="0.1" value="${s.trim}"></label>
       <label>${escape(format)} horizontal focal point (0–1)<input type="number" data-format-crop="x" data-aspect="${escape(format)}" min="0" max="1" step="0.05" value="${s.format_crops?.[format]?.x??s.crop_x}"></label><label>${escape(format)} vertical focal point (0–1)<input type="number" data-format-crop="y" data-aspect="${escape(format)}" min="0" max="1" step="0.05" value="${s.format_crops?.[format]?.y??s.crop_y}"></label>
       <label>Image motion<select data-field="motion"><option value="still">Still</option><option value="zoom" ${s.motion==='zoom'?'selected':''}>Slow zoom</option></select></label></div>
       <label><input type="checkbox" data-field="locked" ${s.locked?'checked':''}> Lock approved scene</label>
-      <label>Image seed (blank chooses a new seed)<input type="number" data-field="seed" min="0" max="2147483647" value="${s.seed??''}"></label>
+      <label>Local image seed (blank chooses a new seed; OpenAI ignores seeds)<input type="number" data-field="seed" min="0" max="2147483647" value="${s.seed??''}"></label>
       <button type="button" data-split="${escape(s.id)}" class="secondary">Split scene</button><button type="button" data-merge="${escape(s.id)}" class="secondary">Merge with next</button>
       ${s.media_type==='image'?`<button type="button" data-image="${escape(s.id)}" class="secondary">Generate this image now</button>`:`<button type="button" data-search="${escape(s.id)}">Search free B-roll</button>`}
       ${s.asset_id ? `<details><summary>View selected media and source</summary>${(() => {const a=library.find(a=>a.id===s.asset_id);return a ? (a.kind==='broll'?`<video controls preload="metadata" src="${escape(a.url)}"></video>`:`<img alt="Scene illustration" src="${escape(a.url)}">`)+`<p>${escape(a.source.creator || a.source.model)} · ${escape(a.source.license)}</p>`:'';})()}</details>` : s.stock_id?`<p class="hint">B-roll selected: ${escape(s.stock?.creator)} · ${escape(s.stock?.duration)}s. It will download when you build the video.</p><button type="button" data-clear-stock="${escape(s.id)}" class="secondary">Clear footage selection</button>`:`<p class="hint">${s.media_type==='image'?'Local image will be generated with the video build.':'Search and select B-roll before building.'}</p>`}
@@ -222,10 +226,12 @@
   for(const id of ['video-build','video-auto-build'])el(id).addEventListener('click',e=>operation(e.currentTarget,async()=>{
     const automatic=id==='video-auto-build';
     if(automatic&&!project){
-      const direction=el('video-style').value, preset=el('video-image-preset').value;
+      const direction=el('video-style').value, preset=el('video-image-preset').value, provider=el('video-image-provider').value, quality=el('video-image-quality').value;
       project=await api('/projects',json('POST',{episode_id:el('video-episode').value}));
       if(direction.trim())project.style=direction;
-      project.image_preset=preset || 'draft';
+      project.image_preset=preset || 'detail';
+      project.image_provider=provider || project.image_provider;
+      project.image_quality=quality || project.image_quality;
       viewPage=0;el('video-scene-filter').value='all';el('video-start').value=0;el('video-end').value=project.duration;
       await lists();draw();
     }
@@ -234,7 +240,7 @@
       if(issue){if(issue.scene_id)showScene(issue.scene_id);throw new Error(issue.message);}}
     await save();const result=await api('/projects/'+project.id+'/build',json('POST',{start:Number(el('video-start').value),end:Number(el('video-end').value),preview:false,aspect:el('video-format').value,encoder:el('video-encoder').value,captions:el('video-caption-style').value,...(automatic?{auto_broll:true,provider:el('video-provider').value}:{})}));
     lastExport=result.id;
-    try{return await refreshJobs() || (automatic?'Queued: local AI will plan visuals, select free B-roll, generate images, and create the video.':'Queued: download selected B-roll, generate missing local images, then create the video. You can cancel it in Video jobs.');}
+    try{return await refreshJobs() || (automatic?'Queued: local AI will plan visuals, select free B-roll, generate images, and create the video.':'Queued: download selected B-roll, generate missing images, then create the video. You can cancel it in Video jobs.');}
     catch(error){if(!jobsTimer)jobsTimer=root.setTimeout(()=>{jobsTimer=null;refreshJobs().catch(e=>status(e.message,true));},2000);return `Video queued (${result.id}). Status refresh failed: ${error.message}. Polling will retry; do not queue it again.`;}
   }));
   for (const id of ['video-preview','video-export']) el(id).addEventListener('click',e=>operation(e.currentTarget,async()=>{

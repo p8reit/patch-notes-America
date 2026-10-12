@@ -273,6 +273,16 @@
           <option value="square" selected>Square · 1:1</option>
           <option value="landscape">Landscape · 3:2</option>
         </select>
+        <label for="standalone-image-quality">Hosted quality</label>
+        <select id="standalone-image-quality" name="quality">
+          {% for value in ['high', 'medium', 'low'] %}<option value="{{ value }}" {% if value == image_quality %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}
+        </select>
+        <label for="standalone-image-preset">Local quality</label>
+        <select id="standalone-image-preset" name="preset">
+          <option value="detail" {% if image_preset == 'detail' %}selected{% endif %}>Detail · SDXL Base</option>
+          <option value="draft" {% if image_preset == 'draft' %}selected{% endif %}>Draft · SDXL Turbo</option>
+        </select>
+        <p class="hint">Configured provider: {{ image_provider }}. Hosted quality controls apply to OpenAI; local quality controls apply to local generation. High costs more and takes longer. Local Detail defaults to CPU offload and takes longer than Draft. Export scaling does not add detail. Faces can still contain errors.</p>
         <div class="actions image-actions">
           <button id="create-image" type="submit" aria-describedby="image-status">Create image</button>
           <span id="image-status" class="hint" role="status" aria-live="polite"></span>
@@ -290,21 +300,22 @@
     </section>
     <section id="video-panel" class="card video-studio" role="tabpanel" aria-labelledby="video-tab" hidden>
       <h2>Video Studio</h2>
-      <p class="hint">Tell your podcast story with free B-roll and locally generated images. Audio stays unchanged.</p>
+      <p class="hint">Tell your podcast story with free B-roll and generated images. Audio stays unchanged.</p>
       <div class="actions"><label>Finished episode<select id="video-episode"></select></label><button id="video-create" type="button">Create storyboard</button><label>Saved video project<select id="video-project"></select></label><button id="video-load" type="button">Load project</button></div>
       <label>Visual direction<textarea id="video-style" rows="2"></textarea></label>
-      <div class="video-grid"><label>Image preset<select id="video-image-preset"><option value="draft">Draft · lower memory</option><option value="detail">Detail · more memory and time</option></select></label><label>Video format<select id="video-format"><option value="horizontal">Horizontal 16:9</option><option value="vertical">Vertical 9:16</option><option value="square">Square 1:1</option></select></label><label>Encoder<select id="video-encoder"><option value="libx264">Software H.264</option><option value="h264_nvenc">NVIDIA H.264 · requires GPU mode</option></select></label><label>Captions<select id="video-caption-style"><option value="standard">Standard</option><option value="large">Large</option><option value="none">No burned captions · still export SRT</option></select></label></div>
+      <p class="hint">OpenAI High increases hosted cost and latency. Local defaults: Detail uses 30 steps at up to 1024×1024 or 1152×768 with CPU offload; Draft uses 2 steps at 512×512 or 768×512. Photographic faces may still need retries and review.</p>
+      <div class="video-grid"><label>Image provider<select id="video-image-provider"><option value="openai" {% if image_provider == 'openai' %}selected{% endif %}>OpenAI · hosted, paid</option><option value="local" {% if image_provider == 'local' %}selected{% endif %}>Local · CUDA required</option></select></label><label>Hosted quality<select id="video-image-quality" data-default="{{ image_quality }}">{% for value in ['high', 'medium', 'low'] %}<option value="{{ value }}" {% if value == image_quality %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select></label><label>Local quality<select id="video-image-preset"><option value="detail" {% if image_preset == 'detail' %}selected{% endif %}>Detail · SDXL Base, CPU offload</option><option value="draft" {% if image_preset == 'draft' %}selected{% endif %}>Draft · SDXL Turbo, fast</option></select></label><label>Video format<select id="video-format"><option value="horizontal">Horizontal 16:9</option><option value="vertical">Vertical 9:16</option><option value="square">Square 1:1</option></select></label><label>Encoder<select id="video-encoder"><option value="libx264">Software H.264</option><option value="h264_nvenc">NVIDIA H.264 · requires GPU mode</option></select></label><label>Captions<select id="video-caption-style"><option value="standard">Standard</option><option value="large">Large</option><option value="none">No burned captions · still export SRT</option></select></label></div>
       <div class="actions"><button id="video-save" type="button">Save storyboard</button><button id="video-refresh" type="button" class="secondary">Refresh library</button></div>
       <div class="actions"><button id="video-plan" type="button" class="secondary">Suggest visuals locally</button><button id="video-batch" type="button" class="secondary">Generate missing images</button><label>Free footage source<select id="video-provider"><option value="pixabay">Pixabay</option><option value="pexels">Pexels (existing API key)</option></select></label></div>
-      <p class="hint">Choose a local image or free B-roll for each scene. Search and preview footage, then select it without downloading yet. Include both kinds of visuals in your video.</p>
+      <p class="hint">Choose an image or free B-roll for each scene. Search and preview footage, then select it without downloading yet. Include both kinds of visuals in your video.</p>
       <div class="video-build-bar">
         <button id="video-auto-build" type="button">Auto-create video with local AI</button>
         <button id="video-build" type="button" class="secondary">Generate assets from my scene choices</button>
         <p id="video-status" class="hint" role="status" aria-live="polite"></p>
       </div>
-      <p class="hint">Auto-create uses the loaded storyboard, or creates one from the selected episode. It plans unassigned scenes, searches and selects free B-roll, generates local images, and renders. Existing media selections and locked scenes are preserved. Requires Ollama with the visual planner model and a configured footage API key. Footage is selected using search metadata; review the result before publishing.</p>
+      <p class="hint">Auto-create uses the loaded storyboard, or creates one from the selected episode. It plans unassigned scenes, searches and selects free B-roll, generates images with the selected provider, and renders. Existing media selections and locked scenes are preserved. Requires Ollama with the visual planner model and a configured footage API key. Footage is selected using search metadata; review the result before publishing.</p>
       <p id="video-readiness" class="hint" aria-live="polite">Create or load a storyboard to review its readiness.</p>
-      <p class="hint">For one-click production, choose Auto-create. For manual control: review image prompts, select footage for B-roll scenes, then generate assets from your scene choices. Both paths include local images and free B-roll.</p>
+      <p class="hint">For one-click production, choose Auto-create. For manual control: review image prompts, select footage for B-roll scenes, then generate assets from your scene choices. Both paths include generated images and free B-roll.</p>
       <div class="actions"><label>Export start (seconds)<input id="video-start" type="number" min="0" value="0" step="0.001"></label><label>Export end (seconds)<input id="video-end" type="number" min="0" step="0.001"></label></div>
       <p id="video-resources" class="hint" aria-live="polite"></p>
       <h3>Video jobs</h3><div id="video-jobs" aria-live="polite"></div>

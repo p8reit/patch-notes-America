@@ -59,6 +59,7 @@ def test_local_planner_preserves_locks_times_and_rolls_back_invalid_result(tmp_p
         async def post(self,url,**kwargs):
             assert url==main.LOCAL_AI_URL
             assert kwargs["json"]["keep_alive"]==0
+            assert "do not force illustration" in kwargs["json"]["messages"][0]["content"]
             return Result({"message":{"content":json.dumps({"scenes":[{"id":"wrong" if invalid else "edit","intent":"Neighborhood","query":"houses","prompt":"Warm housing"}]})}})
     monkeypatch.setattr(automation.httpx,"AsyncClient",Client)
     result=asyncio.run(automation.plan("project"))
@@ -99,9 +100,10 @@ def test_gpu_handoff_serializes_nested_leases_and_restores_speech_after_failure(
     assert gpu.token_file.stat().st_mode & 0o777 == 0o600
 
 
-def test_batch_images_have_durable_progress_and_skip_locked_or_selected_scenes(tmp_path,monkeypatch):
+@pytest.mark.parametrize("provider", ["local", "openai"])
+def test_batch_images_have_durable_progress_and_skip_locked_or_selected_scenes(tmp_path,monkeypatch,provider):
     monkeypatch.setattr(video,"ROOT",tmp_path)
-    project={"id":"project","revision":1,"scenes":[
+    project={"id":"project","revision":1,"image_provider":provider,"scenes":[
         {"id":"locked","locked":True,"asset_id":None},
         {"id":"footage","locked":False,"asset_id":"selected"},
         {"id":"missing","locked":False,"asset_id":None},
@@ -116,6 +118,13 @@ def test_batch_images_have_durable_progress_and_skip_locked_or_selected_scenes(t
         video.atomic(video.project_path(project_id),current)
         return current
     monkeypatch.setattr(video,"scene_image",image)
+    from contextlib import asynccontextmanager
+    leases=[]
+    @asynccontextmanager
+    async def lease(kind):
+        leases.append(kind)
+        yield
+    monkeypatch.setattr(gpu,"lease",lease)
     async def run():
         monkeypatch.setattr(video,"queue",asyncio.Queue())
         job=await automation.batch_images("project")
@@ -124,6 +133,7 @@ def test_batch_images_have_durable_progress_and_skip_locked_or_selected_scenes(t
         assert result["status"]=="complete" and result["done"]==1
     asyncio.run(run())
     assert calls==["missing"]
+    assert leases == (["image"] if provider == "local" else [])
 
 
 def test_build_reuses_one_prepared_clip_across_split_scenes_and_repairs_missing_cache(tmp_path, monkeypatch):

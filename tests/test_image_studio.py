@@ -71,3 +71,32 @@ def test_standalone_image_generation_validates_input(monkeypatch):
     assert client.post(
         "/api/images/generations", data={"prompt": "valid", "aspect": "cinema"}
     ).status_code == 400
+
+
+def test_hosted_quality_is_configurable_and_studio_can_override(monkeypatch):
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "openai")
+    monkeypatch.setattr(main, "OPENAI_API_KEY", "test-only")
+    monkeypatch.setattr(main, "OPENAI_IMAGE_QUALITY", "high")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    client = TestClient(main.app)
+    for fields, expected in [({}, "high"), ({"quality": "medium"}, "medium"), ({"quality": "low"}, "low")]:
+        result = client.post('/api/images/generations', data={"prompt": "A photographic portrait", **fields})
+        assert result.status_code == 200
+        endpoint, headers, payload = FakeClient.requests[-1]
+        assert endpoint == main.OPENAI_IMAGES_URL
+        assert headers["Authorization"] == "Bearer test-only"
+        assert payload["quality"] == expected
+        assert "preset" not in payload and "seed" not in payload
+    assert client.post('/api/images/generations', data={"prompt": "Portrait", "quality": "invalid"}).status_code == 400
+
+
+def test_local_studio_explicitly_selects_draft_or_detail(monkeypatch):
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "local")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    client = TestClient(main.app)
+    for preset, model in [("draft", main.LOCAL_IMAGE_MODEL), ("detail", main.LOCAL_IMAGE_DETAIL_MODEL)]:
+        assert client.post('/api/images/generations', data={"prompt": "Portrait", "preset": preset}).status_code == 200
+        payload = FakeClient.requests[-1][2]
+        assert payload["preset"] == preset and payload["model"] == model
+        assert "quality" not in payload
+    assert client.post('/api/images/generations', data={"prompt": "Portrait", "preset": "invalid"}).status_code == 400

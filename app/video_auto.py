@@ -99,7 +99,7 @@ async def automatic_visuals(job: dict, checkpoint: Callable[[int, int, str], Non
                     batch = pending[offset:offset+12]
                     checkpoint(len(planned), len(planned)+len(pending)-offset, "planning visuals locally")
                     result = await local_json(client,
-                        'Plan documentary visuals with a mix of B-roll and illustrations. Return {"scenes":[{"id":string,"media_type":"image"|"broll","intent":string,"query":string,"prompt":string}]}. Return each supplied ID exactly once. Prefer searchable establishing/action footage for B-roll and local illustrations for abstract ideas. Queries must be 2-5 concrete search keywords; prompts describe illustrative artwork in at most 30 words. Keep intents under 12 words. Do not change timings or invent factual events.',
+                        'Plan documentary visuals with a mix of B-roll and generated images. Return {"scenes":[{"id":string,"media_type":"image"|"broll","intent":string,"query":string,"prompt":string}]}. Return each supplied ID exactly once. Prefer searchable establishing/action footage for B-roll and generated images for abstract ideas. Queries must be 2-5 concrete search keywords; prompts follow the supplied visual style in at most 30 words; use photographic realism when requested, without forcing illustration. Keep intents under 12 words. Do not change timings or invent factual events.',
                         {"style": project["style"][:1000], "scenes": [{"id": s["id"], "text": s["text"][:500], "intent": s["intent"][:200]} for s in batch]})
                     try:
                         suggestions = result["scenes"]
@@ -143,7 +143,7 @@ async def automatic_visuals(job: dict, checkpoint: Callable[[int, int, str], Non
                     scene.update(media_type="broll", **selection)
                 else:
                     scene["media_type"] = "image"
-                    job.setdefault("warnings", []).append(f"Scene {scenes.index(scene)+1}: no suitable B-roll found; using a local illustration.")
+                    job.setdefault("warnings", []).append(f"Scene {scenes.index(scene)+1}: no suitable B-roll found; using a generated image.")
                 searched.add(scene["id"])
                 job["auto_searched_ids"] = sorted(searched)
                 checkpoint(len(searched), len(scenes), "searching and selecting free B-roll")

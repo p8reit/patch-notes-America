@@ -367,7 +367,8 @@ option to play the full track before the host introduction instead.
 Use **Episode image prompt** to guide the setting, subjects, mood, and
 composition of generated social-clip artwork. The prompt is saved with the
 episode and applied to both automatic and custom clips while the application's
-existing photorealism, safety, and no-text constraints remain in force.
+safety and no-text constraints remain in force. Photography is the default
+style; explicit producer styles are respected.
 
 ### Adjusting silence detection and timing
 
@@ -785,35 +786,85 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 
 The implementation uses the OpenAI Responses API for conversation drafting and the Images API for clip artwork and the standalone **Image Studio** tab. `OPENAI_RESPONSES_URL`, `OPENAI_MODEL`, `OPENAI_IMAGES_URL`, and `OPENAI_IMAGE_MODEL` are environment-configurable. Image Studio returns a downloadable PNG without attaching it to an episode or saving it on the server. Its Creation activity panel shows elapsed seconds, submitted format and prompt length, HTTP response status, received PNG size, and completion or failure details. A notice appears after a minute while waiting; the provider does not expose internal generation stages or a completion percentage through this request. Activity resets on each new request and stays visible after completion or failure. If image generation is unavailable, the MP4 still renders with the existing branded background and reports the artwork error separately.
 
+### Hosted image quality and cost
+
+`OPENAI_IMAGE_QUALITY=high` applies consistently to Image Studio, clip artwork
+and new Video Studio projects. Supported choices are `high`, `medium`, `low`;
+invalid settings fail explicitly. Image Studio and Video Studio expose hosted
+quality and local preset controls; clip artwork uses the environment defaults,
+without changing saved episodes. OpenAI requests use 1024×1024, 1536×1024 or
+1024×1536 and send no local preset/seed. Video scenes currently request landscape
+images, cropped for the selected export format. Hosted High generally costs
+more and takes longer than Low; pricing depends on the configured model, size,
+quality, input and current provider rates. Check the provider pricing before
+large batches; retries/regeneration are additional paid calls. Local generation
+has no hosted per-image charge but uses GPU time, electricity, RAM and storage.
+
 ### Generate artwork locally on NVIDIA
 
-An RTX 3060-class card can run the included SDXL Turbo service. Set the image
-provider in `.env`:
+The local service provides two explicit profiles targeting the **12 GB RTX
+3060**. This is a memory-budget design, not a hardware benchmark; 6/8 GB cards
+are not qualified. SDXL Base has roughly 3.5 billion parameters across its UNet,
+text encoders and VAE: fp16 weights alone are about 7 GB (decimal), before
+latents, classifier-free-guidance activations, CUDA workspace and VAE decode.
+Full CUDA placement can approach or exceed the usable 12 GB at native resolution,
+especially alongside speech. Detail therefore defaults to model CPU offload,
+VAE slicing/tiling, and one loaded image model at a time. CUDA remains mandatory;
+offload moves inactive components to CPU and still executes inference on CUDA.
+Allow at least 16 GB system RAM (32 GB recommended), plus disk space for both
+model downloads. Exact peak RAM/VRAM must be measured on the target host.
+
+| Profile | Model | Steps / guidance | Actual square / landscape / portrait PNG |
+| --- | --- | --- | --- |
+| Draft | `stabilityai/sdxl-turbo` | 2 / 0 | 512×512 / 768×512 / 512×768 |
+| Detail | `stabilityai/stable-diffusion-xl-base-1.0` | 30 / 5 | 1024×1024 / 1152×768 / 768×1152 |
+
+Detail uses Base's model-configured scheduler, fp16 safetensors, and its VAE's
+configured precision/upcast behavior, rather than applying Turbo's zero guidance
+and two steps to new weights. Only these model families are supported; arbitrary
+model substitutions fail explicitly. `LOCAL_IMAGE_STEPS` accepts 1–4 for Turbo;
+`LOCAL_IMAGE_DETAIL_STEPS` accepts 20–50 and `LOCAL_IMAGE_DETAIL_GUIDANCE` 1–10.
+The app's size field is a provider aspect request; local PNGs have the actual
+sizes above. FFmpeg scaling to 1080p adds no facial detail.
+
+Configure `.env`:
 
 ```text
 CLIP_IMAGE_PROVIDER=local
+LOCAL_IMAGE_PRESET=detail
 LOCAL_IMAGE_MODEL=stabilityai/sdxl-turbo
 LOCAL_IMAGE_STEPS=2
-LOCAL_IMAGE_MAX_PROMPT_CHARS=4000
 LOCAL_IMAGE_CPU_OFFLOAD=false
+LOCAL_IMAGE_DETAIL_MODEL=stabilityai/stable-diffusion-xl-base-1.0
+LOCAL_IMAGE_DETAIL_STEPS=30
+LOCAL_IMAGE_DETAIL_GUIDANCE=5.0
+LOCAL_IMAGE_DETAIL_CPU_OFFLOAD=true
+LOCAL_IMAGE_MAX_PROMPT_CHARS=4000
 ```
 
-Then start the CUDA stack and local image profile together:
+Start/rebuild with `./scripts/start-and-check.sh --gpu --local-image`.
+Weights persist in `imagegen-models`. First downloads may take minutes. The
+service starts parked with handoffs enabled; model load requires a real CUDA
+image smoke test. The initial lease loads `LOCAL_IMAGE_PRESET` (Detail by
+default). Switching
+profiles releases the previous model before loading and smoke-testing the new
+one at native square resolution with its actual step/guidance settings. Later
+loads use the last selected profile.
+Failed loading or smoke testing leaves inference unready. Keep handoffs enabled
+to park speech during local image work. The legacy full Compose configuration
+has no automatic handoffs; manage model contention explicitly there.
 
-```bash
-./scripts/start-and-check.sh --gpu --local-image
-```
+Draft is the faster preview option. Detail's 30 steps, larger latents, CPU
+transfers, model loads and full-resolution smoke tests can make requests take
+minutes; no measured 3060 latency or peak-memory figures are available here.
+The app allows a 600-second provider timeout. Each request is serialized.
+If Detail runs out of VRAM, select Draft explicitly rather than expecting a
+silent CPU fallback. Keep `LOCAL_IMAGE_DETAIL_CPU_OFFLOAD=true` on a 3060 unless
+you have measured adequate headroom. Disabling offload is for qualified larger
+GPUs. Faces/hands can still contain artifacts; inspect results and retry with
+clear lighting, framing, fictional subjects and fewer people. Neither model nor
+High hosted quality guarantees perfect faces.
 
-The first model load downloads weights into the persistent `imagegen-models`
-volume and can take several minutes. With automatic handoffs, startup validates
-CUDA and parks the image model; its first GPU lease loads it and requires a real
-image smoke test. With handoffs disabled, startup loads and tests it. The model is
-loaded fully onto CUDA by default so diffusion does not shuttle model components
-through the CPU. If the card cannot hold SDXL Turbo while Chatterbox shares the
-GPU, set `LOCAL_IMAGE_CPU_OFFLOAD=true` to reduce peak VRAM at the cost of CPU
-use and higher latency. Image requests are serialized, use two inference steps,
-and generate a smaller internal image that FFmpeg crops and scales for the
-requested social aspect ratio.
 The default prompt limit accommodates the application's safety framing plus
 the full 2,000-character producer direction. If customized, keep
 `LOCAL_IMAGE_MAX_PROMPT_CHARS` at `4000` or higher so valid episode image
@@ -886,7 +937,8 @@ For one-click production, select a finished episode and click **Auto-create vide
 with local AI**. If no storyboard is loaded, it creates one first. Otherwise it
 uses the loaded project and selected export range. The queued job plans
 unassigned, unlocked scenes with Ollama, chooses free B-roll from the selected
-provider, downloads selected footage, generates local illustrations, and renders.
+provider, downloads selected footage, generates images using the storyboard
+image provider, and renders.
 Existing selected media and locked scenes are preserved. Image and planner model
 stages run sequentially through the existing GPU handoffs.
 
@@ -908,24 +960,26 @@ The AI chooses from provider metadata (tags, source URLs, duration, dimensions);
 it does not inspect video frames. Each scene uses at most two ten-result searches,
 only chosen footage is downloaded, previously used footage is avoided when
 alternatives exist, and repeated chosen clips reuse their download. Missing
-matches can become local illustrations, with notes on the job. If no B-roll can
+matches can become generated images, with notes on the job. If no B-roll can
 be found for the range, the job stops with an actionable error rather than
 producing an image-only video. Planning batches and selected clips are
 checkpointed for restart recovery. Review the completed video before publishing.
 
 Choose a finished episode in **Video Studio**, create or load a storyboard,
-and choose **Create a local image** or **Find free B-roll** for every scene.
+and choose **Create an image** or **Find free B-roll** for every scene.
 Search footage using the scene's quick search, preview candidates or open their
 source pages, then click **Use this B-roll** to prepare that selection without
 downloading it. Import MP4/MOV/WebM footage with its source,
-creator and license record. Generate scene illustrations through the bundled
-local CUDA image service; video images never use the paid OpenAI provider.
-Both B-roll and local images are required in an export range. Crop focal points,
+creator and license record. Choose **OpenAI** or **Local** for scene images in
+the storyboard. OpenAI uses
+the configured hosted endpoint/key and quality; Local uses the CUDA service and
+Draft/Detail preset. Only local image requests acquire an image GPU lease.
+Both B-roll and images are required in an export range. Crop focal points,
 footage trims and gentle image zooms are editable. Source podcast audio is
 hashed and left unchanged; source changes require a new video project.
 
 For long episodes, review five collapsible scene cards at a time. Filter to
-**Needs attention**, **B-roll**, or **Local images**, or jump directly to a scene
+**Needs attention**, **B-roll**, or **Images**, or jump directly to a scene
 number. Navigation retains edits across pages; **Save storyboard** persists all
 scenes. The readiness summary explains missing footage or locked image scenes.
 Image scenes with no asset are valid plans: their images generate during the
@@ -939,7 +993,7 @@ are optional and cannot block job polling. If a build is accepted but refreshing
 status fails, the confirmation keeps its job ID and polling retries.
 
 For manual control, click **Generate assets from my scene choices** when the storyboard is ready. One
-durable job downloads selected footage, generates missing local illustrations,
+durable job downloads selected footage, generates missing images with the selected provider,
 and renders the selected range after all storyboard assets are ready. Existing
 assets are reused. Progress shows the current stage and cancellation works
 during preparation and rendering. Restart recovery retains each completed asset.
@@ -964,7 +1018,7 @@ that CUDA is actually visible. This change has not been benchmarked on a 3060.
 - Lets you override the suggested window with exact start/end times.
 - Exports vertical 9:16, square 1:1, or horizontal 16:9 MP4.
 - Burns each spoken passage once as a synchronized speaker caption, without a second pull-quote layer that repeats and overlaps the same text.
-- Generates a hyper-realistic editorial image with lifelike fictional people when relevant through either OpenAI Images or the optional local SDXL Turbo service, stores it beside the MP4, and uses it as the video background behind branding and captions.
+- Generates a hyper-realistic editorial image with lifelike fictional people when relevant through either OpenAI Images or the optional local SDXL Base/Turbo service, stores it beside the MP4, and uses it as the video background behind branding and captions.
 - Applies the optional saved **Episode image prompt** to automatic and custom clip artwork without replacing the built-in visual-safety and no-text constraints.
 - Falls back to the existing dark branded background if image generation is unavailable; artwork errors do not fail an otherwise valid clip.
 - Adds Patch Notes: America branding and a custom clip headline.
@@ -996,7 +1050,7 @@ scene batches. Locked scenes and timestamps are preserved; invalid output or a
 concurrent edit leaves the saved project unchanged. Install `VIDEO_PLANNER_MODEL`
 (default `llama3.1:8b`) in the optional `local-ai` service. Manual scene editing
 works without a planner. **Generate missing images** queues a durable cancellable
-batch for unlocked scenes whose visual source is local image; B-roll scenes are
+batch for unlocked scenes whose visual source is image; B-roll scenes are
 never converted to images by this action.
 
 Set `PIXABAY_API_KEY` or an existing `PEXELS_API_KEY` in your local `.env` for
@@ -1035,6 +1089,24 @@ restoring speech also fails, the message retains an earlier HTTP failure when
 available. These diagnostics do not disable authentication, GPU checks, or
 model restoration.
 
+For a read-only readiness/mount/authentication check on the deployment host:
+
+```bash
+python3 scripts/check-image-handoff.py
+```
+
+It checks all three running containers, reports readiness and the control-file
+mount sources, and compares key fingerprints internally without printing keys
+or fingerprints. A parked image model with CUDA visible is acceptable before a
+lease; this check does not load models or claim smoke inference succeeded. The
+command exits nonzero for missing/unreadable/mismatched keys, different control
+mount sources, failed readiness or Docker access. To check another Compose stack,
+repeat `--compose-file PATH` for each file used to start it. Legacy full Compose
+has no automatic handoff/control mounts and will not pass this modern-stack
+check. Use the reported service/HTTP operation plus service logs to distinguish
+authorization (401/403) from model readiness (503), stale endpoints (404), or
+cancelled inference still finishing (409). Do not delete or print the control key.
+
 Health endpoints return JSON even for a parked or unready model; HTTP 200 alone
 does not prove CUDA/model readiness. Read their `ok`, `parked`, `cuda_visible`,
 `synthesis_ready` and `failure` fields as applicable. Filter container logs to
@@ -1058,12 +1130,16 @@ scene crop focal points. Split scenes while preserving source trims; merge
 requires the same media and continuous B-roll trims. Locked scenes must be
 unlocked before those edits. Export all three formats queues independent jobs.
 
-Draft images retain the lower-memory native preset. Detail images use a larger
-internal size and more inference steps; benchmark the preset on your 3060 and
-use draft if memory is insufficient. Seeds and preset/model revision provenance
-are saved with generated media. Pin `LOCAL_IMAGE_MODEL_REVISION` to the exact
-installed model revision for reproducibility and review that revision's license.
-Free local inference does not imply unrestricted commercial model licensing.
+New storyboards use `CLIP_IMAGE_PROVIDER`, `OPENAI_IMAGE_QUALITY` and
+`LOCAL_IMAGE_PRESET` (default Detail). Projects without additive `image_provider`
+retain Local, and projects without `image_preset` retain Draft, preserving legacy
+behavior; missing `image_quality` uses the configured hosted quality. These
+fields round-trip in version 1; no migration rewrites stored projects. Existing
+assets are reused until explicitly regenerated. Hosted seeds are unsupported
+and recorded as null; local seeds and actual model/revision are recorded with
+assets. Pin `LOCAL_IMAGE_MODEL_REVISION` (Draft) and
+`LOCAL_IMAGE_DETAIL_MODEL_REVISION` (Detail) for reproducibility and review model
+licenses. Free local inference does not imply unrestricted commercial licensing.
 
 Software H.264 remains the default encoder. NVIDIA H.264 is an explicit option;
 it requires the GPU Compose override, a working driver/toolkit, and FFmpeg NVENC

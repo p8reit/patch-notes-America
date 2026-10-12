@@ -17,6 +17,7 @@ from app import main, video, video_automation as automation
 def studio(tmp_path, monkeypatch):
     monkeypatch.setattr(video, "ROOT", tmp_path / "video")
     monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path / "audio")
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "local")
     folder = main.OUTPUT_DIR / "episode"
     folder.mkdir(parents=True)
     (folder / "episode.mp3").write_bytes(b"locked audio")
@@ -147,7 +148,7 @@ def test_media_import_records_provenance_and_rejects_traversal(studio):
             video.child(video.ROOT, identifier)
 
 
-def test_scene_images_use_local_service_even_when_podcast_provider_is_openai(studio, monkeypatch):
+def test_scene_images_use_saved_local_provider(studio, monkeypatch):
     project = make_project(studio)
     png = b"\x89PNG\r\n\x1a\nmock"
     calls = []
@@ -172,6 +173,7 @@ def test_real_ffmpeg_storytelling_proof(tmp_path, monkeypatch):
     monkeypatch.setattr(video, "ROOT", tmp_path / "video")
     monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path / "audio")
     monkeypatch.setitem(video.ASPECTS, "horizontal", (256, 144))
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", "local")
     folder = main.OUTPUT_DIR / "episode"
     folder.mkdir(parents=True)
     def ffmpeg(*args):
@@ -305,10 +307,13 @@ def test_real_format_exports_keep_audio_and_have_correct_dimensions(tmp_path,mon
 def test_variants_and_image_settings_round_trip_without_changing_source(studio):
     project=make_project(studio)
     project["image_preset"]="detail"
+    project["image_provider"]="openai"
+    project["image_quality"]="medium"
     project["scenes"][0].update(seed=123,format_crops={"vertical":{"x":.8,"y":.5}})
     response=studio.put('/api/video/projects/'+project["id"],json=project)
     assert response.status_code==200
     restored=response.json()
+    assert restored["image_provider"]=="openai" and restored["image_quality"]=="medium"
     assert restored["image_preset"]=="detail" and restored["scenes"][0]["seed"]==123
     assert restored["scenes"][0]["format_crops"]["vertical"]["x"]==.8
     restored["scenes"][0]["seed"]=-1
@@ -397,7 +402,7 @@ def test_scene_source_round_trip_supports_legacy_assets_and_rejects_mismatches(s
     (lambda p: p["scenes"][0].update(stock_id=None), "find and select B-roll"),
     (lambda p: p["scenes"][1].update(locked=True), "unlock"),
     (lambda p: p["scenes"][0].update(trim=59), "too short"),
-    (lambda p: p["scenes"][0].update(media_type="image", stock_id=None), "both local images and B-roll"),
+    (lambda p: p["scenes"][0].update(media_type="image", stock_id=None), "both images and B-roll"),
 ])
 def test_build_rejects_incomplete_plans_before_enqueueing(studio, monkeypatch, edit, message):
     project = prepared_project(studio)
@@ -486,7 +491,7 @@ def test_build_restart_reuses_assets_and_cancel_stays_terminal(studio, monkeypat
             job = await video.build(project["id"], {})
             await asyncio.wait_for(entered.wait(), 2)
             progress = await video.job_status(job["id"])
-            assert (progress["done"], progress["total"], progress["phase"]) == (1, 2, "generating local images")
+            assert (progress["done"], progress["total"], progress["phase"]) == (1, 2, "generating images")
             if cancel:
                 assert (await video.cancel(job["id"]))["status"] == "cancelled"
             await video.stop_workers()
@@ -522,10 +527,13 @@ def test_build_external_failure_keeps_prepared_assets_and_does_not_render(studio
 
 
 @pytest.mark.parametrize("automatic", [False, True])
-def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_exports(tmp_path, monkeypatch, automatic):
+@pytest.mark.parametrize("image_provider", ["local", "openai"])
+def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_exports(tmp_path, monkeypatch, automatic, image_provider):
     monkeypatch.setattr(video, "ROOT", tmp_path / "video")
     monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path / "audio")
     monkeypatch.setitem(video.ASPECTS, "horizontal", (256, 144))
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", image_provider)
+    monkeypatch.setattr(main, "OPENAI_API_KEY", "test-only")
     folder = main.OUTPUT_DIR / "episode"
     folder.mkdir(parents=True)
     def ffmpeg(*args):
@@ -541,11 +549,21 @@ def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_e
     if automatic:
         monkeypatch.setenv("PIXABAY_API_KEY", "test-key")
     calls = []
+    leases = []
+    from contextlib import asynccontextmanager
+    @asynccontextmanager
+    async def lease(kind):
+        leases.append(kind)
+        yield
+    monkeypatch.setattr(video.gpu, "lease", lease)
     def respond(request):
         calls.append((request.method, str(request.url)))
         if str(request.url) == main.LOCAL_AI_URL:
             material = json.loads(json.loads(request.content)["messages"][-1]["content"])
             if "scenes" in material:
+                instruction = json.loads(request.content)["messages"][0]["content"]
+                assert "without forcing illustration" in instruction
+                assert "prompts describe illustrative artwork" not in instruction
                 decision = {"scenes": [{"id": s["id"], "media_type": "broll" if i == 0 else "image",
                                        "intent": "Story context", "query": "neighborhood housing", "prompt": "A neighborhood illustration"}
                                       for i, s in enumerate(material["scenes"])]}
@@ -559,7 +577,14 @@ def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_e
         if request.method == "GET":
             assert str(request.url) == "https://cdn.pixabay.com/video/clip.mp4"
             return httpx.Response(200, content=broll.read_bytes())
-        assert str(request.url) == main.LOCAL_IMAGES_URL
+        expected = main.LOCAL_IMAGES_URL if image_provider == "local" else main.OPENAI_IMAGES_URL
+        assert str(request.url) == expected
+        payload = json.loads(request.content)
+        if image_provider == "openai":
+            assert payload["quality"] == main.OPENAI_IMAGE_QUALITY
+            assert "preset" not in payload and "seed" not in payload
+        else:
+            assert payload["preset"] == "detail"
         return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(image.read_bytes()).decode()}],
                                          "model_revision": "test-revision"})
     original = httpx.AsyncClient
@@ -593,3 +618,69 @@ def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_e
         finally:
             await video.stop_workers()
     asyncio.run(run())
+    assert ("image" in leases) == (image_provider == "local")
+
+
+@pytest.mark.parametrize("provider", ["openai", "local"])
+def test_video_provider_quality_and_gpu_boundary(studio, monkeypatch, provider):
+    from contextlib import asynccontextmanager
+    monkeypatch.setattr(main, "CLIP_IMAGE_PROVIDER", provider)
+    monkeypatch.setattr(main, "OPENAI_API_KEY", "test-only")
+    monkeypatch.setattr(main, "OPENAI_IMAGE_QUALITY", "high")
+    monkeypatch.setattr(main, "LOCAL_IMAGE_PRESET", "detail")
+    project = make_project(studio)
+    assert project["image_provider"] == provider
+    assert project["image_quality"] == "high" and project["image_preset"] == "detail"
+    project["style"] = "Photographic portrait with natural window light"
+    project["image_quality"] = "medium"
+    assert studio.put(f"/api/video/projects/{project['id']}", json=project).status_code == 200
+    leases, requests = [], []
+    @asynccontextmanager
+    async def lease(kind):
+        leases.append(kind)
+        yield
+    class Client:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, **kwargs):
+            requests.append((url, kwargs))
+            return httpx.Response(200, request=httpx.Request('POST', url), json={
+                "model": "actual-model", "data": [{"b64_json": base64.b64encode(b"\x89PNG\r\n\x1a\nmock").decode()}]})
+    monkeypatch.setattr(video.gpu, "lease", lease)
+    monkeypatch.setattr(video.httpx, "AsyncClient", Client)
+    result = studio.post(f"/api/video/projects/{project['id']}/images", json={"scene_id": project["scenes"][0]["id"]})
+    assert result.status_code == 201, result.text
+    url, kwargs = requests[0]
+    payload = kwargs['json']
+    assert "Photographic portrait" in payload['prompt']
+    assert "Illustrative editorial artwork" not in payload['prompt']
+    if provider == "openai":
+        assert url == main.OPENAI_IMAGES_URL and payload['quality'] == 'medium'
+        assert kwargs['headers']['Authorization'] == 'Bearer test-only'
+        assert 'seed' not in payload and 'preset' not in payload and leases == []
+    else:
+        assert url == main.LOCAL_IMAGES_URL and payload['preset'] == 'detail'
+        assert payload['model'] == main.LOCAL_IMAGE_DETAIL_MODEL
+        assert 'quality' not in payload and leases == ['image']
+    source = video.asset(result.json()['scenes'][0]['asset_id'])['source']
+    assert source['provider'] == provider and source['model'] == 'actual-model'
+    assert (source['seed'] is None) == (provider == 'openai')
+
+
+def test_legacy_video_projects_keep_local_draft_and_round_trip(studio, monkeypatch):
+    project = make_project(studio)
+    for field in ['image_provider', 'image_quality', 'image_preset']:
+        project.pop(field)
+    video.atomic(video.project_path(project['id']), project)
+    monkeypatch.setattr(main, 'CLIP_IMAGE_PROVIDER', 'openai')
+    assert video.image_options(project) == ('local', {'model': main.LOCAL_IMAGE_MODEL, 'preset': 'draft'})
+    restored = studio.get(f"/api/video/projects/{project['id']}").json()
+    saved = studio.put(f"/api/video/projects/{project['id']}", json=restored)
+    assert saved.status_code == 200
+    assert saved.json()['image_provider'] == 'local' and saved.json()['image_preset'] == 'draft'
+    assert saved.json()['audio_hash'] == project['audio_hash']
+    for field, value in [('image_provider', 'invalid'), ('image_quality', []), ('image_preset', [])]:
+        invalid = saved.json()
+        invalid[field] = value
+        assert studio.put(f"/api/video/projects/{project['id']}", json=invalid).status_code == 400

@@ -11,6 +11,7 @@ import os
 import re
 import signal
 import subprocess
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -216,7 +217,9 @@ async def create_project(body: dict = Body(...)):
                "title": metadata.get("title", "Video episode"), "audio_file": audio[0].name,
                "audio_hash": await asyncio.to_thread(digest, audio[0]), "duration": duration,
                "transcript": transcript, "style": "Documentary lighting, navy and amber, no lettering or logos",
-               "scenes": scene_plan(transcript, duration)}
+               "image_provider": main.CLIP_IMAGE_PROVIDER, "image_quality": main.OPENAI_IMAGE_QUALITY,
+               "image_preset": main.LOCAL_IMAGE_PRESET, "scenes": scene_plan(transcript, duration)}
+    image_options(project)
     atomic(project_path(project["id"]), project)
     return project
 
@@ -234,8 +237,16 @@ async def save_project(project_id: str, body: dict = Body(...)):
     project["scenes"] = validate_scenes(body.get("scenes"), project["duration"])
     project["style"] = str(body.get("style", project["style"]))[:1000]
     preset = body.get("image_preset",project.get("image_preset","draft"))
-    if preset not in {"draft","detail"}:
+    if not isinstance(preset, str) or preset not in {"draft","detail"}:
         raise HTTPException(400,"Image preset must be draft or detail")
+    provider = body.get("image_provider", project.get("image_provider", "local"))
+    from app import main
+    quality = body.get("image_quality", project.get("image_quality", main.OPENAI_IMAGE_QUALITY))
+    if not isinstance(quality, str) or quality not in {"low", "medium", "high"}:
+        raise HTTPException(400, "Hosted image quality must be low, medium, or high")
+    main.image_settings(provider, quality, preset)
+    project["image_provider"] = provider
+    project["image_quality"] = quality
     project["image_preset"] = preset
     project["revision"] += 1
     atomic(project_path(project_id), project)
@@ -296,14 +307,13 @@ async def media(asset_id: str):
 
 
 @router.post("/projects/{project_id}/images", status_code=201)
-@gpu.model("image")
 async def scene_image(project_id: str, body: dict = Body(...)):
     project = read(project_path(project_id))
     scene = next((s for s in project["scenes"] if s["id"] == body.get("scene_id")), None)
     if scene is None or scene["locked"]:
         raise HTTPException(409, "Choose an unlocked scene")
     if scene.get("media_type", "image") != "image":
-        raise HTTPException(409, "Choose local image for this scene before generating")
+        raise HTTPException(409, "Choose image for this scene before generating")
     revision = project["revision"]
     item = await generate_scene_asset(project, scene)
     current = read(project_path(project_id))
@@ -315,32 +325,64 @@ async def scene_image(project_id: str, body: dict = Body(...)):
     return project
 
 
-async def generate_scene_asset(project: dict, scene: dict) -> dict:
-    """Generate an asset for a snapshot; the caller owns the image GPU lease."""
+def image_options(project: dict) -> tuple[str, dict]:
     from app import main
-    prompt = f"{project['style']}. Illustrative editorial artwork. {scene['prompt']}. No text."
+    # Missing provider preserves the local-only behavior of legacy projects.
+    provider = project.get("image_provider", "local")
+    settings = main.image_settings(provider, project.get("image_quality"), project.get("image_preset", "draft"))
+    return provider, settings
+
+
+@asynccontextmanager
+async def image_lease(project: dict):
+    provider, _ = image_options(project)
+    if provider == "local":
+        async with gpu.lease("image"):
+            yield
+    else:
+        yield
+
+
+async def generate_scene_asset(project: dict, scene: dict) -> dict:
+    """Generate a snapshot asset; lease local CUDA only for local requests."""
+    from app import main
+    provider, settings = image_options(project)
+    if provider == "openai" and not main.OPENAI_API_KEY:
+        raise HTTPException(503, "OPENAI_API_KEY is not configured for video images")
+    prompt = f"Visual style: {project['style']}. Scene: {scene['prompt']}. No text, logos or watermarks."
     seed = scene.get("seed")
-    if seed is None:
+    if provider == "local" and seed is None:
         seed = uuid4().int & 2147483647
+    if provider == "openai":
+        seed = None  # Hosted API does not support deterministic seeds.
+    endpoint = main.LOCAL_IMAGES_URL if provider == "local" else main.OPENAI_IMAGES_URL
+    headers = {"Content-Type": "application/json"}
+    if provider == "openai":
+        headers["Authorization"] = f"Bearer {main.OPENAI_API_KEY}"
+    payload = {**settings, "prompt": prompt[:4000], "size": "1536x1024", "n": 1}
+    if provider == "local":
+        payload["seed"] = seed
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
-            response = await client.post(main.LOCAL_IMAGES_URL, json={"model": main.LOCAL_IMAGE_MODEL,
-                             "prompt": prompt[:4000], "size": "1536x1024", "n": 1,
-                             "seed":seed,"preset":project.get("image_preset","draft")})
-            response.raise_for_status()
-        data = base64.b64decode(response.json()["data"][0]["b64_json"], validate=True)
-    except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
-        raise HTTPException(502, "Local image creation failed. Check the local-image service and retry.") from exc
+        async with image_lease(project):
+            async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10)) as client:
+                response = await client.post(endpoint, headers=headers, json=payload)
+                response.raise_for_status()
+        body = response.json()
+        data = base64.b64decode(body["data"][0]["b64_json"], validate=True)
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        raise HTTPException(502, f"{provider} image creation failed. Check the configured image service and retry.") from exc
     if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 25 * 1024 * 1024:
-        raise HTTPException(502, "Local image service returned invalid PNG media")
+        raise HTTPException(502, "Image service returned invalid PNG media")
     path = ROOT / "imports" / (uuid4().hex + ".png")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         path.write_bytes(data)
-        item = await store_asset(path, "image", {"provider": "local", "model": main.LOCAL_IMAGE_MODEL,
-                                "prompt": prompt, "seed":seed,"preset":project.get("image_preset","draft"),
-                                "model_revision":response.json().get("model_revision","unrecorded"),
-                                "license": "See the installed model's license"})
+        item = await store_asset(path, "image", {"provider": provider, **settings,
+                                "model": body.get("model", settings["model"]),
+                                "prompt": prompt, "seed": seed,
+                                "model_revision": body.get("model_revision", "unrecorded"),
+                                **{key: body[key] for key in ("steps", "guidance", "width", "height") if key in body},
+                                "license": "See the image provider/model terms"})
     finally:
         path.unlink(missing_ok=True)
     return item
@@ -352,7 +394,7 @@ def render_inputs(project: dict, start: float, end: float) -> list[dict]:
         raise HTTPException(409, "Choose media for every scene in the export range")
     kinds = {asset(s["asset_id"])["kind"] for s in selected}
     if kinds != {"broll", "image"}:
-        raise HTTPException(409, "Storytelling exports require both B-roll and locally generated images")
+        raise HTTPException(409, "Storytelling exports require both B-roll and generated images")
     checked = set()
     for scene in selected:
         item = asset(scene["asset_id"])
@@ -601,7 +643,7 @@ async def process_job(identifier: str) -> None:
     atomic(path, job)
     try:
         if job.get("type") == "images":
-            async with gpu.lease("image"):
+            async with image_lease(job["project"]):
                 scenes = [s for s in job["project"]["scenes"] if not s["locked"] and not s["asset_id"]
                           and s.get("media_type", "image") == "image"]
                 for index, scene in enumerate(scenes):
@@ -609,7 +651,7 @@ async def process_job(identifier: str) -> None:
                         raise HTTPException(409, "Storyboard changed. Cancel/restart the image batch after reviewing edits.")
                     project = await scene_image(job["project_id"], {"scene_id":scene["id"]})
                     job.update(project=project,revision=project["revision"])
-                    checkpoint(index+1,len(scenes),"generating local images")
+                    checkpoint(index+1,len(scenes),"generating images")
             job.update(status="complete",phase="images complete")
             return
         if job.get("type") == "build":
