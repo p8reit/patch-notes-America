@@ -368,6 +368,12 @@ Full video exports use a separate persistent queue with atomic `job.json` snapsh
 
 `app/video_automation.py` adds local-only visual planning, durable image batches, and bounded Pixabay/Pexels search/import. `app/gpu.py` serializes model ownership using token-authenticated `/models/load` and `/models/unload` endpoints on internal services, with no Docker daemon access. Compose shares a read-only control mount and parks images until CUDA loading and smoke testing complete. Locked scenes survive planning and concurrent edits are detected.
 
+GPU handoff HTTP errors expose a safe service name, permitted operation path,
+status and targeted troubleshooting hint. Credentials, request/response bodies
+and arbitrary URLs are excluded. An earlier HTTP failure can be reported when
+a subsequent restoration error masks it. Ownership, cleanup, authentication,
+readiness and recovery semantics remain unchanged.
+
 Each scene chooses `media_type` (`image` or `broll`); legacy scenes infer it from
 their selected asset, or default to image. `POST /api/video/projects/{id}/scenes/{scene_id}/stock`
 freezes a selected search candidate under `data/video/stock-selections/{stock_id}/selection.json`

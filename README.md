@@ -1023,6 +1023,32 @@ Rebuild app, chatterbox and imagegen together when adopting these controls.
 GPU/CPU Compose choices remain explicit and failed CUDA validation never falls
 back silently. GPU hardware/memory performance still requires target-host testing.
 
+If a video job reports **GPU model handoff failed**, its error identifies the
+service, operation and HTTP status. HTTP 401/403 from Chatterbox/imagegen indicates model-control
+authorization: verify that app, chatterbox and imagegen read the same
+`model-control.key` through their existing mounts (do not print the key).
+HTTP 404 suggests an outdated service or incorrect endpoint/model configuration;
+HTTP 503 requires checking that service's readiness and model-load logs.
+For Ollama authorization errors, check its endpoint/access settings.
+Connection failures and timeouts identify the affected service as well. If
+restoring speech also fails, the message retains an earlier HTTP failure when
+available. These diagnostics do not disable authentication, GPU checks, or
+model restoration.
+
+Health endpoints return JSON even for a parked or unready model; HTTP 200 alone
+does not prove CUDA/model readiness. Read their `ok`, `parked`, `cuda_visible`,
+`synthesis_ready` and `failure` fields as applicable. Filter container logs to
+avoid losing the handoff error among repeated health checks:
+
+```bash
+docker compose logs --since=1h chatterbox imagegen ollama | grep -Ei '/models/|403|404|503|error|exception|out of memory'
+```
+
+Use `sudo` if required by your Docker setup. Rebuild app to receive the detailed
+messages; rebuilding all inference services is necessary only when their code
+or model-control endpoints are outdated. Leave `GPU_MODEL_HANDOFF` enabled while
+diagnosing a failure so multiple models do not compete for the 3060's memory.
+
 ### Formats, image presets, and encoding
 
 Choose horizontal 16:9 (1920×1080), vertical 9:16 (1080×1920), or square
