@@ -72,6 +72,28 @@ def test_scene_validation_rejects_gaps_duplicates_and_missing_media(studio):
         assert studio.put(f"/api/video/projects/{project['id']}", json=project).status_code in {400, 404}
 
 
+@pytest.mark.parametrize("duration", [16.0002, 16.0006])
+def test_millisecond_boundary_rounding_does_not_block_saved_storyboards_or_builds(studio, monkeypatch, duration):
+    project = make_project(studio)
+    project["duration"] = duration
+    project["scenes"] = video.scene_plan(project["transcript"], project["duration"])
+    assert project["scenes"][-1]["end"] == project["duration"]
+    # Exercise an already-saved project created by the old rounding behavior.
+    project["scenes"][-1]["end"] = round(project["duration"], 3)
+    assert project["scenes"][-1]["end"] != project["duration"]
+    project["scenes"][0].update(media_type="broll", asset_id=fake_asset("broll")["id"])
+    video.atomic(video.project_path(project["id"]), project)
+    saved = studio.put(f"/api/video/projects/{project['id']}", json=project)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["scenes"][-1]["end"] == project["duration"]
+    monkeypatch.setattr(video, "queue", asyncio.Queue())
+    result = studio.post(f"/api/video/projects/{project['id']}/build", json={"end": project["duration"]})
+    assert result.status_code == 202, result.text
+    assert video.queue.get_nowait() == result.json()["id"]
+    assert result.json()["status"] == "queued"
+    assert (main.OUTPUT_DIR / "episode/episode.mp3").read_bytes() == b"locked audio"
+
+
 def test_export_requires_both_types_and_detects_changed_audio(studio):
     project = make_project(studio)
     with pytest.raises(HTTPException):

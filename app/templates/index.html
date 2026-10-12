@@ -297,21 +297,31 @@
       <div class="actions"><button id="video-save" type="button">Save storyboard</button><button id="video-refresh" type="button" class="secondary">Refresh library</button></div>
       <div class="actions"><button id="video-plan" type="button" class="secondary">Suggest visuals locally</button><button id="video-batch" type="button" class="secondary">Generate missing images</button><label>Free footage source<select id="video-provider"><option value="pixabay">Pixabay</option><option value="pexels">Pexels (existing API key)</option></select></label></div>
       <p class="hint">Choose a local image or free B-roll for each scene. Search and preview footage, then select it without downloading yet. Include both kinds of visuals in your video.</p>
-      <div id="video-stock-results"></div>
-      <p id="video-status" class="hint" role="status" aria-live="polite"></p>
+      <div class="video-build-bar">
+        <button id="video-build" type="button">Generate assets and create video</button>
+        <p id="video-status" class="hint" role="status" aria-live="polite"></p>
+      </div>
+      <p id="video-readiness" class="hint" aria-live="polite">Create or load a storyboard to review its readiness.</p>
+      <p class="hint">1. Review image prompts. 2. Choose B-roll scenes and select footage. 3. Queue the build. Missing images generate automatically; at least one image and one B-roll scene must be in the export range.</p>
+      <div class="actions"><label>Export start (seconds)<input id="video-start" type="number" min="0" value="0" step="0.001"></label><label>Export end (seconds)<input id="video-end" type="number" min="0" step="0.001"></label></div>
       <p id="video-resources" class="hint" aria-live="polite"></p>
+      <h3>Video jobs</h3><div id="video-jobs" aria-live="polite"></div>
+      <video id="video-preview-player" controls playsinline preload="metadata" hidden></video><div id="video-downloads"></div>
+      <div id="video-stock-results"></div>
+      <h3>Storyboard</h3>
+      <div class="actions"><label>Show scenes<select id="video-scene-filter"><option value="all">All scenes</option><option value="attention">Needs attention</option><option value="broll">B-roll</option><option value="image">Local images</option></select></label>
+        <button id="video-page-prev" type="button" class="secondary">Previous 5</button><span id="video-page-label" role="status" aria-live="polite"></span><button id="video-page-next" type="button" class="secondary">Next 5</button>
+        <label>Scene number<input id="video-scene-jump" type="number" min="1" step="1" value="1"></label><button id="video-jump" type="button" class="secondary">Go to scene</button>
+      </div>
+      <p class="hint">Open a scene to edit it. Page and filter changes retain your edits; Save storyboard persists them. The build always uses the entire storyboard, including scenes on other pages.</p>
       <div id="video-scenes"></div>
       <details><summary>Import free B-roll</summary>
         <form id="video-import"><label>MP4, MOV, or WebM<input name="file" type="file" accept="video/mp4,video/quicktime,video/webm" required></label>
           <label>Source page<input name="source_url" type="url" required></label><label>Creator<input name="creator" required></label><label>License or usage record<input name="license" required></label><button type="submit">Import footage</button></form>
       </details>
-      <div class="actions"><label>Export start (seconds)<input id="video-start" type="number" min="0" value="0" step="0.001"></label><label>Export end (seconds)<input id="video-end" type="number" min="0" step="0.001"></label></div>
-      <button id="video-build" type="button">Generate assets and create video</button>
-      <p class="hint">One queued job prepares all storyboard assets, then creates the selected video range. Existing assets are reused. Follow progress or cancel below; reload the project afterward to review prepared media.</p>
+      <p class="hint">One queued job prepares all storyboard assets, then creates the selected video range. Existing assets are reused. Reload the project afterward to review prepared media.</p>
       <div class="actions"><button id="video-preview" type="button" class="secondary">Preview prepared assets</button><button id="video-export" type="button" class="secondary">Export prepared assets</button></div>
       <button id="video-all-formats" type="button" class="secondary">Export this range in all three formats</button>
-      <video id="video-preview-player" controls playsinline preload="metadata" hidden></video><div id="video-downloads"></div>
-      <h3>Video jobs</h3><div id="video-jobs" aria-live="polite"></div>
     </section>
   </main>
 

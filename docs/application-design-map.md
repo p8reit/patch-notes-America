@@ -380,4 +380,14 @@ the existing video job manifest so restart recovery reuses completed work.
 Completed assets populate the current storyboard only if its revision still
 matches the queued plan. Audio synthesis and source MP3s remain independent.
 
+Video Studio edits five collapsible scenes per page, with source/attention
+filters and scene-number navigation. Only visible form rows are collected into
+the full in-memory project; saves and builds include every scene. A sticky build
+bar keeps errors and queue confirmation beside its action, with a readiness
+summary and jobs above the editor. Optional GPU resource diagnostics are fetched
+independently of job status, and an accepted job remains confirmed if polling
+temporarily fails. New scene plans preserve the exact final audio boundary;
+validation normalizes legacy millisecond rounding within the existing 2 ms
+coverage tolerance, including very short final scenes.
+
 Video export variants freeze independent aspect, encoder, caption preset and range settings while reusing one storyboard. Per-format scene crops and deterministic image seeds round-trip in project schema version 1. Optional NVENC encoding uses a separate GPU lease and explicit video driver capability; software encoding remains the default. Actual overlapped intro speech timings are included in the video transcript rather than extending captions across the music bed.

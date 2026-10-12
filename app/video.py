@@ -101,7 +101,7 @@ def scene_plan(transcript: list[dict], duration: float) -> list[dict]:
         end = min(duration, cursor + 8)
         passages = [row for row in transcript if row["end"] > cursor and row["start"] < end]
         text = " ".join(row["text"] for row in passages)
-        scenes.append({"id": uuid4().hex, "start": round(cursor, 3), "end": round(end, 3),
+        scenes.append({"id": uuid4().hex, "start": round(cursor, 3), "end": end if end == duration else round(end, 3),
                        "text": text, "intent": "Illustrate this passage", "query": text[:100],
                        "prompt": text[:1500] or "A cinematic establishing scene, no text",
                        "asset_id": None, "media_type": "image", "stock_id": None,
@@ -124,7 +124,12 @@ def validate_scenes(scenes: Any, duration: float) -> list[dict]:
         if identifier in seen:
             raise HTTPException(400, "Scene IDs must be unique")
         seen.add(identifier)
-        start, end = number(row.get("start"), maximum=duration), number(row.get("end"), maximum=duration)
+        start = number(row.get("start"), maximum=duration)
+        # Older storyboards rounded the final boundary up to milliseconds.
+        # Match the existing coverage tolerance and clamp to the exact audio end.
+        end = min(duration, number(row.get("end"), maximum=duration + .002))
+        if row is scenes[-1] and abs(end - duration) <= .002:
+            end = duration
         if abs(start - cursor) > 0.002 or end <= start:
             raise HTTPException(400, "Scenes must cover the audio in order, without gaps or overlaps")
         chosen = row.get("asset_id")
