@@ -16,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from app import gpu
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
@@ -263,6 +264,7 @@ async def media(asset_id: str):
 
 
 @router.post("/projects/{project_id}/images", status_code=201)
+@gpu.model("image")
 async def scene_image(project_id: str, body: dict = Body(...)):
     from app import main
     project = read(project_path(project_id))
@@ -509,6 +511,17 @@ async def process_job(identifier: str) -> None:
     job.update(status="running", error=None)
     atomic(path, job)
     try:
+        if job.get("type") == "images":
+            async with gpu.lease("image"):
+                scenes = [s for s in job["project"]["scenes"] if not s["locked"] and not s["asset_id"]]
+                for index, scene in enumerate(scenes):
+                    if read(project_path(job["project_id"]))["revision"] != job["revision"]:
+                        raise HTTPException(409, "Storyboard changed. Cancel/restart the image batch after reviewing edits.")
+                    project = await scene_image(job["project_id"], {"scene_id":scene["id"]})
+                    job.update(project=project,revision=project["revision"])
+                    checkpoint(index+1,len(scenes),"generating local images")
+            job.update(status="complete",phase="images complete")
+            return
         await render(job["project"], folder, job["start"], job["end"], job["aspect"], job["preview"], checkpoint)
         job.update(status="complete", phase="complete", download_url=f"/api/video/exports/{identifier}/download")
     except asyncio.CancelledError:

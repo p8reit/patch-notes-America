@@ -33,6 +33,7 @@ from app.audio_utils import (
 )
 from app.video import router as video_router
 from app import video as video_studio
+from app import gpu, video_automation
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
@@ -1012,6 +1013,7 @@ async def generate_conversation_locally(prompt: str) -> str:
     return text
 
 
+@gpu.model("planner", lambda: CONVERSATION_PROVIDER == "local")
 async def generate_conversation(prompt: str) -> str:
     if CONVERSATION_PROVIDER == "local":
         return await generate_conversation_locally(prompt)
@@ -1088,6 +1090,7 @@ def describe_chatterbox_error(exc: httpx.HTTPError) -> str:
     return f"Could not reach Chatterbox at {endpoint} ({type(exc).__name__})"
 
 
+@gpu.model("speech")
 async def synthesize_chunk(
     text: str, voice: str, tempo: float, destination: Path, seed: int | None = None,
     **chatterbox_settings: float,
@@ -1408,6 +1411,7 @@ async def stop_generation_workers() -> None:
 
 @asynccontextmanager
 async def application_lifespan(_app: FastAPI):
+    gpu.initialize()
     await start_generation_workers()
     await video_studio.start_workers()
     try:
@@ -1785,6 +1789,7 @@ def summarize_clip_art_errors(clips: list[dict[str, Any]]) -> str | None:
     return "; ".join(errors) if errors else None
 
 
+@gpu.model("image", lambda: CLIP_IMAGE_PROVIDER == "local")
 async def generate_clip_art(
     title: str,
     excerpt: str,
@@ -1985,6 +1990,7 @@ async def index(request: Request):
 
 
 @app.post("/api/images/generations")
+@gpu.model("image", lambda: CLIP_IMAGE_PROVIDER == "local")
 async def create_standalone_image(
     prompt: str = Form(...),
     aspect: str = Form("square"),

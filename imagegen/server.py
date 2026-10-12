@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import hmac
 import base64
 import io
 import os
@@ -11,7 +13,8 @@ from typing import Any
 
 import torch
 from diffusers import AutoPipelineForText2Image
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Header
+from pathlib import Path
 from pydantic import BaseModel, Field
 
 DEVICE = os.getenv("IMAGEGEN_DEVICE", "cuda").casefold()
@@ -80,11 +83,18 @@ def _smoke_test(pipeline: Any) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if os.getenv("IMAGEGEN_LAZY_LOAD", "false").lower() == "true":
+        _require_cuda()
+        _readiness.update(ok=False, model_loaded=False, parked=True, cuda_visible=True,
+                          failure="Image model parked until a GPU lease requests it")
+        yield
+        return
     try:
         pipeline = _load_pipeline()
         _smoke_test(pipeline)
         _readiness.update({
             "ok": True,
+            "parked": False,
             "model_loaded": True,
             "failure": None,
             "model": MODEL_ID,
@@ -98,6 +108,48 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Patch Notes Local Image Generator", lifespan=lifespan)
+
+
+def authorize_control(authorization: str) -> None:
+    path = Path(os.getenv("MODEL_CONTROL_FILE", "/control/model-control.key"))
+    if not path.is_file() or not hmac.compare_digest(authorization, "Bearer " + path.read_text().strip()):
+        raise HTTPException(403, "Model control is not authorized")
+
+
+@app.post("/models/unload")
+def unload_model(authorization: str = Header("")):
+    global _pipeline
+    authorize_control(authorization)
+    if not _lock.acquire(blocking=False):
+        raise HTTPException(409, "Image inference is still active")
+    try:
+        _pipeline = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        _readiness.update(ok=False, model_loaded=False, parked=True, failure="Image model parked")
+        return _readiness
+    finally:
+        _lock.release()
+
+
+@app.post("/models/load")
+def load_model(authorization: str = Header("")):
+    authorize_control(authorization)
+    if not _lock.acquire(blocking=False):
+        raise HTTPException(409, "Image model is busy")
+    try:
+        if not _readiness["ok"]:
+            pipeline = _load_pipeline()
+            _smoke_test(pipeline)
+            _readiness.update(ok=True, model_loaded=True, parked=False, failure=None,
+                              device="cuda-with-cpu-offload" if CPU_OFFLOAD else "cuda")
+        free, total = torch.cuda.mem_get_info()
+        return {**_readiness, "free_vram_mb": free // 1048576, "total_vram_mb": total // 1048576}
+    except Exception as exc:
+        _readiness.update(ok=False, failure=str(exc))
+        raise HTTPException(503, "Local image model failed CUDA readiness") from exc
+    finally:
+        _lock.release()
 
 
 @app.get("/health")
@@ -161,6 +213,8 @@ def _generate_image(
     try:
         with _lock, torch.inference_mode():
             check_cancelled()
+            if _pipeline is None:
+                raise HTTPException(503, "Image model is parked")
             image = _pipeline(
                 prompt=request.prompt,
                 num_inference_steps=STEPS,

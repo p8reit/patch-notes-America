@@ -929,3 +929,33 @@ inputs so retries reuse completed work. Each export freezes its project revision
 FFmpeg process groups are terminated on cancellation, leaving reusable media.
 Exports include burned phrase captions, SRT, chapters and a credits file. Caption
 timing inside an utterance is approximate; it is not word-level forced alignment.
+
+### Local automation and GPU ownership
+
+**Suggest visuals locally** calls only the configured Ollama endpoint, in small
+scene batches. Locked scenes and timestamps are preserved; invalid output or a
+concurrent edit leaves the saved project unchanged. Install `VIDEO_PLANNER_MODEL`
+(default `llama3.1:8b`) in the optional `local-ai` service. Manual scene editing
+works without a planner. **Generate missing images** queues a durable cancellable
+batch; select/import footage before using it so the result still contains B-roll.
+
+Set `PIXABAY_API_KEY` or an existing `PEXELS_API_KEY` in your local `.env` for
+producer-triggered searches. Ten candidates are returned per query, searches are
+cached for 24 hours, and only chosen footage is downloaded. Pexels currently
+pauses new API keys; manual import remains available. Source/creator/license
+links are kept with selected assets. No scraping or bulk stock downloads are used.
+
+Modern Compose enables `GPU_MODEL_HANDOFF=true`. The app creates a private
+`data/video/model-control.key` (never commit it). Speech and image services read
+that key through a read-only `/control` mount. A local GPU lease unloads idle
+speech/image/planner models, loads the required model, and restores speech with
+its real synthesis smoke test after visual work. The image service starts parked
+after validating CUDA; inference is unavailable until its load/smoke test passes.
+The resource panel reports the active stage and last observed free VRAM. These
+controls are authenticated and refuse to unload active inference. No Docker
+socket is exposed to the app. Set handoff false only when managing model memory
+yourself; the legacy full Compose file does not configure automatic handoff.
+
+Rebuild app, chatterbox and imagegen together when adopting these controls.
+GPU/CPU Compose choices remain explicit and failed CUDA validation never falls
+back silently. GPU hardware/memory performance still requires target-host testing.
