@@ -804,9 +804,10 @@ Then start the CUDA stack and local image profile together:
 ./scripts/start-and-check.sh --gpu --local-image
 ```
 
-The first start downloads model weights into the persistent `imagegen-models`
-volume and can take several minutes. Startup does not succeed until CUDA is
-visible, SDXL Turbo is loaded, and a real image smoke test passes. The model is
+The first model load downloads weights into the persistent `imagegen-models`
+volume and can take several minutes. With automatic handoffs, startup validates
+CUDA and parks the image model; its first GPU lease loads it and requires a real
+image smoke test. With handoffs disabled, startup loads and tests it. The model is
 loaded fully onto CUDA by default so diffusion does not shuttle model components
 through the CPU. If the card cannot hold SDXL Turbo while Chatterbox shares the
 GPU, set `LOCAL_IMAGE_CPU_OFFLOAD=true` to reduce peak VRAM at the cost of CPU
@@ -959,3 +960,34 @@ yourself; the legacy full Compose file does not configure automatic handoff.
 Rebuild app, chatterbox and imagegen together when adopting these controls.
 GPU/CPU Compose choices remain explicit and failed CUDA validation never falls
 back silently. GPU hardware/memory performance still requires target-host testing.
+
+### Formats, image presets, and encoding
+
+Choose horizontal 16:9 (1920×1080), vertical 9:16 (1080×1920), or square
+(1080×1080) from the same saved storyboard. Set an excerpt range for social
+clips, or use the full duration for an episode. Each format has independent
+scene crop focal points. Split scenes while preserving source trims; merge
+requires the same media and continuous B-roll trims. Locked scenes must be
+unlocked before those edits. Export all three formats queues independent jobs.
+
+Draft images retain the lower-memory native preset. Detail images use a larger
+internal size and more inference steps; benchmark the preset on your 3060 and
+use draft if memory is insufficient. Seeds and preset/model revision provenance
+are saved with generated media. Pin `LOCAL_IMAGE_MODEL_REVISION` to the exact
+installed model revision for reproducibility and review that revision's license.
+Free local inference does not imply unrestricted commercial model licensing.
+
+Software H.264 remains the default encoder. NVIDIA H.264 is an explicit option;
+it requires the GPU Compose override, a working driver/toolkit, and FFmpeg NVENC
+support. The override grants the app `video,utility` capabilities while inference
+services retain their compute capability. Failed NVENC jobs report the failure;
+choose software explicitly rather than silently falling back. Exports use H.264
+baseline/yuv420p, AAC and fast-start MP4. Caption presets include standard, large
+and SRT-only. Word-level forced alignment is not included: phrase timing remains
+approximate within an utterance, while the actual mixed-intro speech duration
+and episode pauses are preserved.
+
+After updating, rebuild the services with `./scripts/start-and-check.sh --gpu
+--local-image` (one shell line). To use local planning, also enable the `local-ai`
+profile and install `VIDEO_PLANNER_MODEL` in Ollama. Add free provider API keys
+only to your local `.env`; downloaded/imported footage works without them.

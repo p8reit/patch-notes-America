@@ -293,6 +293,7 @@
       <p class="hint">Tell your podcast story with free B-roll and locally generated images. Audio stays unchanged.</p>
       <div class="actions"><label>Finished episode<select id="video-episode"></select></label><button id="video-create" type="button">Create storyboard</button><label>Saved video project<select id="video-project"></select></label><button id="video-load" type="button">Load project</button></div>
       <label>Visual direction<textarea id="video-style" rows="2"></textarea></label>
+      <div class="video-grid"><label>Image preset<select id="video-image-preset"><option value="draft">Draft · lower memory</option><option value="detail">Detail · more memory and time</option></select></label><label>Video format<select id="video-format"><option value="horizontal">Horizontal 16:9</option><option value="vertical">Vertical 9:16</option><option value="square">Square 1:1</option></select></label><label>Encoder<select id="video-encoder"><option value="libx264">Software H.264</option><option value="h264_nvenc">NVIDIA H.264 · requires GPU mode</option></select></label><label>Captions<select id="video-caption-style"><option value="standard">Standard</option><option value="large">Large</option><option value="none">No burned captions · still export SRT</option></select></label></div>
       <div class="actions"><button id="video-save" type="button">Save storyboard</button><button id="video-refresh" type="button" class="secondary">Refresh library</button></div>
       <div class="actions"><button id="video-plan" type="button" class="secondary">Suggest visuals locally</button><button id="video-batch" type="button" class="secondary">Generate missing images</button><label>Free footage source<select id="video-provider"><option value="pixabay">Pixabay</option><option value="pexels">Pexels (existing API key)</option></select></label></div>
       <p class="hint">Review suggestions before searching. Search results link to their provider and creator. Lock approved footage scenes before generating missing images.</p>
@@ -305,7 +306,8 @@
           <label>Source page<input name="source_url" type="url" required></label><label>Creator<input name="creator" required></label><label>License or usage record<input name="license" required></label><button type="submit">Import footage</button></form>
       </details>
       <div class="actions"><label>Export start (seconds)<input id="video-start" type="number" min="0" value="0" step="0.001"></label><label>Export end (seconds)<input id="video-end" type="number" min="0" step="0.001"></label><button id="video-preview" type="button">Render preview</button><button id="video-export" type="button">Export MP4</button></div>
-      <video id="video-preview-player" controls preload="metadata" hidden></video><div id="video-downloads"></div>
+      <button id="video-all-formats" type="button" class="secondary">Export this range in all three formats</button>
+      <video id="video-preview-player" controls playsinline preload="metadata" hidden></video><div id="video-downloads"></div>
       <h3>Video jobs</h3><div id="video-jobs" aria-live="polite"></div>
     </section>
   </main>

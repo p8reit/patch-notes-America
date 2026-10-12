@@ -224,3 +224,79 @@ def test_subprocess_cancellation_terminates_renderer(tmp_path):
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 3)
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("aspect,dimensions",[("horizontal",(320,180)),("vertical",(180,320)),("square",(180,180))])
+def test_real_format_exports_keep_audio_and_have_correct_dimensions(tmp_path,monkeypatch,aspect,dimensions):
+    monkeypatch.setattr(video,"ROOT",tmp_path/"video")
+    monkeypatch.setattr(main,"OUTPUT_DIR",tmp_path/"audio")
+    monkeypatch.setitem(video.ASPECTS,aspect,dimensions)
+    folder=main.OUTPUT_DIR/"episode"
+    folder.mkdir(parents=True)
+    def ffmpeg(*args):
+        subprocess.run(["ffmpeg","-y","-v","error",*map(str,args)],check=True)
+    ffmpeg("-f","lavfi","-i","sine=duration=8",folder/"episode.mp3")
+    (folder/"metadata.json").write_text(json.dumps({"video_timeline":[{"start":0,"end":8,"text":"A format proof."}]}))
+    footage=tmp_path/"clip.mp4";image=tmp_path/"still.png"
+    ffmpeg("-f","lavfi","-i","color=c=blue:s=160x90:d=5",footage)
+    ffmpeg("-f","lavfi","-i","color=c=orange:s=160x90","-frames:v","1","-threads","1",image)
+    project=make_project(TestClient(main.app))
+    broll=asyncio.run(video.store_asset(footage,"broll",{"license":"CC0"}))
+    illustration=asyncio.run(video.store_asset(image,"image",{"provider":"local"}))
+    left=copy.deepcopy(project["scenes"][0]);left.update(end=4,asset_id=broll["id"])
+    right=copy.deepcopy(left);right.update(id="other",start=4,end=project["duration"],asset_id=illustration["id"],format_crops={aspect:{"x":.7,"y":.4}})
+    project["scenes"]=[left,right]
+    destination=video.ROOT/"exports"/aspect
+    asyncio.run(video.render(project,destination,0,project["duration"],aspect,False,captions="large"))
+    info=video.probe(destination/"episode.mp4")
+    stream=next(s for s in info["streams"] if s["codec_type"]=="video")
+    assert (stream["width"],stream["height"])==dimensions
+    assert abs(float(info["format"]["duration"])-project["duration"])<.15
+    assert video.digest(folder/"episode.mp3")==project["audio_hash"]
+
+
+def test_variants_and_image_settings_round_trip_without_changing_source(studio):
+    project=make_project(studio)
+    project["image_preset"]="detail"
+    project["scenes"][0].update(seed=123,format_crops={"vertical":{"x":.8,"y":.5}})
+    response=studio.put('/api/video/projects/'+project["id"],json=project)
+    assert response.status_code==200
+    restored=response.json()
+    assert restored["image_preset"]=="detail" and restored["scenes"][0]["seed"]==123
+    assert restored["scenes"][0]["format_crops"]["vertical"]["x"]==.8
+    restored["scenes"][0]["seed"]=-1
+    assert studio.put('/api/video/projects/'+project["id"],json=restored).status_code==400
+
+
+def test_gpu_cleanup_failure_cannot_revive_cancelled_job(studio,monkeypatch):
+    project=make_project(studio)
+    entered=asyncio.Event()
+    async def cleanup_failure(*args,**kwargs):
+        entered.set()
+        try: await asyncio.Event().wait()
+        finally: raise HTTPException(503,"Model finishing its current step")
+    monkeypatch.setattr(video,"render",cleanup_failure)
+    folder=video.child(video.ROOT/"exports","cancel-gpu")
+    video.atomic(folder/"job.json",{"id":"cancel-gpu","project":project,"start":0,"end":16,"aspect":"horizontal","preview":True,"status":"queued"})
+    async def run():
+        task=asyncio.create_task(video.process_job("cancel-gpu"))
+        await entered.wait()
+        job=video.read(folder/"job.json");job["status"]="cancelled";video.atomic(folder/"job.json",job)
+        task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+        assert video.read(folder/"job.json")["status"]=="cancelled"
+    asyncio.run(run())
+
+
+def test_corrupt_video_job_does_not_prevent_audio_or_video_startup(studio):
+    folder=video.child(video.ROOT/"exports","damaged")
+    folder.mkdir(parents=True)
+    (folder/"job.json").write_text("{invalid")
+    async def run():
+        await video.start_workers()
+        try:
+            assert video.queue.empty()
+            records=await video.jobs()
+            assert records["jobs"][0]["status"]=="corrupt"
+        finally: await video.stop_workers()
+    asyncio.run(run())

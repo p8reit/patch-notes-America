@@ -1471,6 +1471,7 @@ async def process_generation_job(job_id: str) -> None:
         final_paths = all_chunk_paths
         final_chunks = _with_intro_track_boundary(all_chunks) if intro_track else all_chunks
         intro = job.get("intro", {})
+        intro_voice_timeline: list[dict[str, Any]] = []
         chunks_after_track = all_chunks[1:] if intro_track else all_chunks
         intro_chunk_count = next(
             (index for index, chunk in enumerate(chunks_after_track) if chunk.get("section") != "host_intro"),
@@ -1479,11 +1480,13 @@ async def process_generation_job(job_id: str) -> None:
         if intro.get("overlap") and intro_track and intro_chunk_count:
             intro_voice_wav = job_dir / "intro-voice.wav"
             mixed_intro_wav = job_dir / "intro-mixed.wav"
-            concatenate_wav_segments(
+            intro_voice_timeline = concatenate_wav_segments(
                 all_chunk_paths[1:1 + intro_chunk_count],
                 all_chunks[1:1 + intro_chunk_count],
                 intro_voice_wav,
             )
+            for item, chunk in zip(intro_voice_timeline, all_chunks[1:1 + intro_chunk_count]):
+                chunk["timing"] = {key: round(float(item[key]),3) for key in ("duration","start","end")}
             mix_intro_track_and_voice(
                 job_dir / intro_track,
                 intro_voice_wav,
@@ -1541,6 +1544,11 @@ async def process_generation_job(job_id: str) -> None:
                 for index, (chunk, item) in enumerate(zip(final_chunks, timeline))
             ],
         }
+        if intro_voice_timeline:
+            metadata["video_timeline"][0:1] = [
+                {"id": chunk["id"],"text":chunk["text"],"start":item["start"],"end":item["end"]}
+                for chunk,item in zip(all_chunks[1:1+intro_chunk_count],intro_voice_timeline)
+            ]
         metadata_file = job_dir / "metadata.json"
         metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         # Keep assembled audio downloadable when optional artwork is cancelled.

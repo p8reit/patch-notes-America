@@ -9,7 +9,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from diffusers import AutoPipelineForText2Image
@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 DEVICE = os.getenv("IMAGEGEN_DEVICE", "cuda").casefold()
 MODEL_ID = os.getenv("IMAGEGEN_MODEL", "stabilityai/sdxl-turbo")
+MODEL_REVISION = os.getenv("IMAGEGEN_MODEL_REVISION", "")
 STEPS = int(os.getenv("IMAGEGEN_STEPS", "2"))
 # The application adds editorial-safety instructions to as many as 2,000
 # characters of producer direction. Keep the service limit large enough for
@@ -38,6 +39,8 @@ class ImageRequest(BaseModel):
     size: str = "1024x1024"
     quality: str = "low"
     n: int = Field(default=1, ge=1, le=1)
+    seed: int | None = Field(default=None,ge=0,le=2147483647)
+    preset: Literal["draft","detail"] = "draft"
 
 
 def _require_cuda() -> None:
@@ -55,6 +58,7 @@ def _load_pipeline() -> Any:
         torch_dtype=torch.float16,
         variant="fp16",
         use_safetensors=True,
+        revision=MODEL_REVISION or None,
     )
     pipeline.enable_vae_slicing()
     if CPU_OFFLOAD:
@@ -173,6 +177,8 @@ async def generate_image(request: ImageRequest, connection: Request):
     if request.size not in requested_aspect:
         raise HTTPException(status_code=400, detail="Unsupported image size")
     width, height = requested_aspect[request.size]
+    if request.preset == "detail":
+        width, height = width * 3 // 2, height * 3 // 2
     cancelled = threading.Event()
     task = asyncio.create_task(asyncio.to_thread(_generate_image, request, width, height, cancelled))
     try:
@@ -217,11 +223,12 @@ def _generate_image(
                 raise HTTPException(503, "Image model is parked")
             image = _pipeline(
                 prompt=request.prompt,
-                num_inference_steps=STEPS,
-                guidance_scale=0.0,
+                num_inference_steps=max(STEPS,4 if "turbo" in MODEL_ID.lower() else 24) if request.preset=="detail" else STEPS,
+                guidance_scale=0.0 if "turbo" in MODEL_ID.lower() else 6.0,
                 width=width,
                 height=height,
                 callback_on_step_end=step_finished,
+                **({"generator":torch.Generator(device="cuda").manual_seed(request.seed)} if request.seed is not None else {}),
             ).images[0]
             check_cancelled()
     except torch.OutOfMemoryError as exc:
@@ -234,4 +241,6 @@ def _generate_image(
         "created": int(time.time()),
         "data": [{"b64_json": base64.b64encode(output.getvalue()).decode("ascii")}],
         "model": MODEL_ID,
+        "model_revision": MODEL_REVISION or "unrecorded",
+        "seed": request.seed,
     }

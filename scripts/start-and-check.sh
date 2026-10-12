@@ -85,11 +85,11 @@ echo "Building and recreating Patch Notes services in ${deployment_mode} mode...
 compose up -d --build --force-recreate --remove-orphans "${services[@]}"
 
 if [[ "${local_image}" == "true" ]]; then
-  echo "Waiting for the local image model and CUDA smoke test (the first model download can take several minutes)..."
+  echo "Waiting for local image service CUDA validation (model loading may be deferred for GPU handoffs)..."
   image_ready="false"
   for attempt in {1..90}; do
     if compose exec -T imagegen python3 -c \
-      "import json,urllib.request; assert json.load(urllib.request.urlopen('http://localhost:8000/health'))['ok']" \
+      "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8000/health')); assert d['ok'] or (d.get('parked') and d.get('cuda_visible'))" \
       >/dev/null 2>&1; then
       image_ready="true"
       break
@@ -107,7 +107,7 @@ if [[ "${local_image}" == "true" ]]; then
     show_diagnostics
     exit 1
   fi
-  printf '\nLocal image generation is ready.\n'
+  printf '\nLocal image service is online; a parked model must pass its smoke test at its first GPU lease.\n'
 fi
 
 echo "Waiting for ${app_url}/api/health..."
