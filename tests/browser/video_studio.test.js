@@ -103,10 +103,10 @@ test('one build button saves the storyboard and queues the asset-to-video workfl
 
 test('scene B-roll choice supports preview and deferred selection without downloading',async()=>{
   const p=page();await p.click('video-create');
-  assert.match(p.nodes['video-scenes'].innerHTML,/Create a local image/);
+  assert.match(p.nodes['video-scenes'].innerHTML,/Create an image/);
   await p.chooseSource('broll');
   assert.match(p.nodes['video-scenes'].innerHTML,/Quick footage search/);
-  assert.doesNotMatch(p.nodes['video-scenes'].innerHTML,/Local image prompt/);
+  assert.doesNotMatch(p.nodes['video-scenes'].innerHTML,/Image prompt/);
   await p.sceneClick('search','scene');
   assert.match(p.nodes['video-stock-results'].innerHTML,/<video controls playsinline preload="none"/);
   assert.match(p.nodes['video-stock-results'].innerHTML,/Use this B-roll/);
@@ -158,10 +158,10 @@ test('paging, filters and jumping preserve edits and save every scene',async()=>
 });
 
 test('GPU diagnostics failure does not hide accepted jobs or prevent polling',async()=>{
-  const job={id:'export',project_id:'project',status:'running',phase:'generating local images',done:1,total:2};
+  const job={id:'export',project_id:'project',status:'running',phase:'generating images',done:1,total:2};
   const p=page(false,{ready:true,resourceFailure:true,job});await p.click('video-create');await p.click('video-build');
   await new Promise(resolve=>setImmediate(resolve));
-  assert.match(p.nodes['video-jobs'].innerHTML,/generating local images/);
+  assert.match(p.nodes['video-jobs'].innerHTML,/generating images/);
   assert.match(p.nodes['video-status'].textContent,/Video running/);
   assert.match(p.nodes['video-resources'].textContent,/diagnostics unavailable/);
   assert.equal(p.timers.length,1);
@@ -212,4 +212,26 @@ test('automatic mode uses the loaded storyboard and preserves its selected media
   const saved=JSON.parse(p.calls.find(c=>c.options.method==='PUT').options.body);
   assert.equal(saved.scenes[1].stock_id,'selected');
   assert.equal(JSON.parse(p.calls.find(c=>c.url.endsWith('/build')).options.body).auto_broll,true);
+});
+
+
+test('provider and both quality controls survive storyboard save and reload',async()=>{
+  const p=page();await p.click('video-create');
+  p.nodes['video-image-provider'].value='openai';
+  p.nodes['video-image-quality'].value='medium';
+  p.nodes['video-image-preset'].value='detail';
+  await p.click('video-save');
+  const saved=JSON.parse(p.calls.find(c=>c.options.method==='PUT').options.body);
+  assert.equal(saved.image_provider,'openai');
+  assert.equal(saved.image_quality,'medium');
+  assert.equal(saved.image_preset,'detail');
+});
+
+
+test('legacy storyboard uses the configured hosted quality when the field is absent',async()=>{
+  const p=page();
+  await p.change('video-image-quality','medium');
+  p.nodes['video-image-quality'].dataset={default:'medium'};
+  await p.click('video-create');
+  assert.equal(p.nodes['video-image-quality'].value,'medium');
 });

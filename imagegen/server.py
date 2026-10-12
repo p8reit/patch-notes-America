@@ -21,6 +21,31 @@ DEVICE = os.getenv("IMAGEGEN_DEVICE", "cuda").casefold()
 MODEL_ID = os.getenv("IMAGEGEN_MODEL", "stabilityai/sdxl-turbo")
 MODEL_REVISION = os.getenv("IMAGEGEN_MODEL_REVISION", "")
 STEPS = int(os.getenv("IMAGEGEN_STEPS", "2"))
+DETAIL_MODEL_ID = os.getenv("IMAGEGEN_DETAIL_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
+DETAIL_MODEL_REVISION = os.getenv("IMAGEGEN_DETAIL_MODEL_REVISION", "")
+DETAIL_STEPS = int(os.getenv("IMAGEGEN_DETAIL_STEPS", "30"))
+DETAIL_GUIDANCE = float(os.getenv("IMAGEGEN_DETAIL_GUIDANCE", "5.0"))
+DETAIL_CPU_OFFLOAD = os.getenv("IMAGEGEN_DETAIL_CPU_OFFLOAD", "true").lower() in {"1", "true", "yes"}
+DEFAULT_PRESET = os.getenv("IMAGEGEN_DEFAULT_PRESET", "detail")
+_loaded_preset = DEFAULT_PRESET
+
+
+def profile(preset: str) -> dict[str, Any]:
+    if preset == "draft":
+        if MODEL_ID != "stabilityai/sdxl-turbo" or not 1 <= STEPS <= 4:
+            raise RuntimeError("Draft requires SDXL Turbo and 1–4 inference steps")
+        return {"model": MODEL_ID, "revision": MODEL_REVISION, "steps": STEPS,
+                "guidance": 0.0, "offload": CPU_OFFLOAD,
+                "sizes": {"1024x1024": (512, 512), "1536x1024": (768, 512), "1024x1536": (512, 768)}}
+    if preset != "detail":
+        raise RuntimeError("Image preset must be draft or detail")
+    if DETAIL_MODEL_ID != "stabilityai/stable-diffusion-xl-base-1.0":
+        raise RuntimeError("Detail requires the supported SDXL Base model; arbitrary model swaps are not supported")
+    if not 20 <= DETAIL_STEPS <= 50 or not 1 <= DETAIL_GUIDANCE <= 10:
+        raise RuntimeError("SDXL Detail requires 20–50 steps and guidance between 1 and 10")
+    return {"model": DETAIL_MODEL_ID, "revision": DETAIL_MODEL_REVISION, "steps": DETAIL_STEPS,
+            "guidance": DETAIL_GUIDANCE, "offload": DETAIL_CPU_OFFLOAD,
+            "sizes": {"1024x1024": (1024, 1024), "1536x1024": (1152, 768), "1024x1536": (768, 1152)}}
 # The application adds editorial-safety instructions to as many as 2,000
 # characters of producer direction. Keep the service limit large enough for
 # that complete, application-generated prompt instead of rejecting it at the
@@ -35,12 +60,12 @@ _readiness: dict[str, Any] = {"ok": False, "model_loaded": False, "failure": "Mo
 
 class ImageRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
-    model: str = MODEL_ID
+    model: str = DETAIL_MODEL_ID if DEFAULT_PRESET == "detail" else MODEL_ID
     size: str = "1024x1024"
-    quality: str = "low"
+    quality: Literal["low", "medium", "high"] = "high"
     n: int = Field(default=1, ge=1, le=1)
     seed: int | None = Field(default=None,ge=0,le=2147483647)
-    preset: Literal["draft","detail"] = "draft"
+    preset: Literal["draft","detail"] = DEFAULT_PRESET
 
 
 def _require_cuda() -> None:
@@ -50,39 +75,54 @@ def _require_cuda() -> None:
         raise RuntimeError("IMAGEGEN_DEVICE=cuda was requested, but CUDA is not visible inside the container")
 
 
-def _load_pipeline() -> Any:
-    global _pipeline
+def _load_pipeline(preset: str | None = None) -> Any:
+    global _pipeline, _loaded_preset
     _require_cuda()
+    preset = preset or _loaded_preset
+    settings = profile(preset)
+    # Never hold Turbo and Base weights at the same time, even on a failed load.
+    _pipeline = None
+    gc.collect()
+    torch.cuda.empty_cache()
+    _readiness.update(ok=False, model_loaded=False, failure="Loading and testing image model")
     pipeline = AutoPipelineForText2Image.from_pretrained(
-        MODEL_ID,
+        settings["model"],
         torch_dtype=torch.float16,
         variant="fp16",
         use_safetensors=True,
-        revision=MODEL_REVISION or None,
+        revision=settings["revision"] or None,
     )
     pipeline.enable_vae_slicing()
-    if CPU_OFFLOAD:
+    pipeline.enable_vae_tiling()
+    if settings["offload"]:
         pipeline.enable_model_cpu_offload()
+        if pipeline._execution_device.type != "cuda":
+            raise RuntimeError("Offloaded image model did not resolve to CUDA execution")
     else:
         pipeline.to("cuda")
         parameters = list(pipeline.unet.parameters())
         if not parameters or parameters[0].device.type != "cuda":
             raise RuntimeError("Image model did not resolve to CUDA")
+    _loaded_preset = preset
     _pipeline = pipeline
     return pipeline
 
 
 def _smoke_test(pipeline: Any) -> None:
+    settings = profile(_loaded_preset)
+    width, height = settings["sizes"]["1024x1024"]
+    # Exercise native resolution, VAE decode and model-appropriate CFG/steps.
     with torch.inference_mode():
         image = pipeline(
-            prompt="A simple amber star on a dark navy background, no text",
-            num_inference_steps=1,
-            guidance_scale=0.0,
-            width=256,
-            height=256,
+            prompt="A fictional adult in soft window light, natural skin texture, no text",
+            num_inference_steps=settings["steps"], guidance_scale=settings["guidance"],
+            width=width, height=height,
         ).images[0]
-    if image.size != (256, 256):
+    if image.size != (width, height):
         raise RuntimeError("Image generation smoke test returned an unexpected size")
+    _readiness.update(model=settings["model"], preset=_loaded_preset,
+                      steps=settings["steps"], guidance=settings["guidance"],
+                      smoke_size=[width, height], cpu_offload=settings["offload"])
 
 
 @asynccontextmanager
@@ -101,10 +141,11 @@ async def lifespan(_app: FastAPI):
             "parked": False,
             "model_loaded": True,
             "failure": None,
-            "model": MODEL_ID,
-            "device": "cuda-with-cpu-offload" if CPU_OFFLOAD else str(next(pipeline.unet.parameters()).device),
+            "model": profile(_loaded_preset)["model"],
+            "device": "cuda-with-cpu-offload" if profile(_loaded_preset)["offload"] else str(next(pipeline.unet.parameters()).device),
             "gpu": torch.cuda.get_device_name(0),
         })
+        del pipeline  # Do not retain startup weights across later preset switches.
     except Exception as exc:
         _readiness.update({"ok": False, "model_loaded": False, "failure": str(exc)})
         raise
@@ -146,7 +187,7 @@ def load_model(authorization: str = Header("")):
             pipeline = _load_pipeline()
             _smoke_test(pipeline)
             _readiness.update(ok=True, model_loaded=True, parked=False, failure=None,
-                              device="cuda-with-cpu-offload" if CPU_OFFLOAD else "cuda")
+                              device="cuda-with-cpu-offload" if profile(_loaded_preset)["offload"] else "cuda")
         free, total = torch.cuda.mem_get_info()
         return {**_readiness, "free_vram_mb": free // 1048576, "total_vram_mb": total // 1048576}
     except Exception as exc:
@@ -165,20 +206,12 @@ async def health():
 async def generate_image(request: ImageRequest, connection: Request):
     if not _readiness["ok"] or _pipeline is None:
         raise HTTPException(status_code=503, detail=_readiness["failure"] or "Image model is not ready")
-    if request.model != MODEL_ID:
-        raise HTTPException(status_code=400, detail=f"Local image model is {MODEL_ID}")
-    # SDXL Turbo is most reliable on this VRAM class at these internal sizes;
-    # the application crops/scales the result to the requested video aspect.
-    requested_aspect = {
-        "1024x1536": (512, 768),
-        "1024x1024": (512, 512),
-        "1536x1024": (768, 512),
-    }
-    if request.size not in requested_aspect:
+    settings = profile(request.preset)
+    if request.model not in {MODEL_ID, settings["model"]}:
+        raise HTTPException(status_code=400, detail="Model does not match the requested local preset")
+    if request.size not in settings["sizes"]:
         raise HTTPException(status_code=400, detail="Unsupported image size")
-    width, height = requested_aspect[request.size]
-    if request.preset == "detail":
-        width, height = width * 3 // 2, height * 3 // 2
+    width, height = settings["sizes"][request.size]
     cancelled = threading.Event()
     task = asyncio.create_task(asyncio.to_thread(_generate_image, request, width, height, cancelled))
     try:
@@ -208,6 +241,8 @@ def _consume_image_task(task: asyncio.Task) -> None:
 def _generate_image(
     request: ImageRequest, width: int, height: int, cancelled: threading.Event,
 ) -> dict[str, Any]:
+    global _pipeline
+
     def check_cancelled() -> None:
         if cancelled.is_set():
             raise ImageGenerationCancelled()
@@ -219,12 +254,25 @@ def _generate_image(
     try:
         with _lock, torch.inference_mode():
             check_cancelled()
-            if _pipeline is None:
+            if not _readiness["ok"] or _pipeline is None:
                 raise HTTPException(503, "Image model is parked")
+            if _loaded_preset != request.preset:
+                try:
+                    pipeline = _load_pipeline(request.preset)
+                    _smoke_test(pipeline)
+                    del pipeline
+                    _readiness.update(ok=True, model_loaded=True, parked=False, failure=None)
+                except Exception as exc:
+                    _pipeline = None
+                    _readiness.update(ok=False, model_loaded=False, failure="Image preset failed CUDA readiness: " + type(exc).__name__)
+                    raise HTTPException(503, "Image preset failed CUDA readiness") from exc
+            check_cancelled()
+            settings = profile(request.preset)
+            _readiness["device"] = "cuda-with-cpu-offload" if settings["offload"] else "cuda"
             image = _pipeline(
                 prompt=request.prompt,
-                num_inference_steps=max(STEPS,4 if "turbo" in MODEL_ID.lower() else 24) if request.preset=="detail" else STEPS,
-                guidance_scale=0.0 if "turbo" in MODEL_ID.lower() else 6.0,
+                num_inference_steps=settings["steps"],
+                guidance_scale=settings["guidance"],
                 width=width,
                 height=height,
                 callback_on_step_end=step_finished,
@@ -240,7 +288,11 @@ def _generate_image(
     return {
         "created": int(time.time()),
         "data": [{"b64_json": base64.b64encode(output.getvalue()).decode("ascii")}],
-        "model": MODEL_ID,
-        "model_revision": MODEL_REVISION or "unrecorded",
+        "model": settings["model"],
+        "preset": request.preset,
+        "steps": settings["steps"],
+        "guidance": settings["guidance"],
+        "width": width, "height": height,
+        "model_revision": settings["revision"] or "unrecorded",
         "seed": request.seed,
     }

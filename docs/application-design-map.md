@@ -62,7 +62,7 @@ flowchart LR
 
 ## 3. Screen and information architecture
 
-The application has three top-level tabs: **Video Studio** adds persistent scene storyboards, a source-tracked B-roll library, locally generated illustrations, and mixed-media video exports. Audio completes independently by default; the optional legacy automatic clip mode is controlled by `AUTO_SOCIAL_CLIPS`. **Podcast Studio** contains the existing end-to-end episode workflow, while **Image Studio** creates one-off PNG artwork without reading or changing episode state. Image Studio's Creation activity panel reports elapsed time and observed request/response events, including HTTP status, PNG size, and errors. It does not report the provider's internal generation progress.
+The application has three top-level tabs: **Video Studio** adds persistent scene storyboards, a source-tracked B-roll library, provider-selected generated images, and mixed-media video exports. Audio completes independently by default; the optional legacy automatic clip mode is controlled by `AUTO_SOCIAL_CLIPS`. **Podcast Studio** contains the existing end-to-end episode workflow, while **Image Studio** creates one-off PNG artwork without reading or changing episode state. Image Studio's Creation activity panel reports elapsed time and observed request/response events, including HTTP status, PNG size, and errors. It does not report the provider's internal generation progress.
 
 ```text
 Production Studio
@@ -183,7 +183,7 @@ external providers may continue computation after their connection closes.
 
 ### Clip production
 
-The completed episode metadata is enriched with a chunk timeline. After MP3 assembly, the worker automatically renders a vertical opening clip and up to two non-overlapping content clips scored for strong hooks, useful duration, and multiple speakers. The selected image provider—OpenAI Images or the optional local CUDA SDXL Turbo service—combines the producer's optional episode image prompt with the episode context and fixed visual-safety constraints to generate a topic-aware, hyper-realistic editorial image with lifelike fictional people when relevant; the validated raster file is persisted beside the MP4 and becomes its visual background. The same producer direction is reused when creating a custom clip from the active episode. Branding and synchronized captions remain layered above the art, with each spoken passage rendered once so duplicate text cannot overlap. Image-provider failures are recorded separately and fall back to the dark branded background, while clip errors remain isolated from the completed episode. The producer may also accept a suggestion or set exact bounds, title, and aspect ratio. FFmpeg produces a captioned MP4 in vertical (`9:16`), square (`1:1`), or horizontal (`16:9`) format.
+The completed episode metadata is enriched with a chunk timeline. After MP3 assembly, the worker automatically renders a vertical opening clip and up to two non-overlapping content clips scored for strong hooks, useful duration, and multiple speakers. The selected image provider—OpenAI Images or the optional local CUDA SDXL Base/Turbo service—combines the producer's optional episode image prompt with the episode context and fixed visual-safety constraints to generate a topic-aware, hyper-realistic editorial image with lifelike fictional people when relevant; the validated raster file is persisted beside the MP4 and becomes its visual background. The same producer direction is reused when creating a custom clip from the active episode. Branding and synchronized captions remain layered above the art, with each spoken passage rendered once so duplicate text cannot overlap. Image-provider failures are recorded separately and fall back to the dark branded background, while clip errors remain isolated from the completed episode. The producer may also accept a suggestion or set exact bounds, title, and aspect ratio. FFmpeg produces a captioned MP4 in vertical (`9:16`), square (`1:1`), or horizontal (`16:9`) format.
 
 ## 5. System architecture
 
@@ -209,7 +209,7 @@ flowchart TB
     Ollama[Optional Ollama service :11434]
     Images{Clip image provider}
     OpenAIImages[OpenAI Images API]
-    LocalImages[Optional CUDA SDXL Turbo service :8000]
+    LocalImages[Optional CUDA SDXL Base/Turbo service :8000]
     FFmpeg[FFmpeg subprocess]
 
     subgraph Storage[Bind-mounted filesystem]
@@ -362,7 +362,7 @@ Update this map whenever a change introduces a new primary object, workflow stag
 
 ## Video production boundary
 
-`app/video.py` owns a separate versioned project schema and media library under `data/video/`. It snapshots finished audio hashes and the additive `video_timeline` (including mixed intro and music timing), without altering saved episode documents. `/api/video` exposes projects, assets, local scene images, and proof exports. `app/static/video-studio.js` provides editable scene cards, import provenance, media selection, trim/crop/motion controls, and a video preview. Exports require both B-roll and local images. GPU image inference remains fail-closed.
+`app/video.py` owns a separate versioned project schema and media library under `data/video/`. It snapshots finished audio hashes and the additive `video_timeline` (including mixed intro and music timing), without altering saved episode documents. `/api/video` exposes projects, assets, provider-selected scene images, and proof exports. `app/static/video-studio.js` provides editable scene cards, import provenance, media selection, trim/crop/motion controls, and a video preview. Exports require both B-roll and generated images. GPU image inference remains fail-closed.
 
 Full video exports use a separate persistent queue with atomic `job.json` snapshots under `data/video/exports/`. Active jobs recover on restart; cancelled jobs remain terminal. Content-addressed scene outputs survive retry and exports include caption/credits/chapter sidecars. The video queue never invokes TTS. Its lifecycle is started/stopped alongside the existing audio queue.
 
@@ -380,8 +380,8 @@ freezes a selected search candidate under `data/video/stock-selections/{stock_id
 and saves its reference on the scene without downloading footage. Revision and
 lock checks protect edits, and saves resolve candidate metadata from the trusted
 selection record. `POST /api/video/projects/{id}/build` queues one frozen build
-that downloads only selected B-roll, generates missing local images in one model
-lease, and renders after all assets are ready. Asset IDs are checkpointed into
+that downloads only selected B-roll, generates missing images through the storyboard provider (local uses one model
+lease; hosted uses no image lease), and renders after all assets are ready. Asset IDs are checkpointed into
 the existing video job manifest so restart recovery reuses completed work.
 Completed assets populate the current storyboard only if its revision still
 matches the queued plan. Audio synthesis and source MP3s remain independent.
@@ -403,7 +403,7 @@ Ollama batches; selected media is preserved. The local model ranks trusted stock
 results using metadata, after duration/CDN filtering. It cannot invent a URL or
 choose an ID outside the results. At most two ten-result searches are used per
 passage, with up to three alternate passages if necessary to retain a mixed
-export. No-match scenes become illustrations with recorded warnings; provider
+export. No-match scenes become images with recorded warnings; provider
 or model errors remain visible failures. The planner GPU lease completes before
 the image lease. Planning/selection checkpoints and per-job downloaded-stock
 reuse join the existing cancellation/recovery behavior. The Auto-create button
@@ -411,3 +411,26 @@ can first create a storyboard from the selected finished episode, then enqueue
 this pipeline; manual builds retain their existing preflight validation.
 
 Video export variants freeze independent aspect, encoder, caption preset and range settings while reusing one storyboard. Per-format scene crops and deterministic image seeds round-trip in project schema version 1. Optional NVENC encoding uses a separate GPU lease and explicit video driver capability; software encoding remains the default. Actual overlapped intro speech timings are included in the video transcript rather than extending captions across the music bed.
+
+### Image quality and provider contract
+
+Image Studio and clip artwork use `CLIP_IMAGE_PROVIDER`; Video Studio persists
+additive `image_provider` (`openai`/`local`), `image_quality` (`high`/`medium`/`low`)
+and `image_preset` (`detail`/`draft`) in version 1 projects and frozen job snapshots.
+New projects use environment defaults (hosted High, local Detail). Missing legacy
+provider/preset preserves Local/Draft; missing hosted quality uses configuration.
+Provider availability is not required to read or edit projects. Existing episode,
+research, host and download contracts are unchanged. Hosted quality never becomes
+a local denoising parameter; local preset/seed is never sent to OpenAI.
+
+The image service serializes inference and switches between fp16 SDXL Turbo
+(Draft: 2 steps, guidance 0, 512 square) and SDXL Base (Detail: 30 steps, guidance
+5, 1024 square or 1152×768 landscape), releasing the previous pipeline first.
+Detail defaults to CPU offload plus VAE slicing/tiling for 12 GB RTX 3060-class
+memory budgets. Each newly loaded profile must pass model-appropriate CUDA
+smoke inference; unavailable CUDA or failed smoke inference remains fail-closed.
+Scene prompts preserve the project style without injecting illustration language.
+Clip prompts default to photography but allow explicit producer styles while
+retaining fictional-person and no-text constraints. Hosted cost, local memory,
+latency and face-quality limits are documented in README; target-GPU validation
+is distinct from mocked tests.
