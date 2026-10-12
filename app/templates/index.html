@@ -17,6 +17,7 @@
     <div class="workspace-tabs" role="tablist" aria-label="Production tools">
       <button id="podcast-tab" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="podcast-panel">Podcast Studio</button>
       <button id="image-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="image-panel" tabindex="-1">Image Studio</button>
+      <button id="video-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="video-panel" tabindex="-1">Video Studio</button>
     </div>
 
     <div id="podcast-panel" role="tabpanel" aria-labelledby="podcast-tab">
@@ -287,6 +288,21 @@
         <a id="download-image" class="download" download="generated-image.png">Download PNG</a>
       </div>
     </section>
+    <section id="video-panel" class="card video-studio" role="tabpanel" aria-labelledby="video-tab" hidden>
+      <h2>Video Studio</h2>
+      <p class="hint">Tell your podcast story with free B-roll and locally generated images. Audio stays unchanged.</p>
+      <div class="actions"><label>Finished episode<select id="video-episode"></select></label><button id="video-create" type="button">Create storyboard</button><label>Saved video project<select id="video-project"></select></label><button id="video-load" type="button">Load project</button></div>
+      <label>Visual direction<textarea id="video-style" rows="2"></textarea></label>
+      <div class="actions"><button id="video-save" type="button">Save storyboard</button><button id="video-refresh" type="button" class="secondary">Refresh library</button></div>
+      <p id="video-status" class="hint" role="status" aria-live="polite"></p>
+      <div id="video-scenes"></div>
+      <details><summary>Import free B-roll</summary>
+        <form id="video-import"><label>MP4, MOV, or WebM<input name="file" type="file" accept="video/mp4,video/quicktime,video/webm" required></label>
+          <label>Source page<input name="source_url" type="url" required></label><label>Creator<input name="creator" required></label><label>License or usage record<input name="license" required></label><button type="submit">Import footage</button></form>
+      </details>
+      <div class="actions"><label>Export start (seconds)<input id="video-start" type="number" min="0" value="0" step="0.001"></label><label>Export end (seconds)<input id="video-end" type="number" min="0" step="0.001"></label><button id="video-preview" type="button">Render preview</button><button id="video-export" type="button">Export MP4</button></div>
+      <video id="video-preview-player" controls preload="metadata" hidden></video><div id="video-downloads"></div>
+    </section>
   </main>
 
   <template id="host-template">
@@ -441,7 +457,7 @@
       a11y.setStatus(element, message, {error});
     }
 
-    const workspaceTabs = [document.getElementById('podcast-tab'), document.getElementById('image-tab')];
+    const workspaceTabs = [document.getElementById('podcast-tab'), document.getElementById('image-tab'), document.getElementById('video-tab')];
     function selectWorkspace(tab) {
       workspaceTabs.forEach(item => {
         const selected = item === tab;
@@ -708,7 +724,7 @@
             const clipLinks = (job.clips || []).map((clip, index) => `<a class="download" href="${encodeURI(clip.download_url)}">Download clip ${index + 1}</a>`).join('');
             const clipNote = job.clip_error ? `<p class="job-error">Automatic clips could not be rendered: ${escapeHtml(job.clip_error)}</p>` : '';
             const artNote = job.clip_art_error ? `<p class="job-error">Clips rendered without generated artwork: ${escapeHtml(job.clip_art_error)}</p>` : '';
-            result.innerHTML = `<strong>Episode and social clips ready.</strong><p>${escapeHtml(job.title)}</p><a class="download" href="${encodeURI(job.download_url)}">Download MP3</a>${clipLinks}${clipNote}${artNote}`;
+            result.innerHTML = `<strong>${job.clips?.length ? 'Episode and social clips ready.' : 'Episode ready. Create your video in Video Studio.'}</strong><p>${escapeHtml(job.title)}</p><a class="download" href="${encodeURI(job.download_url)}">Download MP3</a>${clipLinks}${clipNote}${artNote}`;
             result.hidden = false; reportStatus(document.getElementById('progress'), 'Background render complete.');
             activeJobPollers.delete(jobId); return;
           }
@@ -1572,5 +1588,6 @@
     refreshJobs().catch(err => { document.getElementById('job-list').innerHTML = `<p class="job-error">${escapeHtml(err.message)}</p>`; });
     refreshSavedEpisodes().catch(err => { document.getElementById('episode-save-status').textContent = err.message; });
   </script>
+  <script src="/static/video-studio.js"></script>
 </body>
 </html>

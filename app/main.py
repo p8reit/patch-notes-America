@@ -31,6 +31,7 @@ from app.audio_utils import (
     normalize_audio_segment,
     validate_audio_segment,
 )
+from app.video import router as video_router
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
@@ -91,6 +92,7 @@ LOCAL_AI_MODEL = os.getenv("LOCAL_AI_MODEL", "llama3.1:8b")
 JOB_WORKERS = max(1, int(os.getenv("JOB_WORKERS", "1")))
 TTS_MAX_ATTEMPTS = max(1, int(os.getenv("TTS_MAX_ATTEMPTS", "5")))
 TTS_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("TTS_RETRY_DELAY_SECONDS", "15")))
+AUTO_SOCIAL_CLIPS = os.getenv("AUTO_SOCIAL_CLIPS", "false").lower() == "true"
 
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -101,6 +103,7 @@ SAVED_EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Podcast Builder", version="0.5.0")
+app.include_router(video_router)
 app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=APP_ROOT / "app" / "templates")
 
@@ -1525,6 +1528,11 @@ async def process_generation_job(job_id: str) -> None:
             "duration": round(float(timeline[-1]["end"] + timeline[-1]["pause_after_ms"] / 1000), 3),
             "utterances": job["chunks"],
             "audio_qa": qa,
+            "video_timeline": [
+                {"id": str(chunk.get("id", f"intro-{index}")), "text": chunk.get("text", ""),
+                 "start": item["start"], "end": item["end"]}
+                for index, (chunk, item) in enumerate(zip(final_chunks, timeline))
+            ],
         }
         metadata_file = job_dir / "metadata.json"
         metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -1535,9 +1543,10 @@ async def process_generation_job(job_id: str) -> None:
         job["clip_error"] = None
         job["clip_art_error"] = None
         try:
-            job["clips"] = await render_automatic_social_clips(
-                job_dir, job["title"], metadata, str(job.get("image_prompt", ""))
-            )
+            if AUTO_SOCIAL_CLIPS:
+                job["clips"] = await render_automatic_social_clips(
+                    job_dir, job["title"], metadata, str(job.get("image_prompt", ""))
+                )
             job["clip_art_error"] = summarize_clip_art_errors(job["clips"])
             metadata["clips"] = job["clips"]
             metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
