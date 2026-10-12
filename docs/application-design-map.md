@@ -57,7 +57,7 @@ flowchart LR
 | Research | Assemble facts and framing | Packet save/draft status | Packet or source notes are present |
 | Writing | Produce and refine dialogue | Editable script with speaker-tag guidance | Required script is non-empty |
 | Show open | Add intro music and spoken intro | File state, overlap toggle, volume value | Optional settings are accepted |
-| Rendering | Generate speech without holding the page open | Submit progress, queue state, chunk count, timer/errors | Job is complete or failed |
+| Rendering | Generate speech without holding the page open | Submit progress, queue state, chunk count, timer/errors, cancellation | Job is complete, failed, or cancelled |
 | Distribution | Extract a shareable moment | Suggested windows, clip controls, rendered result | MP4 is downloadable |
 
 ## 3. Screen and information architecture
@@ -91,7 +91,7 @@ Production Studio
 │   ├── Generate action and latest result
 │   └── Background render queue
 │       ├── Search, status filter, and chronological sort
-│       └── Persistent summary and episode download actions
+│       └── Persistent summary, cancel controls, and episode download actions
 │   └── 6. Distribution
 │       └── Clip Studio (revealed after a completed episode is selected)
 └── Image Studio
@@ -168,6 +168,16 @@ sequenceDiagram
 ```
 
 Jobs are filesystem-backed rather than browser-backed. On application startup, incomplete manifests are re-enqueued, valid completed chunks are reused, and a producer can leave and later return to the queue.
+
+Queued or running jobs can be cancelled from the queue. Cancellation is durable:
+cancelled jobs are not re-enqueued on startup or processed from stale queue
+entries. The app cancels the job's task and active provider request while
+retaining completed audio, including an MP3 assembled before automatic artwork
+was cancelled. Queue workers remain available for subsequent jobs. Normal app
+shutdown keeps interrupted jobs recoverable instead of marking them cancelled.
+The local image service runs inference outside the request event loop and stops
+disconnected requests before inference or at the next denoising checkpoint;
+external providers may continue computation after their connection closes.
 
 ### Clip production
 
@@ -284,7 +294,7 @@ Episode
 | Research | `GET/POST /api/research-packets`; `GET /api/research-packets/{id}` | Persist structured source packets |
 | Drafting | `POST /api/conversation-draft`; `POST /api/conversation-draft-packet` | Generate an editable multi-host script |
 | Performance | `POST /api/performance-analysis`; `POST /api/performance-preview` | Suggest and audition deterministic single-host delivery beats |
-| Rendering | `POST/GET /api/generation-jobs`; `GET /api/generation-jobs/{id}` | Create, list, and monitor durable jobs |
+| Rendering | `POST/GET /api/generation-jobs`; `GET /api/generation-jobs/{id}`; `POST /api/generation-jobs/{id}/cancel` | Create, list, monitor, and cancel durable jobs |
 | Compatibility | `POST /api/generate`; `POST /api/chunk-preview` | Synchronous generation and chunk inspection paths |
 | Downloads | `GET /api/episodes/{slug}/download` | Serve the completed MP3 |
 | Clips | `GET /api/episodes/{slug}/clip-suggestions`; `POST /api/episodes/{slug}/clips`; `GET .../clips/{clip-id}/download` | Suggest, render, and serve social clips |
@@ -299,10 +309,13 @@ stateDiagram-v2
     queued --> running: worker claims job
     running --> complete: all chunks and assembly succeed
     running --> failed: retry budget or assembly fails
+    queued --> cancelled: producer cancels
+    running --> cancelled: producer cancels
     queued --> queued: application restarts and re-enqueues
     running --> queued: application restarts before completion
     complete --> [*]
     failed --> [*]
+    cancelled --> [*]
 ```
 
 - Episode submission remains disabled until Chatterbox passes model loading and a real synthesis smoke test.

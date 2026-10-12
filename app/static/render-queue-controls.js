@@ -4,7 +4,7 @@
   else root.RenderQueueControls = api;
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   const STORAGE_KEY = 'podcast-builder-render-queue-view';
-  const VALID_STATUSES = new Set(['all', 'active', 'complete', 'failed']);
+  const VALID_STATUSES = new Set(['all', 'active', 'complete', 'failed', 'cancelled']);
   const VALID_ORDERS = new Set(['newest', 'oldest']);
 
   function filterJobs(jobs, {query = '', status = 'all', order = 'newest'} = {}) {
@@ -27,6 +27,7 @@
       if (['queued', 'running'].includes(job.status)) counts.active += 1;
       else if (job.status === 'complete') counts.complete += 1;
       else if (job.status === 'failed') counts.failed += 1;
+      else if (job.status === 'cancelled') counts.cancelled = (counts.cancelled || 0) + 1;
       return counts;
     }, {total: 0, active: 0, complete: 0, failed: 0});
   }
@@ -34,6 +35,7 @@
   function summaryText(counts, visible, workers) {
     const parts = [`${visible} of ${counts.total} shown`, `${counts.active} active`, `${counts.complete} completed`];
     if (counts.failed) parts.push(`${counts.failed} failed`);
+    if (counts.cancelled) parts.push(`${counts.cancelled} cancelled`);
     parts.push(`${workers} worker${workers === 1 ? '' : 's'}`);
     return parts.join(' · ');
   }

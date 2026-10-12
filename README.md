@@ -450,6 +450,22 @@ last unfinished chunk. Completed WAV files are validated before reuse, avoiding
 the loss of hours of CPU rendering while preventing corrupt partial files from
 entering the final episode.
 
+Use **Cancel** beside a queued or running render to stop it, including a render
+waiting for automatic clip artwork. Cancellation closes its active provider
+request and frees the app's queue worker for the next episode. The job and
+unfinished chunks become `cancelled`, while completed chunks and any assembled
+MP3 remain on disk. An assembled MP3 keeps its download link even if optional
+clips were cancelled. Cancelled jobs are terminal and are not recovered after
+an app restart; the queue's **Cancelled** filter shows them. Submit a new render
+to generate that episode again.
+
+The bundled local image service checks disconnected requests before inference
+and after each denoising step. A step already running must finish before the
+model lock is released. Synchronous audio/FFmpeg work also completes its
+current operation before the app can handle cancellation. Closing an OpenAI or
+Chatterbox request stops the app waiting; those services may finish computation
+already in progress. This change does not select a different CPU/GPU mode.
+
 Transient TTS container crashes and dropped connections are retried five times
 by default with an increasing delay. Configure `TTS_MAX_ATTEMPTS` and
 `TTS_RETRY_DELAY_SECONDS` for a backend that takes longer to restart. Each
@@ -464,7 +480,12 @@ process-local; multiple Uvicorn workers would each create a queue consumer.
 POST /api/generation-jobs
 GET  /api/generation-jobs
 GET  /api/generation-jobs/{job_id}
+POST /api/generation-jobs/{job_id}/cancel
 ```
+
+The cancellation endpoint returns the updated job and chunk progress, is
+idempotent for cancelled jobs, and returns `409` for completed or failed jobs.
+It also accepts pre-existing queued/running manifests without a migration.
 
 The job manifest owns an ordered top-level `chunks` array. Every chunk retains
 its status, attempt count, raw and normalized outputs, audio metrics, and last

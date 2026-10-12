@@ -57,6 +57,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .job-status { border-radius: 999px; padding: 5px 9px; font-size: .78rem; font-weight: 800; text-transform: uppercase; }
 .job-status.queued { background: #30363d; }
 .job-status.running { color: #58a6ff; background: rgba(88,166,255,.13); }
+.job-status.cancelled { color: #b1bac4; background: #30363d; }
 .job-status.complete { color: #3fb950; background: rgba(63,185,80,.13); }
 .job-status.failed, .job-error { color: #f85149; }
 .download.compact { padding: 8px 12px; font-size: .86rem; text-align: center; }
