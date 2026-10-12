@@ -106,6 +106,7 @@ templates = Jinja2Templates(directory=APP_ROOT / "app" / "templates")
 
 generation_queue: asyncio.Queue[str] | None = None
 generation_workers: list[asyncio.Task[None]] = []
+generation_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 def slugify(value: str) -> str:
@@ -1251,14 +1252,33 @@ def _job_progress(job: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _mark_job_cancelled(job: dict[str, Any]) -> None:
+    """Retain completed artifacts while making cancellation durable."""
+    job["status"] = "cancelled"
+    job["error"] = None
+    job["finished_at"] = datetime.now(timezone.utc).isoformat()
+    for chunk in job["chunks"]:
+        if chunk.get("status") in {"queued", "running", "retrying"}:
+            chunk["status"] = "cancelled"
+            chunk["error"] = None
+
+
 async def generation_worker(worker_number: int) -> None:
     """Consume durable jobs serially by default, which is safer on CPU-only hosts."""
     assert generation_queue is not None
     while True:
         job_id = await generation_queue.get()
+        task = asyncio.create_task(process_generation_job(job_id))
+        generation_tasks[job_id] = task
         try:
-            await process_generation_job(job_id)
+            await task
+        except asyncio.CancelledError:
+            # Cancelling one render must leave its queue worker available.
+            # Worker shutdown still propagates cancellation for restart recovery.
+            if asyncio.current_task().cancelling():
+                raise
         finally:
+            generation_tasks.pop(job_id, None)
             generation_queue.task_done()
 
 
@@ -1317,6 +1337,9 @@ async def synthesize_chunk_with_retry(
             chunk["raw_output"] = chunk["output"]
             _write_job(job_dir, job)
             return
+        except asyncio.CancelledError:
+            temporary.unlink(missing_ok=True)
+            raise
         except (httpx.HTTPError, OSError, ValueError) as exc:
             temporary.unlink(missing_ok=True)
             chunk["error"] = describe_chatterbox_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
@@ -1394,6 +1417,8 @@ app.router.lifespan_context = application_lifespan
 async def process_generation_job(job_id: str) -> None:
     """Render durable speech chunks and assemble the final episode from them."""
     job_dir, job = _load_job(job_id)
+    if job.get("status") not in {"queued", "running"}:
+        return
     job["status"] = "running"
     job["started_at"] = datetime.now(timezone.utc).isoformat()
     job["worker_pid"] = os.getpid()
@@ -1503,6 +1528,9 @@ async def process_generation_job(job_id: str) -> None:
         }
         metadata_file = job_dir / "metadata.json"
         metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        # Keep assembled audio downloadable when optional artwork is cancelled.
+        job["download_url"] = f"/api/episodes/{job_id}/download"
+        _write_job(job_dir, job)
         job["clips"] = []
         job["clip_error"] = None
         job["clip_art_error"] = None
@@ -1518,6 +1546,12 @@ async def process_generation_job(job_id: str) -> None:
             logger.exception("Automatic social clip rendering failed for %s", job_id)
         job["status"] = "complete"
         job["download_url"] = f"/api/episodes/{job_id}/download"
+    except asyncio.CancelledError:
+        _, persisted = _load_job(job_id)
+        if persisted.get("status") == "cancelled":
+            _mark_job_cancelled(job)
+            job["finished_at"] = persisted["finished_at"]
+        raise
     except Exception as exc:  # Persist failures so polling clients never hang.
         job["status"] = "failed"
         job["error"] = describe_chatterbox_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
@@ -1527,7 +1561,8 @@ async def process_generation_job(job_id: str) -> None:
                 chunk["error"] = job["error"]
                 break
     finally:
-        job["finished_at"] = datetime.now(timezone.utc).isoformat()
+        if job.get("status") != "cancelled":
+            job["finished_at"] = datetime.now(timezone.utc).isoformat()
         _write_job(job_dir, job)
 
 
@@ -2401,6 +2436,24 @@ async def list_generation_jobs():
 
 @app.get("/api/generation-jobs/{job_id}")
 async def generation_job_status(job_id: str):
+    _, job = _load_job(job_id)
+    job["progress"] = _job_progress(job)
+    return job
+
+
+@app.post("/api/generation-jobs/{job_id}/cancel")
+async def cancel_generation_job(job_id: str):
+    """Cancel queued/running work without deleting its completed audio."""
+    job_dir, job = _load_job(job_id)
+    if job.get("status") not in {"queued", "running", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Only queued or running jobs can be cancelled")
+    if job["status"] != "cancelled":
+        _mark_job_cancelled(job)
+        _write_job(job_dir, job)
+    task = generation_tasks.get(job_id)
+    if task is not None:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     _, job = _load_job(job_id)
     job["progress"] = _job_progress(job)
     return job

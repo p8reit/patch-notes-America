@@ -213,6 +213,7 @@
             <option value="active">Active</option>
             <option value="complete">Completed</option>
             <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
           </select>
         </label>
         <label class="queue-control">Order
@@ -224,6 +225,7 @@
         <button id="refresh-jobs" class="secondary queue-refresh" type="button">Refresh</button>
       </div>
       <div id="job-summary" class="queue-summary" role="status" aria-live="polite">Loading audio jobs…</div>
+      <p id="job-action-status" class="hint" role="status" aria-live="polite"></p>
       <div id="job-list" class="job-list" aria-live="polite"><p class="hint">Loading audio jobs...</p></div>
     </section>
 
@@ -634,11 +636,15 @@
         const detail = job.status === 'complete'
           ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>${clipLinks}${clipWarning}${artWarning}`
           : job.status === 'failed' ? `<span class="job-error">${escapeHtml(job.error || 'Rendering failed')}</span>`
+          : job.status === 'cancelled' ? `<span class="hint">Cancelled · completed audio retained</span>${job.download_url ? `<a class="download compact" href="${encodeURI(job.download_url)}">Download MP3</a>` : ''}`
           : `<span class="hint">${progress.complete}/${progress.total} chunks · safe to close this page</span>`;
+        const cancellable = ['queued', 'running'].includes(job.status);
+        const cancelling = cancellingJobs.has(job.id);
+        const cancelButton = cancellable ? `<button type="button" class="secondary" data-cancel-job="${escapeHtml(job.id)}" aria-label="Cancel render: ${escapeHtml(job.title)}" aria-describedby="job-action-status" ${cancelling ? 'disabled' : ''}>${cancelling ? 'Cancelling…' : 'Cancel'}</button>` : '';
         const timer = job.status === 'running'
           ? `<small class="job-timer" data-started-at="${escapeHtml(job.started_at || '')}">Running for ${formatElapsed(job.started_at)}</small>` : '';
         return `<article class="job-row"><div><strong>${escapeHtml(job.title)}</strong><small>${escapeHtml(job.created_at || '')}</small>${timer}</div>
-          <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${detail}</article>`;
+          <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span><div>${detail}${cancelButton}</div></article>`;
       }).join('');
     }
 
@@ -663,12 +669,39 @@
       setActiveCompletedEpisode(latestComplete);
     }
 
+    const cancellingJobs = new Set();
+    document.getElementById('job-list').addEventListener('click', async event => {
+      const button = event.target.closest('button[data-cancel-job]');
+      if (!button || button.disabled) return;
+      const jobId = button.dataset.cancelJob;
+      const status = document.getElementById('job-action-status');
+      cancellingJobs.add(jobId);
+      button.disabled = true;
+      button.textContent = 'Cancelling…';
+      reportStatus(status, 'Cancelling render…');
+      try {
+        const response = await fetch(`/api/generation-jobs/${encodeURIComponent(jobId)}/cancel`, {method: 'POST'});
+        const job = await readJsonResponse(response, 'Could not cancel render');
+        window.clearTimeout(activeJobPollers.get(jobId));
+        activeJobPollers.delete(jobId);
+        latestJobs = latestJobs.map(item => item.id === jobId ? job : item);
+        renderJobs(latestJobs, configuredWorkers);
+        reportStatus(status, 'Render cancelled. Completed audio retained.');
+      } catch (error) {
+        reportStatus(status, `Could not confirm cancellation: ${error.message}. Refresh the queue to check its status or try again.`, true);
+      } finally {
+        cancellingJobs.delete(jobId);
+        renderJobs(latestJobs, configuredWorkers);
+      }
+    });
+
     function monitorJob(jobId) {
       if (activeJobPollers.has(jobId)) return;
       const poll = async () => {
         try {
-          const res = await fetch(`/api/generation-jobs/${encodeURIComponent(jobId)}`); const job = await readJsonResponse(res, 'Could not read generation status');
+          const res = await fetch(`/api/generation-jobs/${encodeURIComponent(jobId)}`); let job = await readJsonResponse(res, 'Could not read generation status');
           await refreshJobs();
+          job = latestJobs.find(item => item.id === jobId) || job;
           if (job.status === 'complete') {
             setActiveCompletedEpisode(job);
             const result = document.getElementById('result');
@@ -680,8 +713,10 @@
             activeJobPollers.delete(jobId); return;
           }
           if (job.status === 'failed') { reportStatus(document.getElementById('progress'), job.error || 'Background render failed.', true); activeJobPollers.delete(jobId); return; }
-          activeJobPollers.set(jobId, window.setTimeout(poll, 2500));
+          if (job.status === 'cancelled') { reportStatus(document.getElementById('progress'), 'Background render cancelled. Completed audio retained.'); activeJobPollers.delete(jobId); return; }
+          if (activeJobPollers.has(jobId)) activeJobPollers.set(jobId, window.setTimeout(poll, 2500));
         } catch (err) {
+          if (!activeJobPollers.has(jobId)) return;
           reportStatus(document.getElementById('progress'), `Job remains submitted; status refresh failed: ${err.message}`);
           activeJobPollers.set(jobId, window.setTimeout(poll, 5000));
         }

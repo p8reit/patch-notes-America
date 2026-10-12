@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import os
@@ -10,7 +11,7 @@ from typing import Any
 
 import torch
 from diffusers import AutoPipelineForText2Image
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 DEVICE = os.getenv("IMAGEGEN_DEVICE", "cuda").casefold()
@@ -105,7 +106,7 @@ async def health():
 
 
 @app.post("/v1/images/generations")
-def generate_image(request: ImageRequest):
+async def generate_image(request: ImageRequest, connection: Request):
     if not _readiness["ok"] or _pipeline is None:
         raise HTTPException(status_code=503, detail=_readiness["failure"] or "Image model is not ready")
     if request.model != MODEL_ID:
@@ -120,18 +121,59 @@ def generate_image(request: ImageRequest):
     if request.size not in requested_aspect:
         raise HTTPException(status_code=400, detail="Unsupported image size")
     width, height = requested_aspect[request.size]
+    cancelled = threading.Event()
+    task = asyncio.create_task(asyncio.to_thread(_generate_image, request, width, height, cancelled))
+    try:
+        while not task.done():
+            if await connection.is_disconnected():
+                cancelled.set()
+            await asyncio.wait({task}, timeout=0.2)
+        return await task
+    except ImageGenerationCancelled as exc:
+        raise HTTPException(status_code=499, detail="Image generation cancelled") from exc
+    finally:
+        cancelled.set()
+        # A server shutdown can cancel this handler before inference reaches
+        # its next checkpoint. Consume the thread task's eventual exception.
+        task.add_done_callback(_consume_image_task)
+
+
+class ImageGenerationCancelled(Exception):
+    pass
+
+
+def _consume_image_task(task: asyncio.Task) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+def _generate_image(
+    request: ImageRequest, width: int, height: int, cancelled: threading.Event,
+) -> dict[str, Any]:
+    def check_cancelled() -> None:
+        if cancelled.is_set():
+            raise ImageGenerationCancelled()
+
+    def step_finished(_pipeline: Any, _step: int, _timestep: Any, values: dict) -> dict:
+        check_cancelled()
+        return values
+
     try:
         with _lock, torch.inference_mode():
+            check_cancelled()
             image = _pipeline(
                 prompt=request.prompt,
                 num_inference_steps=STEPS,
                 guidance_scale=0.0,
                 width=width,
                 height=height,
+                callback_on_step_end=step_finished,
             ).images[0]
+            check_cancelled()
     except torch.OutOfMemoryError as exc:
         torch.cuda.empty_cache()
         raise HTTPException(status_code=503, detail="GPU ran out of memory during image generation") from exc
+    check_cancelled()
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return {
