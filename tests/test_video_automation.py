@@ -131,9 +131,11 @@ def test_build_reuses_one_prepared_clip_across_split_scenes_and_repairs_missing_
     candidate = {"url": "https://cdn.pixabay.com/video/clip.mp4"}
     path = video.child(tmp_path / "stock-selections", "selected") / "selection.json"
     video.atomic(path, {"candidate": candidate, "retrieved": 123, "asset_id": "missing-cache"})
+    other_path = video.child(tmp_path / "stock-selections", "other-selection") / "selection.json"
+    video.atomic(other_path, {"candidate": candidate, "retrieved": 123})
     project = {"revision": 1, "scenes": [
         {"id": "left", "asset_id": None, "media_type": "broll", "stock_id": "selected"},
-        {"id": "right", "asset_id": None, "media_type": "broll", "stock_id": "selected"}]}
+        {"id": "right", "asset_id": None, "media_type": "broll", "stock_id": "other-selection"}]}
     video.atomic(video.project_path("project"), project)
     calls = []
     async def download(*args):
@@ -152,4 +154,5 @@ def test_build_reuses_one_prepared_clip_across_split_scenes_and_repairs_missing_
     assert len(calls) == 1
     assert [s["asset_id"] for s in project["scenes"]] == ["clip", "clip"]
     assert video.read(path)["asset_id"] == "clip"
+    assert video.read(other_path)["asset_id"] == "clip"
     assert checkpoints[-1] == (2, 2, "assets ready")

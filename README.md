@@ -882,6 +882,37 @@ After an episode is rendered, the app exposes a Clip Studio for short-form distr
 
 ## Video Studio
 
+For one-click production, select a finished episode and click **Auto-create video
+with local AI**. If no storyboard is loaded, it creates one first. Otherwise it
+uses the loaded project and selected export range. The queued job plans
+unassigned, unlocked scenes with Ollama, chooses free B-roll from the selected
+provider, downloads selected footage, generates local illustrations, and renders.
+Existing selected media and locked scenes are preserved. Image and planner model
+stages run sequentially through the existing GPU handoffs.
+
+Automatic selection requires a configured `PIXABAY_API_KEY` or `PEXELS_API_KEY`
+and the configured `VIDEO_PLANNER_MODEL` installed in Ollama. After starting the
+GPU/image stack, start the optional local planner with the GPU override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile local-ai up -d ollama
+docker compose exec ollama ollama pull llama3.1:8b
+```
+
+Replace `llama3.1:8b` with your configured model if different. Run these after
+the startup script, which recreates its selected services. Use `sudo` if Docker
+requires it on your host. The app reports missing keys or unavailable Ollama
+without using a paid model.
+
+The AI chooses from provider metadata (tags, source URLs, duration, dimensions);
+it does not inspect video frames. Each scene uses at most two ten-result searches,
+only chosen footage is downloaded, previously used footage is avoided when
+alternatives exist, and repeated chosen clips reuse their download. Missing
+matches can become local illustrations, with notes on the job. If no B-roll can
+be found for the range, the job stops with an actionable error rather than
+producing an image-only video. Planning batches and selected clips are
+checkpointed for restart recovery. Review the completed video before publishing.
+
 Choose a finished episode in **Video Studio**, create or load a storyboard,
 and choose **Create a local image** or **Find free B-roll** for every scene.
 Search footage using the scene's quick search, preview candidates or open their
@@ -907,7 +938,7 @@ Job progress, errors and downloads appear above the scene editor. GPU diagnostic
 are optional and cannot block job polling. If a build is accepted but refreshing
 status fails, the confirmation keeps its job ID and polling retries.
 
-Click **Generate assets and create video** when the storyboard is ready. One
+For manual control, click **Generate assets from my scene choices** when the storyboard is ready. One
 durable job downloads selected footage, generates missing local illustrations,
 and renders the selected range after all storyboard assets are ready. Existing
 assets are reused. Progress shows the current stage and cancellation works

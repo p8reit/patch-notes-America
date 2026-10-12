@@ -94,6 +94,29 @@ def test_millisecond_boundary_rounding_does_not_block_saved_storyboards_or_build
     assert (main.OUTPUT_DIR / "episode/episode.mp3").read_bytes() == b"locked audio"
 
 
+def test_automatic_build_accepts_a_fresh_storyboard_without_synchronous_model_work(studio, monkeypatch):
+    project = make_project(studio)
+    monkeypatch.setenv("PIXABAY_API_KEY", "test-key")
+    monkeypatch.setattr(video, "queue", asyncio.Queue())
+    response = studio.post(f"/api/video/projects/{project['id']}/build", json={"auto_broll": True, "provider": "pixabay"})
+    assert response.status_code == 202, response.text
+    job = response.json()
+    assert job["status"] == "queued" and job["auto_broll"] is True
+    assert all(s["asset_id"] is None and s["media_type"] == "image" for s in job["project"]["scenes"])
+    assert video.queue.get_nowait() == job["id"]
+
+
+@pytest.mark.parametrize("body", [{"auto_broll": "true"}, {"auto_broll": True, "provider": []}, {"auto_broll": True}])
+def test_automatic_build_rejects_invalid_settings_or_missing_keys_before_queueing(studio, monkeypatch, body):
+    project = make_project(studio)
+    monkeypatch.delenv("PIXABAY_API_KEY", raising=False)
+    monkeypatch.delenv("PEXELS_API_KEY", raising=False)
+    monkeypatch.setattr(video, "queue", asyncio.Queue())
+    response = studio.post(f"/api/video/projects/{project['id']}/build", json=body)
+    assert response.status_code == 400
+    assert video.queue.empty()
+
+
 def test_export_requires_both_types_and_detects_changed_audio(studio):
     project = make_project(studio)
     with pytest.raises(HTTPException):
@@ -498,7 +521,8 @@ def test_build_external_failure_keeps_prepared_assets_and_does_not_render(studio
     asyncio.run(run())
 
 
-def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_exports(tmp_path, monkeypatch):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_exports(tmp_path, monkeypatch, automatic):
     monkeypatch.setattr(video, "ROOT", tmp_path / "video")
     monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path / "audio")
     monkeypatch.setitem(video.ASPECTS, "horizontal", (256, 144))
@@ -513,10 +537,25 @@ def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_e
     ffmpeg("-f", "lavfi", "-i", "color=c=blue:s=128x72:d=8:r=30", broll)
     ffmpeg("-f", "lavfi", "-i", "color=c=orange:s=128x72", "-frames:v", "1", "-threads", "1", image)
     client = TestClient(main.app)
-    project = prepared_project(client)
+    project = make_project(client) if automatic else prepared_project(client)
+    if automatic:
+        monkeypatch.setenv("PIXABAY_API_KEY", "test-key")
     calls = []
     def respond(request):
         calls.append((request.method, str(request.url)))
+        if str(request.url) == main.LOCAL_AI_URL:
+            material = json.loads(json.loads(request.content)["messages"][-1]["content"])
+            if "scenes" in material:
+                decision = {"scenes": [{"id": s["id"], "media_type": "broll" if i == 0 else "image",
+                                       "intent": "Story context", "query": "neighborhood housing", "prompt": "A neighborhood illustration"}
+                                      for i, s in enumerate(material["scenes"])]}
+            else:
+                decision = {"candidate_id": "clip", "reason": "Suitable neighborhood metadata"}
+            return httpx.Response(200, json={"message": {"content": json.dumps(decision)}})
+        if str(request.url).startswith("https://pixabay.com/api/videos/"):
+            return httpx.Response(200, json={"hits": [{"id": "clip", "user": "Author", "duration": 8,
+                "pageURL": "https://pixabay.com/videos/clip/", "tags": "neighborhood housing",
+                "videos": {"large": {"url": "https://cdn.pixabay.com/video/clip.mp4", "width": 1920, "height": 1080}}}]})
         if request.method == "GET":
             assert str(request.url) == "https://cdn.pixabay.com/video/clip.mp4"
             return httpx.Response(200, content=broll.read_bytes())
@@ -528,7 +567,7 @@ def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_e
     async def run():
         await video.start_workers()
         try:
-            queued = await video.build(project["id"], {})
+            queued = await video.build(project["id"], {"auto_broll": automatic})
             assert calls == []
             await asyncio.wait_for(video.queue.join(), 30)
             job = await video.job_status(queued["id"])
@@ -540,14 +579,17 @@ def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_e
             assert (destination / "captions.srt").is_file() and (destination / "credits.txt").is_file()
             assert "Author" in (destination / "credits.txt").read_text()
             assert video.digest(folder / "episode.mp3") == project["audio_hash"]
-            assert len(calls) == len(project["scenes"])
+            expected_calls = len(project["scenes"]) + (3 if automatic else 0)
+            assert len(calls) == expected_calls
             current = video.read(video.project_path(project["id"]))
             assert all(s["asset_id"] for s in current["scenes"])
             # A subsequent build reuses every prepared asset without model/network calls.
-            reused = await video.build(project["id"], {})
+            if automatic:
+                monkeypatch.delenv("PIXABAY_API_KEY")
+            reused = await video.build(project["id"], {"auto_broll": automatic})
             await asyncio.wait_for(video.queue.join(), 30)
             assert (await video.job_status(reused["id"]))["status"] == "complete"
-            assert len(calls) == len(project["scenes"])
+            assert len(calls) == expected_calls
         finally:
             await video.stop_workers()
     asyncio.run(run())

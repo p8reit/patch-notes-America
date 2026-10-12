@@ -298,11 +298,13 @@
       <div class="actions"><button id="video-plan" type="button" class="secondary">Suggest visuals locally</button><button id="video-batch" type="button" class="secondary">Generate missing images</button><label>Free footage source<select id="video-provider"><option value="pixabay">Pixabay</option><option value="pexels">Pexels (existing API key)</option></select></label></div>
       <p class="hint">Choose a local image or free B-roll for each scene. Search and preview footage, then select it without downloading yet. Include both kinds of visuals in your video.</p>
       <div class="video-build-bar">
-        <button id="video-build" type="button">Generate assets and create video</button>
+        <button id="video-auto-build" type="button">Auto-create video with local AI</button>
+        <button id="video-build" type="button" class="secondary">Generate assets from my scene choices</button>
         <p id="video-status" class="hint" role="status" aria-live="polite"></p>
       </div>
+      <p class="hint">Auto-create uses the loaded storyboard, or creates one from the selected episode. It plans unassigned scenes, searches and selects free B-roll, generates local images, and renders. Existing media selections and locked scenes are preserved. Requires Ollama with the visual planner model and a configured footage API key. Footage is selected using search metadata; review the result before publishing.</p>
       <p id="video-readiness" class="hint" aria-live="polite">Create or load a storyboard to review its readiness.</p>
-      <p class="hint">1. Review image prompts. 2. Choose B-roll scenes and select footage. 3. Queue the build. Missing images generate automatically; at least one image and one B-roll scene must be in the export range.</p>
+      <p class="hint">For one-click production, choose Auto-create. For manual control: review image prompts, select footage for B-roll scenes, then generate assets from your scene choices. Both paths include local images and free B-roll.</p>
       <div class="actions"><label>Export start (seconds)<input id="video-start" type="number" min="0" value="0" step="0.001"></label><label>Export end (seconds)<input id="video-end" type="number" min="0" step="0.001"></label></div>
       <p id="video-resources" class="hint" aria-live="polite"></p>
       <h3>Video jobs</h3><div id="video-jobs" aria-live="polite"></div>

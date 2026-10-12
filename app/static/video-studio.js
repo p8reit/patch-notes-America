@@ -86,7 +86,7 @@
     const images=project.scenes.filter(s=>s.media_type==='image').length;
     const prepared=project.scenes.filter(s=>s.asset_id||s.stock_id).length;
     const issue=buildIssue(project,Number(el('video-start').value),Number(el('video-end').value));
-    el('video-readiness').textContent=`${project.scenes.length} scenes · ${images} local images · ${project.scenes.length-images} B-roll · ${prepared} media selected. ${issue?issue.message:'Ready to queue: missing local images will be generated automatically.'}`;
+    el('video-readiness').textContent=`${project.scenes.length} scenes · ${images} local images · ${project.scenes.length-images} B-roll · ${prepared} media selected. ${issue?issue.message+' Auto-create plans unassigned, unlocked scenes for you.':'Ready to queue: missing local images will be generated automatically.'}`;
   }
   function draw() {
     el('video-style').value = project.style;
@@ -129,6 +129,7 @@
     }).catch(()=>{el('video-resources').textContent='GPU diagnostics unavailable; video jobs are still shown below.';});
     const data = await api('/jobs');
     el('video-jobs').innerHTML = data.jobs.map(j=>`<article class="video-scene"><strong>${escape(j.project_id.slice(0,8))} · ${escape(j.status)}</strong><p>${escape(j.phase)} · ${j.done}/${j.total} scenes prepared</p>${j.error?`<p class="bad">${escape(j.error)}</p>`:''}
+      ${j.warnings?.length?`<details><summary>${j.warnings.length} automatic selection notes</summary>${j.warnings.slice(0,10).map(note=>`<p>${escape(note)}</p>`).join('')}</details>`:''}
       ${['queued','running'].includes(j.status)?`<button type="button" data-cancel-video="${escape(j.id)}">Cancel video</button>`:''}
       ${j.status==='complete'&&j.download_url?`<a class="download" href="${escape(j.download_url)}">Download MP4</a> <a href="/api/video/exports/${escape(j.id)}/sidecar/captions.srt">Captions</a> · <a href="/api/video/exports/${escape(j.id)}/sidecar/credits.txt">Credits</a> · <a href="/api/video/exports/${escape(j.id)}/sidecar/chapters.ffmeta">Chapters</a>`:''}</article>`).join('') || '<p class="hint">No video jobs yet.</p>';
     const completed = data.jobs.find(j=>j.id===lastExport && j.status==='complete');
@@ -218,12 +219,22 @@
     el('video-stock-results').innerHTML='<p class="hint">B-roll selected. Search another scene or generate assets and create the video.</p>';
     return 'B-roll prepared. It will download when you build the video.';
   });});
-  el('video-build').addEventListener('click',e=>operation(e.currentTarget,async()=>{
-    collect();const issue=buildIssue(project,Number(el('video-start').value),Number(el('video-end').value));
-    if(issue){if(issue.scene_id)showScene(issue.scene_id);throw new Error(issue.message);}
-    await save();const result=await api('/projects/'+project.id+'/build',json('POST',{start:Number(el('video-start').value),end:Number(el('video-end').value),preview:false,aspect:el('video-format').value,encoder:el('video-encoder').value,captions:el('video-caption-style').value}));
+  for(const id of ['video-build','video-auto-build'])el(id).addEventListener('click',e=>operation(e.currentTarget,async()=>{
+    const automatic=id==='video-auto-build';
+    if(automatic&&!project){
+      const direction=el('video-style').value, preset=el('video-image-preset').value;
+      project=await api('/projects',json('POST',{episode_id:el('video-episode').value}));
+      if(direction.trim())project.style=direction;
+      project.image_preset=preset || 'draft';
+      viewPage=0;el('video-scene-filter').value='all';el('video-start').value=0;el('video-end').value=project.duration;
+      await lists();draw();
+    }
+    collect();
+    if(!automatic){const issue=buildIssue(project,Number(el('video-start').value),Number(el('video-end').value));
+      if(issue){if(issue.scene_id)showScene(issue.scene_id);throw new Error(issue.message);}}
+    await save();const result=await api('/projects/'+project.id+'/build',json('POST',{start:Number(el('video-start').value),end:Number(el('video-end').value),preview:false,aspect:el('video-format').value,encoder:el('video-encoder').value,captions:el('video-caption-style').value,...(automatic?{auto_broll:true,provider:el('video-provider').value}:{})}));
     lastExport=result.id;
-    try{return await refreshJobs() || 'Queued: download selected B-roll, generate missing local images, then create the video. You can cancel it in Video jobs.';}
+    try{return await refreshJobs() || (automatic?'Queued: local AI will plan visuals, select free B-roll, generate images, and create the video.':'Queued: download selected B-roll, generate missing local images, then create the video. You can cancel it in Video jobs.');}
     catch(error){if(!jobsTimer)jobsTimer=root.setTimeout(()=>{jobsTimer=null;refreshJobs().catch(e=>status(e.message,true));},2000);return `Video queued (${result.id}). Status refresh failed: ${error.message}. Polling will retry; do not queue it again.`;}
   }));
   for (const id of ['video-preview','video-export']) el(id).addEventListener('click',e=>operation(e.currentTarget,async()=>{

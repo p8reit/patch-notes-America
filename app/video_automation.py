@@ -61,6 +61,7 @@ async def search(body: dict = Body(...)):
         chosen = min(variants, key=lambda v: abs(v["width"] * v["height"] - 1920*1080))
         candidates.append({"id": str(row["id"]), "provider": provider, "url": chosen["url"],
                            "creator": creator, "source_url": source, "license": license_url,
+                           "tags": str(row.get("tags", ""))[:500],
                            "duration": row.get("duration", 0), "width": chosen["width"], "height": chosen["height"]})
     result = {"id": cache_id, "created": time.time(), "provider": provider, "query": query, "candidates": candidates}
     video.atomic(path, result)
@@ -138,9 +139,14 @@ async def download_candidate(candidate: dict, retrieved: float) -> dict:
         path.unlink(missing_ok=True)
 
 
-def validate_build(project: dict, start: float, end: float) -> None:
+def validate_build(project: dict, start: float, end: float, automatic: bool = False) -> None:
     selected = [s for s in project["scenes"] if s["end"] > start and s["start"] < end]
-    if {s["media_type"] for s in selected} != {"image", "broll"}:
+    if automatic:
+        editable = [s for s in selected if not s["locked"] and not s["asset_id"] and not s.get("stock_id")]
+        missing = {"image", "broll"} - {s["media_type"] for s in selected}
+        if len(selected) < 2 or len(editable) < len(missing):
+            raise HTTPException(409, "Automatic video needs at least two scenes and enough unassigned, unlocked scenes to include images and B-roll. Split a scene or review existing choices.")
+    elif {s["media_type"] for s in selected} != {"image", "broll"}:
         raise HTTPException(400, "Choose both local images and B-roll in the export range")
     verified = set()
     for index, scene in enumerate(project["scenes"], 1):
@@ -154,7 +160,7 @@ def validate_build(project: dict, start: float, end: float) -> None:
             if item["kind"] == "broll" and scene["trim"] + scene["end"] - scene["start"] > item["duration"] + .01:
                 raise HTTPException(400, f"Scene {index}: footage is too short; shorten or split the scene")
             continue
-        if scene["media_type"] == "broll" and not scene.get("stock_id"):
+        if scene["media_type"] == "broll" and not scene.get("stock_id") and (not automatic or scene["locked"]):
             raise HTTPException(400, f"Scene {index}: find and select B-roll, or choose imported footage")
         if scene["media_type"] == "image" and scene["locked"]:
             raise HTTPException(409, f"Scene {index}: unlock it to generate the missing local image")
@@ -178,12 +184,15 @@ async def prepare_build(job: dict, checkpoint: Callable[[int, int, str], None]) 
         checkpoint(done, total, "downloading selected B-roll")
         path = video.child(video.ROOT / "stock-selections", scene["stock_id"]) / "selection.json"
         selection = video.read(path)
-        cached_id = selection.get("asset_id")
+        candidate_key = hashlib.sha256(json.dumps(selection["candidate"], sort_keys=True).encode()).hexdigest()
+        stock_cache = job.setdefault("stock_asset_cache", {})
+        cached_id = stock_cache.get(candidate_key) or selection.get("asset_id")
         item = video.asset(cached_id) if cached_id and (video.child(video.ROOT / "assets", cached_id) / "source.json").is_file() else None
         if item is None or not video.asset_file(item).is_file() or await asyncio.to_thread(video.digest, video.asset_file(item)) != item["hash"]:
             item = await download_candidate(selection["candidate"], selection["retrieved"])
-            selection["asset_id"] = item["id"]
-            video.atomic(path, selection)
+        stock_cache[candidate_key] = item["id"]
+        selection["asset_id"] = item["id"]
+        video.atomic(path, selection)
         scene["asset_id"] = item["id"]
         done += 1
         checkpoint(done, total, "downloading selected B-roll")

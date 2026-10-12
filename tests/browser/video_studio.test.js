@@ -47,6 +47,8 @@ function page(failure=false,options={}){
   vm.runInNewContext(fs.readFileSync('app/static/video-studio.js','utf8'),context);
   node('video-episode').value='episode';node('video-format').value='vertical';
   node('video-image-preset').value='draft';node('video-encoder').value='libx264';node('video-caption-style').value='large';
+  node('video-provider').value='pixabay';
+  node('video-style').value='';
   return {nodes,calls,timers,click:async id=>{for(const fn of node(id).listeners.click || [])await fn({currentTarget:node(id)});},
     change:async(id,value)=>{node(id).value=value;for(const fn of node(id).listeners.change || [])await fn({target:node(id)});},
     fields:(id,values)=>{
@@ -189,4 +191,25 @@ test('navigation filters identify blockers while ungenerated image plans are bui
   scenes[0].locked=true;
   assert.equal(buildIssue({duration:16,scenes},0,16).scene_id,'image');
   assert.equal(scenePage(scenes,'image',99).page,0);
+});
+
+test('one automatic click creates a storyboard and queues AI selection without manual readiness checks',async()=>{
+  const p=page();p.nodes['video-style'].value='Custom direction';p.nodes['video-image-preset'].value='detail';await p.click('video-auto-build');
+  const created=p.calls.find(c=>c.url.endsWith('/projects')&&c.options.method==='POST');
+  assert.equal(JSON.parse(created.options.body).episode_id,'episode');
+  const build=p.calls.find(c=>c.url.endsWith('/build'));
+  const body=JSON.parse(build.options.body);
+  assert.equal(body.auto_broll,true);assert.equal(body.provider,'pixabay');assert.equal(body.end,60);
+  const saved=JSON.parse(p.calls.find(c=>c.options.method==='PUT').options.body);
+  assert.equal(saved.style,'Custom direction');assert.equal(saved.image_preset,'detail');
+  assert.match(p.nodes['video-status'].textContent,/local AI will plan visuals/);
+  assert.equal(p.nodes['video-auto-build'].disabled,false);
+});
+
+test('automatic mode uses the loaded storyboard and preserves its selected media',async()=>{
+  const p=page(false,{ready:true});await p.click('video-create');await p.click('video-auto-build');
+  assert.equal(p.calls.filter(c=>c.url.endsWith('/projects')&&c.options.method==='POST').length,1);
+  const saved=JSON.parse(p.calls.find(c=>c.options.method==='PUT').options.body);
+  assert.equal(saved.scenes[1].stock_id,'selected');
+  assert.equal(JSON.parse(p.calls.find(c=>c.url.endsWith('/build')).options.body).auto_broll,true);
 });

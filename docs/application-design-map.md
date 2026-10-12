@@ -390,4 +390,18 @@ temporarily fails. New scene plans preserve the exact final audio boundary;
 validation normalizes legacy millisecond rounding within the existing 2 ms
 coverage tolerance, including very short final scenes.
 
+`app/video_auto.py` adds `auto_broll: true` and a `provider` to the existing build
+request. Automatic jobs defer missing-source validation until local planning and
+selection finish. Unassigned, unlocked scenes are planned in bounded 12-scene
+Ollama batches; selected media is preserved. The local model ranks trusted stock
+results using metadata, after duration/CDN filtering. It cannot invent a URL or
+choose an ID outside the results. At most two ten-result searches are used per
+passage, with up to three alternate passages if necessary to retain a mixed
+export. No-match scenes become illustrations with recorded warnings; provider
+or model errors remain visible failures. The planner GPU lease completes before
+the image lease. Planning/selection checkpoints and per-job downloaded-stock
+reuse join the existing cancellation/recovery behavior. The Auto-create button
+can first create a storyboard from the selected finished episode, then enqueue
+this pipeline; manual builds retain their existing preflight validation.
+
 Video export variants freeze independent aspect, encoder, caption preset and range settings while reusing one storyboard. Per-format scene crops and deterministic image seeds round-trip in project schema version 1. Optional NVENC encoding uses a separate GPU lease and explicit video driver capability; software encoding remains the default. Actual overlapped intro speech timings are included in the video transcript rather than extending captions across the music bed.
