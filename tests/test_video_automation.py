@@ -39,7 +39,8 @@ def test_free_search_is_bounded_cached_and_does_not_save_keys(tmp_path, monkeypa
     assert "private-key" not in next((tmp_path/"search").glob("*.json")).read_text()
 
 
-@pytest.mark.parametrize("url",["http://cdn.pixabay.com/a","https://localhost/a","https://cdn.pixabay.com.evil/a","https://user@cdn.pixabay.com/a"])
+@pytest.mark.parametrize("url",["http://cdn.pixabay.com/a","https://localhost/a","https://cdn.pixabay.com.evil/a","https://user@cdn.pixabay.com/a",
+                               "https://cdn.pixabay.com:bad/a","https://[invalid/a",None])
 def test_stock_cdn_allowlist_rejects_unsafe_urls(url):
     assert not automation.allowed_download(url)
 
@@ -103,7 +104,8 @@ def test_batch_images_have_durable_progress_and_skip_locked_or_selected_scenes(t
     project={"id":"project","revision":1,"scenes":[
         {"id":"locked","locked":True,"asset_id":None},
         {"id":"footage","locked":False,"asset_id":"selected"},
-        {"id":"missing","locked":False,"asset_id":None}]}
+        {"id":"missing","locked":False,"asset_id":None},
+        {"id":"prepared-footage","locked":False,"asset_id":None,"media_type":"broll"}]}
     video.atomic(video.project_path("project"),project)
     calls=[]
     async def image(project_id,body):
@@ -122,3 +124,32 @@ def test_batch_images_have_durable_progress_and_skip_locked_or_selected_scenes(t
         assert result["status"]=="complete" and result["done"]==1
     asyncio.run(run())
     assert calls==["missing"]
+
+
+def test_build_reuses_one_prepared_clip_across_split_scenes_and_repairs_missing_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(video, "ROOT", tmp_path)
+    candidate = {"url": "https://cdn.pixabay.com/video/clip.mp4"}
+    path = video.child(tmp_path / "stock-selections", "selected") / "selection.json"
+    video.atomic(path, {"candidate": candidate, "retrieved": 123, "asset_id": "missing-cache"})
+    project = {"revision": 1, "scenes": [
+        {"id": "left", "asset_id": None, "media_type": "broll", "stock_id": "selected"},
+        {"id": "right", "asset_id": None, "media_type": "broll", "stock_id": "selected"}]}
+    video.atomic(video.project_path("project"), project)
+    calls = []
+    async def download(*args):
+        calls.append(args)
+        folder = video.child(tmp_path / "assets", "clip")
+        folder.mkdir(parents=True)
+        media = folder / "original.mp4"
+        media.write_bytes(b"clip")
+        item = {"id": "clip", "file": media.name, "hash": video.digest(media), "kind": "broll"}
+        video.atomic(folder / "source.json", item)
+        return item
+    monkeypatch.setattr(automation, "download_candidate", download)
+    job = {"project": project, "project_id": "project", "revision": 1}
+    checkpoints = []
+    asyncio.run(automation.prepare_build(job, lambda *values: checkpoints.append(values)))
+    assert len(calls) == 1
+    assert [s["asset_id"] for s in project["scenes"]] == ["clip", "clip"]
+    assert video.read(path)["asset_id"] == "clip"
+    assert checkpoints[-1] == (2, 2, "assets ready")

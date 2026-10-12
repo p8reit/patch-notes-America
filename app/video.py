@@ -104,7 +104,8 @@ def scene_plan(transcript: list[dict], duration: float) -> list[dict]:
         scenes.append({"id": uuid4().hex, "start": round(cursor, 3), "end": round(end, 3),
                        "text": text, "intent": "Illustrate this passage", "query": text[:100],
                        "prompt": text[:1500] or "A cinematic establishing scene, no text",
-                       "asset_id": None, "trim": 0, "crop_x": 0.5, "crop_y": 0.5,
+                       "asset_id": None, "media_type": "image", "stock_id": None,
+                       "trim": 0, "crop_x": 0.5, "crop_y": 0.5,
                        "motion": "still", "locked": False, "caption": text})
         cursor = end
     return scenes
@@ -127,12 +128,21 @@ def validate_scenes(scenes: Any, duration: float) -> list[dict]:
         if abs(start - cursor) > 0.002 or end <= start:
             raise HTTPException(400, "Scenes must cover the audio in order, without gaps or overlaps")
         chosen = row.get("asset_id")
-        if chosen is not None:
-            asset(chosen)
+        selected = asset(chosen) if chosen is not None else None
+        media_type = row.get("media_type", selected["kind"] if selected else "image")
+        if not isinstance(media_type, str) or media_type not in {"image", "broll"} or (selected and selected["kind"] != media_type):
+            raise HTTPException(400, "Chosen media must match the scene's image or B-roll choice")
+        stock_id = row.get("stock_id")
+        stock = None
+        if stock_id is not None:
+            if media_type != "broll":
+                raise HTTPException(400, "Only B-roll scenes can have prepared footage")
+            stock = read(child(ROOT / "stock-selections", stock_id) / "selection.json")["candidate"]
         motion = row.get("motion", "still")
         if motion not in {"still", "zoom"}:
             raise HTTPException(400, "Motion must be still or zoom")
         cleaned.append({"id": identifier, "start": start, "end": end, "asset_id": chosen,
+                        "media_type": media_type, "stock_id": stock_id, "stock": stock,
                         "trim": number(row.get("trim", 0)), "crop_x": number(row.get("crop_x", .5), maximum=1),
                         "crop_y": number(row.get("crop_y", .5), maximum=1), "motion": motion,
                         "locked": bool(row.get("locked", False)),
@@ -283,12 +293,26 @@ async def media(asset_id: str):
 @router.post("/projects/{project_id}/images", status_code=201)
 @gpu.model("image")
 async def scene_image(project_id: str, body: dict = Body(...)):
-    from app import main
     project = read(project_path(project_id))
     scene = next((s for s in project["scenes"] if s["id"] == body.get("scene_id")), None)
     if scene is None or scene["locked"]:
         raise HTTPException(409, "Choose an unlocked scene")
+    if scene.get("media_type", "image") != "image":
+        raise HTTPException(409, "Choose local image for this scene before generating")
     revision = project["revision"]
+    item = await generate_scene_asset(project, scene)
+    current = read(project_path(project_id))
+    if current["revision"] != revision:
+        raise HTTPException(409, "Image saved to the library; project changed. Select it after reloading.")
+    scene.update(asset_id=item["id"], media_type="image", stock_id=None, stock=None, seed=item["source"]["seed"])
+    project["revision"] += 1
+    atomic(project_path(project_id), project)
+    return project
+
+
+async def generate_scene_asset(project: dict, scene: dict) -> dict:
+    """Generate an asset for a snapshot; the caller owns the image GPU lease."""
+    from app import main
     prompt = f"{project['style']}. Illustrative editorial artwork. {scene['prompt']}. No text."
     seed = scene.get("seed")
     if seed is None:
@@ -314,14 +338,7 @@ async def scene_image(project_id: str, body: dict = Body(...)):
                                 "license": "See the installed model's license"})
     finally:
         path.unlink(missing_ok=True)
-    current = read(project_path(project_id))
-    if current["revision"] != revision:
-        raise HTTPException(409, "Image saved to the library; project changed. Select it after reloading.")
-    scene["asset_id"] = item["id"]
-    scene["seed"] = seed
-    project["revision"] += 1
-    atomic(project_path(project_id), project)
-    return project
+    return item
 
 
 def render_inputs(project: dict, start: float, end: float) -> list[dict]:
@@ -467,6 +484,15 @@ def write_sidecars(project: dict, scenes: list[dict], destination: Path, start: 
 
 @router.post("/projects/{project_id}/exports", status_code=202)
 async def export(project_id: str, body: dict = Body(...)):
+    return await enqueue_export(project_id, body)
+
+
+@router.post("/projects/{project_id}/build", status_code=202)
+async def build(project_id: str, body: dict = Body(...)):
+    return await enqueue_export(project_id, body, prepare=True)
+
+
+async def enqueue_export(project_id: str, body: dict, prepare: bool = False) -> dict:
     project = read(project_path(project_id))
     start, end = number(body.get("start", 0), maximum=project["duration"]), number(body.get("end", project["duration"]), maximum=project["duration"])
     if end <= start:
@@ -476,11 +502,17 @@ async def export(project_id: str, body: dict = Body(...)):
         raise HTTPException(400,"Invalid video format, encoder, or caption style")
     if queue is None:
         raise HTTPException(503, "Video worker is not ready")
-    await asyncio.to_thread(render_inputs, project, start, end)
+    if prepare:
+        from app.video_automation import validate_build
+        project["scenes"] = validate_scenes(project["scenes"], project["duration"])
+        await asyncio.to_thread(validate_build, project, start, end)
+    else:
+        await asyncio.to_thread(render_inputs, project, start, end)
     await asyncio.to_thread(audio_file, project)
     identifier = uuid4().hex
     job = {"id": identifier, "project_id": project_id, "project": project, "revision": project["revision"],
-           "start": start, "end": end, "aspect":aspect,"encoder":encoder,"captions":captions,"preview":bool(body.get("preview",True)),
+           "type": "build" if prepare else "export",
+           "start": start, "end": end, "aspect":aspect,"encoder":encoder,"captions":captions,"preview":bool(body.get("preview",not prepare)),
            "status": "queued", "phase": "queued", "done": 0, "total": 0, "error": None,
            "created_at": datetime.now(timezone.utc).isoformat()}
     atomic(child(ROOT / "exports", identifier) / "job.json", job)
@@ -553,7 +585,8 @@ async def process_job(identifier: str) -> None:
     try:
         if job.get("type") == "images":
             async with gpu.lease("image"):
-                scenes = [s for s in job["project"]["scenes"] if not s["locked"] and not s["asset_id"]]
+                scenes = [s for s in job["project"]["scenes"] if not s["locked"] and not s["asset_id"]
+                          and s.get("media_type", "image") == "image"]
                 for index, scene in enumerate(scenes):
                     if read(project_path(job["project_id"]))["revision"] != job["revision"]:
                         raise HTTPException(409, "Storyboard changed. Cancel/restart the image batch after reviewing edits.")
@@ -562,6 +595,10 @@ async def process_job(identifier: str) -> None:
                     checkpoint(index+1,len(scenes),"generating local images")
             job.update(status="complete",phase="images complete")
             return
+        if job.get("type") == "build":
+            from app.video_automation import prepare_build
+            await asyncio.to_thread(audio_file, job["project"])
+            await prepare_build(job, checkpoint)
         await render(job["project"], folder, job["start"], job["end"], job["aspect"], job["preview"], checkpoint,
                      job.get("encoder","libx264"),job.get("captions","standard"))
         job.update(status="complete", phase="complete", download_url=f"/api/video/exports/{identifier}/download")

@@ -6,10 +6,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import httpx
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app import main, video
+from app import main, video, video_automation as automation
 
 
 @pytest.fixture
@@ -64,6 +65,7 @@ def test_scene_validation_rejects_gaps_duplicates_and_missing_media(studio):
     original = make_project(studio)
     for edit in [lambda p: p["scenes"][0].update(end=1),
                  lambda p: p["scenes"][1].update(id=p["scenes"][0]["id"]),
+                 lambda p: p["scenes"][0].update(media_type=[]),
                  lambda p: p["scenes"][0].update(asset_id="missing")]:
         project = copy.deepcopy(original)
         edit(project)
@@ -299,4 +301,231 @@ def test_corrupt_video_job_does_not_prevent_audio_or_video_startup(studio):
             records=await video.jobs()
             assert records["jobs"][0]["status"]=="corrupt"
         finally: await video.stop_workers()
+    asyncio.run(run())
+
+
+def prepared_project(client):
+    project = make_project(client)
+    candidate = {"id": "clip", "provider": "pixabay", "url": "https://cdn.pixabay.com/video/clip.mp4",
+                 "source_url": "https://pixabay.com/videos/clip/", "creator": "Author", "license": "Free stock",
+                 "duration": 60, "width": 1920, "height": 1080}
+    video.atomic(video.ROOT / "search/search.json", {"created": 123, "candidates": [candidate]})
+    response = client.post(f"/api/video/projects/{project['id']}/scenes/{project['scenes'][0]['id']}/stock",
+                           json={"revision": project["revision"], "search_id": "search", "candidate_id": "clip"})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_prepare_stock_is_revision_checked_durable_and_does_not_download(studio, monkeypatch):
+    async def unexpected(*args):
+        raise AssertionError("Preparing must not download")
+    monkeypatch.setattr(automation, "download_candidate", unexpected)
+    project = prepared_project(studio)
+    scene = project["scenes"][0]
+    assert scene["media_type"] == "broll" and scene["asset_id"] is None and scene["stock_id"]
+    assert not list((video.ROOT / "assets").glob("*"))
+    video.atomic(video.ROOT / "search/search.json", {"created": 999, "candidates": []})
+    scene["stock"]["url"] = "https://attacker.invalid/clip.mp4"
+    saved = studio.put(f"/api/video/projects/{project['id']}", json=project)
+    assert saved.status_code == 200
+    assert saved.json()["scenes"][0]["stock"]["url"] == "https://cdn.pixabay.com/video/clip.mp4"
+    stale = studio.post(f"/api/video/projects/{project['id']}/scenes/{scene['id']}/stock",
+                        json={"revision": 1, "search_id": "search", "candidate_id": "clip"})
+    assert stale.status_code == 409
+
+
+def test_scene_source_round_trip_supports_legacy_assets_and_rejects_mismatches(studio):
+    project = make_project(studio)
+    footage = fake_asset("broll")
+    legacy = copy.deepcopy(project)
+    legacy["scenes"][0].pop("media_type")
+    legacy["scenes"][0]["asset_id"] = footage["id"]
+    saved = studio.put(f"/api/video/projects/{project['id']}", json=legacy)
+    assert saved.status_code == 200
+    current = saved.json()
+    assert [s["media_type"] for s in current["scenes"]] == ["broll", "image"]
+    current["scenes"][0]["media_type"] = "image"
+    assert studio.put(f"/api/video/projects/{project['id']}", json=current).status_code == 400
+
+
+@pytest.mark.parametrize("edit,message", [
+    (lambda p: p["scenes"][0].update(stock_id=None), "find and select B-roll"),
+    (lambda p: p["scenes"][1].update(locked=True), "unlock"),
+    (lambda p: p["scenes"][0].update(trim=59), "too short"),
+    (lambda p: p["scenes"][0].update(media_type="image", stock_id=None), "both local images and B-roll"),
+])
+def test_build_rejects_incomplete_plans_before_enqueueing(studio, monkeypatch, edit, message):
+    project = prepared_project(studio)
+    edit(project)
+    video.atomic(video.project_path(project["id"]), project)
+    async def run():
+        monkeypatch.setattr(video, "queue", asyncio.Queue())
+        with pytest.raises(HTTPException, match=message):
+            await video.build(project["id"], {})
+        assert video.queue.empty()
+        assert not list((video.ROOT / "exports").glob("*/job.json"))
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("edit_during_build", [False, True])
+def test_build_prepares_then_renders_frozen_plan_and_preserves_later_edits(studio, monkeypatch, edit_during_build):
+    project = prepared_project(studio)
+    calls = []
+    footage, image = fake_asset("broll"), fake_asset("image")
+    image["source"]["seed"] = 42
+    async def download(candidate, retrieved):
+        calls.append("footage")
+        assert candidate["id"] == "clip" and retrieved == 123
+        return footage
+    async def generate(snapshot, scene):
+        calls.append("image")
+        assert snapshot["style"] == project["style"]
+        if edit_during_build:
+            current = video.read(video.project_path(project["id"]))
+            current["style"] = "New direction"
+            current["revision"] += 1
+            video.atomic(video.project_path(project["id"]), current)
+        return image
+    async def render(snapshot, folder, start, end, aspect, preview, checkpoint, encoder, captions):
+        calls.append("render")
+        assert snapshot["style"] == project["style"]
+        assert [s["asset_id"] for s in snapshot["scenes"]] == [footage["id"], image["id"]]
+        assert (start, end, aspect, preview, encoder, captions) == (0, 16, "vertical", False, "libx264", "large")
+    monkeypatch.setattr(automation, "download_candidate", download)
+    monkeypatch.setattr(video, "generate_scene_asset", generate)
+    monkeypatch.setattr(video, "render", render)
+    async def run():
+        monkeypatch.setattr(video, "queue", asyncio.Queue())
+        job = await video.build(project["id"], {"aspect": "vertical", "captions": "large"})
+        assert calls == [] and job["status"] == "queued"
+        assert await video.queue.get() == job["id"]
+        video.queue.task_done()
+        await video.process_job(job["id"])
+        result = await video.job_status(job["id"])
+        assert result["status"] == "complete" and result["download_url"].endswith("/download")
+        current = video.read(video.project_path(project["id"]))
+        if edit_during_build:
+            assert current["style"] == "New direction" and current["scenes"][1]["asset_id"] is None
+        else:
+            assert current["scenes"][1]["asset_id"] == image["id"] and current["scenes"][1]["seed"] == 42
+            assert current["revision"] == project["revision"] + 1
+        assert (main.OUTPUT_DIR / "episode/episode.mp3").read_bytes() == b"locked audio"
+    asyncio.run(run())
+    assert calls == ["footage", "image", "render"]
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_build_restart_reuses_assets_and_cancel_stays_terminal(studio, monkeypatch, cancel):
+    project = prepared_project(studio)
+    entered, rendered = asyncio.Event(), asyncio.Event()
+    calls = []
+    footage, image = fake_asset("broll"), fake_asset("image")
+    image["source"]["seed"] = 7
+    async def download(*args):
+        calls.append("footage")
+        return footage
+    async def generate(*args):
+        calls.append("image")
+        if calls.count("image") == 1:
+            entered.set()
+            await asyncio.Event().wait()
+        return image
+    async def render(*args):
+        rendered.set()
+    monkeypatch.setattr(automation, "download_candidate", download)
+    monkeypatch.setattr(video, "generate_scene_asset", generate)
+    monkeypatch.setattr(video, "render", render)
+    async def run():
+        await video.start_workers()
+        try:
+            job = await video.build(project["id"], {})
+            await asyncio.wait_for(entered.wait(), 2)
+            progress = await video.job_status(job["id"])
+            assert (progress["done"], progress["total"], progress["phase"]) == (1, 2, "generating local images")
+            if cancel:
+                assert (await video.cancel(job["id"]))["status"] == "cancelled"
+            await video.stop_workers()
+            persisted = video.read(video.ROOT / "exports" / job["id"] / "job.json")
+            assert persisted["project"]["scenes"][0]["asset_id"] == footage["id"]
+            await video.start_workers()
+            await asyncio.wait_for(video.queue.join(), 2)
+            assert (await video.job_status(job["id"]))["status"] == ("cancelled" if cancel else "complete")
+            assert rendered.is_set() == (not cancel)
+            assert calls.count("footage") == 1
+            assert calls.count("image") == (1 if cancel else 2)
+        finally:
+            await video.stop_workers()
+    asyncio.run(run())
+
+
+def test_build_external_failure_keeps_prepared_assets_and_does_not_render(studio, monkeypatch):
+    project = prepared_project(studio)
+    async def download(*args): return fake_asset("broll")
+    async def generate(*args): raise HTTPException(502, "Local image creation failed")
+    async def render(*args): raise AssertionError("Incomplete assets must not render")
+    monkeypatch.setattr(automation, "download_candidate", download)
+    monkeypatch.setattr(video, "generate_scene_asset", generate)
+    monkeypatch.setattr(video, "render", render)
+    async def run():
+        monkeypatch.setattr(video, "queue", asyncio.Queue())
+        job = await video.build(project["id"], {})
+        await video.process_job(job["id"])
+        result = await video.job_status(job["id"])
+        assert result["status"] == "failed" and result["error"] == "Local image creation failed"
+        assert video.read(video.ROOT / "exports" / job["id"] / "job.json")["project"]["scenes"][0]["asset_id"]
+    asyncio.run(run())
+
+
+def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_exports(tmp_path, monkeypatch):
+    monkeypatch.setattr(video, "ROOT", tmp_path / "video")
+    monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path / "audio")
+    monkeypatch.setitem(video.ASPECTS, "horizontal", (256, 144))
+    folder = main.OUTPUT_DIR / "episode"
+    folder.mkdir(parents=True)
+    def ffmpeg(*args):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", *map(str, args)], check=True)
+    ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:duration=16", folder / "episode.mp3")
+    (folder / "metadata.json").write_text(json.dumps({"title": "Queued build", "video_timeline": [
+        {"start": 0, "end": 16, "text": "A complete mixed media story."}]}))
+    broll, image = tmp_path / "stock.mp4", tmp_path / "local.png"
+    ffmpeg("-f", "lavfi", "-i", "color=c=blue:s=128x72:d=8:r=30", broll)
+    ffmpeg("-f", "lavfi", "-i", "color=c=orange:s=128x72", "-frames:v", "1", "-threads", "1", image)
+    client = TestClient(main.app)
+    project = prepared_project(client)
+    calls = []
+    def respond(request):
+        calls.append((request.method, str(request.url)))
+        if request.method == "GET":
+            assert str(request.url) == "https://cdn.pixabay.com/video/clip.mp4"
+            return httpx.Response(200, content=broll.read_bytes())
+        assert str(request.url) == main.LOCAL_IMAGES_URL
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(image.read_bytes()).decode()}],
+                                         "model_revision": "test-revision"})
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs))
+    async def run():
+        await video.start_workers()
+        try:
+            queued = await video.build(project["id"], {})
+            assert calls == []
+            await asyncio.wait_for(video.queue.join(), 30)
+            job = await video.job_status(queued["id"])
+            assert job["status"] == "complete", job.get("error")
+            destination = video.ROOT / "exports" / job["id"]
+            info = video.probe(destination / "episode.mp4")
+            assert abs(float(info["format"]["duration"]) - project["duration"]) < .15
+            assert {"audio", "video"} <= {s["codec_type"] for s in info["streams"]}
+            assert (destination / "captions.srt").is_file() and (destination / "credits.txt").is_file()
+            assert "Author" in (destination / "credits.txt").read_text()
+            assert video.digest(folder / "episode.mp3") == project["audio_hash"]
+            assert len(calls) == len(project["scenes"])
+            current = video.read(video.project_path(project["id"]))
+            assert all(s["asset_id"] for s in current["scenes"])
+            # A subsequent build reuses every prepared asset without model/network calls.
+            reused = await video.build(project["id"], {})
+            await asyncio.wait_for(video.queue.join(), 30)
+            assert (await video.job_status(reused["id"]))["status"] == "complete"
+            assert len(calls) == len(project["scenes"])
+        finally:
+            await video.stop_workers()
     asyncio.run(run())

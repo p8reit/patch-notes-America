@@ -883,12 +883,25 @@ After an episode is rendered, the app exposes a Clip Studio for short-form distr
 ## Video Studio
 
 Choose a finished episode in **Video Studio**, create or load a storyboard,
-and choose media for every scene. Import MP4/MOV/WebM footage with its source,
+and choose **Create a local image** or **Find free B-roll** for every scene.
+Search footage using the scene's quick search, preview candidates or open their
+source pages, then click **Use this B-roll** to prepare that selection without
+downloading it. Import MP4/MOV/WebM footage with its source,
 creator and license record. Generate scene illustrations through the bundled
 local CUDA image service; video images never use the paid OpenAI provider.
 Both B-roll and local images are required in an export range. Crop focal points,
 footage trims and gentle image zooms are editable. Source podcast audio is
 hashed and left unchanged; source changes require a new video project.
+
+Click **Generate assets and create video** when the storyboard is ready. One
+durable job downloads selected footage, generates missing local illustrations,
+and renders the selected range after all storyboard assets are ready. Existing
+assets are reused. Progress shows the current stage and cancellation works
+during preparation and rendering. Restart recovery retains each completed asset.
+The queued storyboard is frozen; later edits affect future jobs. Prepared media
+is also saved back to the editor if its revision has not changed. Reload the
+project after completion to inspect those assets. Preview/export buttons remain
+available for already-prepared media.
 
 Projects and assets live under `data/video/`, covered by the existing data mount.
 `VIDEO_DIR` can override this root. Project schema version 1 and optimistic
@@ -938,13 +951,17 @@ scene batches. Locked scenes and timestamps are preserved; invalid output or a
 concurrent edit leaves the saved project unchanged. Install `VIDEO_PLANNER_MODEL`
 (default `llama3.1:8b`) in the optional `local-ai` service. Manual scene editing
 works without a planner. **Generate missing images** queues a durable cancellable
-batch; select/import footage before using it so the result still contains B-roll.
+batch for unlocked scenes whose visual source is local image; B-roll scenes are
+never converted to images by this action.
 
 Set `PIXABAY_API_KEY` or an existing `PEXELS_API_KEY` in your local `.env` for
 producer-triggered searches. Ten candidates are returned per query, searches are
 cached for 24 hours, and only chosen footage is downloaded. Pexels currently
 pauses new API keys; manual import remains available. Source/creator/license
-links are kept with selected assets. No scraping or bulk stock downloads are used.
+links are kept with selected assets. Prepared selections retain a trusted copy
+of the chosen candidate independently of search-cache refreshes. Unselected
+candidates are not downloaded by the asset queue. No scraping or bulk stock
+downloads are used.
 
 Modern Compose enables `GPU_MODEL_HANDOFF=true`. The app creates a private
 `data/video/model-control.key` (never commit it). Speech and image services read

@@ -368,4 +368,16 @@ Full video exports use a separate persistent queue with atomic `job.json` snapsh
 
 `app/video_automation.py` adds local-only visual planning, durable image batches, and bounded Pixabay/Pexels search/import. `app/gpu.py` serializes model ownership using token-authenticated `/models/load` and `/models/unload` endpoints on internal services, with no Docker daemon access. Compose shares a read-only control mount and parks images until CUDA loading and smoke testing complete. Locked scenes survive planning and concurrent edits are detected.
 
+Each scene chooses `media_type` (`image` or `broll`); legacy scenes infer it from
+their selected asset, or default to image. `POST /api/video/projects/{id}/scenes/{scene_id}/stock`
+freezes a selected search candidate under `data/video/stock-selections/{stock_id}/selection.json`
+and saves its reference on the scene without downloading footage. Revision and
+lock checks protect edits, and saves resolve candidate metadata from the trusted
+selection record. `POST /api/video/projects/{id}/build` queues one frozen build
+that downloads only selected B-roll, generates missing local images in one model
+lease, and renders after all assets are ready. Asset IDs are checkpointed into
+the existing video job manifest so restart recovery reuses completed work.
+Completed assets populate the current storyboard only if its revision still
+matches the queued plan. Audio synthesis and source MP3s remain independent.
+
 Video export variants freeze independent aspect, encoder, caption preset and range settings while reusing one storyboard. Per-format scene crops and deterministic image seeds round-trip in project schema version 1. Optional NVENC encoding uses a separate GPU lease and explicit video driver capability; software encoding remains the default. Actual overlapped intro speech timings are included in the video transcript rather than extending captions across the music bed.
