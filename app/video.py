@@ -509,8 +509,18 @@ async def enqueue_export(project_id: str, body: dict, prepare: bool = False) -> 
         raise HTTPException(503, "Video worker is not ready")
     if prepare:
         from app.video_automation import validate_build
+        automatic = body.get("auto_broll", False)
+        if not isinstance(automatic, bool):
+            raise HTTPException(400, "Automatic B-roll must be true or false")
+        provider = body.get("provider", "pixabay")
         project["scenes"] = validate_scenes(project["scenes"], project["duration"])
-        await asyncio.to_thread(validate_build, project, start, end)
+        needs_selection = any(not s["locked"] and not s["asset_id"] and not s.get("stock_id") for s in project["scenes"])
+        if automatic:
+            if not isinstance(provider, str) or provider not in {"pixabay", "pexels"}:
+                raise HTTPException(400, "Choose Pixabay or Pexels for automatic B-roll")
+            if needs_selection and not os.getenv("PIXABAY_API_KEY" if provider == "pixabay" else "PEXELS_API_KEY"):
+                raise HTTPException(400, "Automatic B-roll needs a configured Pixabay or Pexels API key; manual imported footage remains available")
+        await asyncio.to_thread(validate_build, project, start, end, automatic)
     else:
         await asyncio.to_thread(render_inputs, project, start, end)
     await asyncio.to_thread(audio_file, project)
@@ -520,6 +530,8 @@ async def enqueue_export(project_id: str, body: dict, prepare: bool = False) -> 
            "start": start, "end": end, "aspect":aspect,"encoder":encoder,"captions":captions,"preview":bool(body.get("preview",not prepare)),
            "status": "queued", "phase": "queued", "done": 0, "total": 0, "error": None,
            "created_at": datetime.now(timezone.utc).isoformat()}
+    if prepare and automatic:
+        job.update(auto_broll=True, provider=provider, warnings=[])
     atomic(child(ROOT / "exports", identifier) / "job.json", job)
     await queue.put(identifier)
     return job
@@ -603,6 +615,9 @@ async def process_job(identifier: str) -> None:
         if job.get("type") == "build":
             from app.video_automation import prepare_build
             await asyncio.to_thread(audio_file, job["project"])
+            if job.get("auto_broll"):
+                from app.video_auto import automatic_visuals
+                await automatic_visuals(job, checkpoint)
             await prepare_build(job, checkpoint)
         await render(job["project"], folder, job["start"], job["end"], job["aspect"], job["preview"], checkpoint,
                      job.get("encoder","libx264"),job.get("captions","standard"))
