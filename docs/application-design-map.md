@@ -62,7 +62,7 @@ flowchart LR
 
 ## 3. Screen and information architecture
 
-The application has two top-level tabs: **Podcast Studio** contains the existing end-to-end episode workflow, while **Image Studio** creates one-off PNG artwork without reading or changing episode state. Image Studio's Creation activity panel reports elapsed time and observed request/response events, including HTTP status, PNG size, and errors. It does not report the provider's internal generation progress.
+The application has three top-level tabs: **Video Studio** adds persistent scene storyboards, a source-tracked B-roll library, locally generated illustrations, and mixed-media video exports. Audio completes independently by default; the optional legacy automatic clip mode is controlled by `AUTO_SOCIAL_CLIPS`. **Podcast Studio** contains the existing end-to-end episode workflow, while **Image Studio** creates one-off PNG artwork without reading or changing episode state. Image Studio's Creation activity panel reports elapsed time and observed request/response events, including HTTP status, PNG size, and errors. It does not report the provider's internal generation progress.
 
 ```text
 Production Studio
@@ -161,9 +161,11 @@ sequenceDiagram
     Queue->>Disk: Persist and normalize chunk WAVs
     Queue->>FFmpeg: Assemble speech, intro, and final MP3
     FFmpeg->>Disk: Write episode.mp3 and metadata
+    opt AUTO_SOCIAL_CLIPS enabled
     Queue->>FFmpeg: Render opening + two ranked content clips
     FFmpeg->>Disk: Write three vertical MP4s
-    API-->>UI: Complete + episode and clip download URLs
+    end
+    API-->>UI: Complete + episode download URL and any legacy clips
     Producer->>API: Download episode
 ```
 
@@ -357,3 +359,7 @@ stateDiagram-v2
 | Expected behavior | `tests/` |
 
 Update this map whenever a change introduces a new primary object, workflow stage, service boundary, persistent artifact, or top-level screen region.
+
+## Video production boundary
+
+`app/video.py` owns a separate versioned project schema and media library under `data/video/`. It snapshots finished audio hashes and the additive `video_timeline` (including mixed intro and music timing), without altering saved episode documents. `/api/video` exposes projects, assets, local scene images, and proof exports. `app/static/video-studio.js` provides editable scene cards, import provenance, media selection, trim/crop/motion controls, and a video preview. Exports require both B-roll and local images. GPU image inference remains fail-closed.

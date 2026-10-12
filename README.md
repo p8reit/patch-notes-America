@@ -6,6 +6,7 @@ Initial podcast-production application for turning a narration script into a fin
 
 - Browser-based episode editor on port `8081`
 - Standalone Image Studio for generating downloadable portrait, square, or landscape PNG artwork outside the episode workflow
+- Video Studio with editable storyboards, imported free B-roll, local images, and mixed-media proof exports
 - Complete editable episode saves, including the cast, research packet, source notes, script, conversation settings, show-open settings, and intro audio
 - Preloaded pilot narration script
 - Per-host Chatterbox reference voice, tempo, exaggeration, CFG weight, temperature, Min P, Top P, and repetition penalty
@@ -876,7 +877,29 @@ API endpoints: `POST /api/research-packets`, `GET /api/research-packets`, `GET /
 
 After an episode is rendered, the app exposes a Clip Studio for short-form distribution.
 
-- Automatically renders three vertical clips after episode assembly: the opening plus the two highest-ranked, non-overlapping content moments (when the episode contains enough eligible content).
+- Audio completes independently of visuals by default. Set `AUTO_SOCIAL_CLIPS=true` to retain the legacy automatic three-clip workflow; custom Clip Studio remains available.
+
+## Video Studio
+
+Choose a finished episode in **Video Studio**, create or load a storyboard,
+and choose media for every scene. Import MP4/MOV/WebM footage with its source,
+creator and license record. Generate scene illustrations through the bundled
+local CUDA image service; video images never use the paid OpenAI provider.
+Both B-roll and local images are required in an export range. Crop focal points,
+footage trims and gentle image zooms are editable. Source podcast audio is
+hashed and left unchanged; source changes require a new video project.
+
+Projects and assets live under `data/video/`, covered by the existing data mount.
+`VIDEO_DIR` can override this root. Project schema version 1 and optimistic
+revision checks prevent lost edits. New audio metadata includes an additive
+`video_timeline` covering music and mixed intros; legacy utterance timing remains
+readable. Existing saved episodes, voice identities and MP3 paths do not change.
+
+Phase-one proof exports are up to 90 seconds, with a half-resolution preview
+and a horizontal 1080p export option. Local image quality depends on the installed
+model's native resolution; the export dimensions do not add image detail.
+Start local images using the documented `--gpu --local-image` mode and verify
+that CUDA is actually visible. This change has not been benchmarked on a 3060.
 - Measures every rendered TTS chunk with `ffprobe` and stores precise start/end timestamps in episode metadata.
 - Scores 20–60 second candidate moments, favoring strong hooks, questions, conversational turns, and multiple speakers.
 - Lets you override the suggested window with exact start/end times.

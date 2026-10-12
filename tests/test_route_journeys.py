@@ -234,13 +234,14 @@ def test_completed_chunk_is_reused_during_processing(tmp_path, monkeypatch):
         destination.write_bytes(b"ID3mock")
 
     async def clips(*_args, **_kwargs):
-        return []
+        raise AssertionError("Audio completion must not wait for optional visual production")
 
     monkeypatch.setattr(main, "synthesize_chunk_with_retry", forbidden)
     monkeypatch.setattr(main, "concatenate_wav_segments", concatenate)
     monkeypatch.setattr(main, "analyze_final_audio_silence", lambda _path: [])
     monkeypatch.setattr(main, "assemble_mp3", assemble)
     monkeypatch.setattr(main, "render_automatic_social_clips", clips)
+    monkeypatch.setattr(main, "AUTO_SOCIAL_CLIPS", False)
 
     asyncio.run(main.process_generation_job("reuse"))
 

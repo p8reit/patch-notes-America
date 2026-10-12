@@ -17,6 +17,12 @@ h1 { margin: 0; font-size: clamp(2.2rem, 6vw, 4.5rem); line-height: .95; }
 .image-studio { min-height: 520px; }
 .image-studio form { margin-top: 24px; }
 .image-actions { margin-top: 22px; }
+.video-studio[hidden] { display: none; }
+.video-studio .actions { flex-wrap: wrap; }
+.video-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.video-scene { border: 1px solid #30363d; border-radius: 12px; padding: 16px; margin: 16px 0; }
+.video-studio video, .video-studio img { max-width: 100%; max-height: 480px; }
+@media (max-width: 700px) { .video-grid { grid-template-columns: 1fr; } }
 .image-progress { margin-top: 20px; padding: 16px; border: 1px solid #30363d; border-radius: 12px; }
 .image-progress[hidden] { display: none; }
 .image-progress h3 { margin: 0; }

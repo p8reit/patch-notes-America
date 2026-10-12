@@ -82,6 +82,7 @@ def test_cancel_validates_job_id_and_missing_job(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("stage", ["speech", "retry", "artwork"])
 def test_running_cancellation_unblocks_worker_and_keeps_completed_audio(tmp_path, monkeypatch, stage):
+    monkeypatch.setattr(main, "AUTO_SOCIAL_CLIPS", stage == "artwork")
     monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path)
     monkeypatch.setattr(main, "JOB_WORKERS", 1)
     job_dir, job = make_job(tmp_path)
