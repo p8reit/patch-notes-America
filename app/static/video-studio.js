@@ -5,7 +5,7 @@
   if (!root.document) return;
   const doc = root.document;
   const el = id => doc.getElementById(id);
-  let project = null, library = [], dirty = false;
+  let project = null, library = [], dirty = false, jobsTimer = null, lastExport = null;
   async function api(path, options = {}) {
     const response = await fetch('/api/video' + path, options);
     const data = await response.json().catch(() => ({}));
@@ -65,6 +65,22 @@
     el('video-project').innerHTML = projects.projects.map(p=>`<option value="${escape(p.id)}">${escape(p.title)} · ${p.id.slice(0,8)}</option>`).join('');
     if (selected) el('video-project').value = selected;
   }
+  async function refreshJobs() {
+    const data = await api('/jobs');
+    el('video-jobs').innerHTML = data.jobs.map(j=>`<article class="video-scene"><strong>${escape(j.project_id.slice(0,8))} · ${escape(j.status)}</strong><p>${escape(j.phase)} · ${j.done}/${j.total} scenes prepared</p>${j.error?`<p class="bad">${escape(j.error)}</p>`:''}
+      ${['queued','running'].includes(j.status)?`<button type="button" data-cancel-video="${escape(j.id)}">Cancel video</button>`:''}
+      ${j.status==='complete'?`<a class="download" href="${escape(j.download_url)}">Download MP4</a> <a href="/api/video/exports/${escape(j.id)}/sidecar/captions.srt">Captions</a> · <a href="/api/video/exports/${escape(j.id)}/sidecar/credits.txt">Credits</a> · <a href="/api/video/exports/${escape(j.id)}/sidecar/chapters.ffmeta">Chapters</a>`:''}</article>`).join('') || '<p class="hint">No video jobs yet.</p>';
+    const completed = data.jobs.find(j=>j.id===lastExport && j.status==='complete');
+    if(completed && el('video-preview-player').getAttribute('src')!==completed.download_url){
+      el('video-preview-player').src=completed.download_url;el('video-preview-player').hidden=false;
+    }
+    if(data.jobs.some(j=>['queued','running'].includes(j.status)) && !jobsTimer){
+      jobsTimer=root.setTimeout(()=>{jobsTimer=null;refreshJobs().catch(e=>status(e.message,true));},2000);
+    }
+  }
+  el('video-jobs').addEventListener('click',e=>{const b=e.target.closest('[data-cancel-video]');if(!b)return;
+    operation(b,async()=>{await api('/jobs/'+b.dataset.cancelVideo+'/cancel',{method:'POST'});await refreshJobs();});
+  });
   async function save() {
     collect(); project = await api('/projects/'+project.id, json('PUT', project)); dirty = false;
   }
@@ -72,11 +88,11 @@
   el('video-create').addEventListener('click', e=>operation(e.currentTarget, async()=>{
     if (!replaceAllowed()) return;
     project=await api('/projects',json('POST',{episode_id:el('video-episode').value}));
-    el('video-start').value=0;el('video-end').value=Math.min(90,project.duration);await lists();draw();
+    el('video-start').value=0;el('video-end').value=project.duration;await lists();draw();
   }));
   el('video-load').addEventListener('click', e=>operation(e.currentTarget, async()=>{
     if (!replaceAllowed()) return;
-    project=await api('/projects/'+el('video-project').value);el('video-start').value=0;el('video-end').value=Math.min(90,project.duration);await lists();draw();
+    project=await api('/projects/'+el('video-project').value);el('video-start').value=0;el('video-end').value=project.duration;await lists();draw();
   }));
   el('video-save').addEventListener('click', e=>operation(e.currentTarget, async()=>{await save();draw();}));
   el('video-refresh').addEventListener('click', e=>operation(e.currentTarget, async()=>{if(project)collect();const wasDirty=dirty;await lists();if(project)draw();dirty=wasDirty;}));
@@ -88,10 +104,9 @@
   });
   for (const id of ['video-preview','video-export']) el(id).addEventListener('click',e=>operation(e.currentTarget,async()=>{
     await save();const result=await api('/projects/'+project.id+'/exports',json('POST',{start:Number(el('video-start').value),end:Number(el('video-end').value),preview:id==='video-preview'}));
-    el('video-preview-player').src=result.download_url;el('video-preview-player').hidden=false;
-    el('video-downloads').innerHTML=`<a class="download" href="${escape(result.download_url)}">Download MP4</a>`;
+    lastExport=result.id;await refreshJobs();
   }));
   el('video-panel').addEventListener('input',()=>{dirty=true;});
   root.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
-  el('video-tab').addEventListener('click',()=>{lists().catch(e=>status(e.message,true));});
+  el('video-tab').addEventListener('click',()=>{Promise.all([lists(),refreshJobs()]).catch(e=>status(e.message,true));});
 })(typeof window === 'undefined' ? globalThis : window);

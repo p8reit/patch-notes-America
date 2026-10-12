@@ -895,7 +895,7 @@ revision checks prevent lost edits. New audio metadata includes an additive
 `video_timeline` covering music and mixed intros; legacy utterance timing remains
 readable. Existing saved episodes, voice identities and MP3 paths do not change.
 
-Phase-one proof exports are up to 90 seconds, with a half-resolution preview
+Exports cover any selected range or the full episode, with a half-resolution preview
 and a horizontal 1080p export option. Local image quality depends on the installed
 model's native resolution; the export dimensions do not add image detail.
 Start local images using the documented `--gpu --local-image` mode and verify
@@ -920,3 +920,12 @@ GET  /api/episodes/{episode_slug}/clips/{clip_id}/download
 ```
 
 Automatic clip failure is recorded separately and never changes a successfully assembled episode back to failed. The clip-selection logic is deliberately local and deterministic for MVP, so it works without additional AI calls. A later ranking layer can use the transcript, story importance, audience metrics, or a model to improve viral-moment selection.
+
+Video exports run as durable jobs. Closing the browser does not stop them. The
+Video jobs panel shows actual preparation counts, phase and errors, with Cancel
+controls for active work. App restarts requeue interrupted exports; cancelled jobs
+stay cancelled. Validated rendered scenes are cached by their source and filter
+inputs so retries reuse completed work. Each export freezes its project revision.
+FFmpeg process groups are terminated on cancellation, leaving reusable media.
+Exports include burned phrase captions, SRT, chapters and a credits file. Caption
+timing inside an utterance is approximate; it is not word-level forced alignment.
