@@ -8,7 +8,9 @@ import json
 import math
 import os
 import re
+import signal
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -20,6 +22,9 @@ from fastapi.responses import FileResponse
 ROOT = Path(os.getenv("VIDEO_DIR", Path(__file__).resolve().parent.parent / "data/video"))
 router = APIRouter(prefix="/api/video", tags=["Video Studio"])
 ASPECTS = {"horizontal": (1920, 1080), "vertical": (1080, 1920), "square": (1080, 1080)}
+queue: asyncio.Queue | None = None
+worker: asyncio.Task | None = None
+tasks: dict[str, asyncio.Task] = {}
 
 
 def child(root: Path, identifier: str) -> Path:
@@ -50,7 +55,7 @@ def digest(path: Path) -> str:
 
 
 def probe(path: Path) -> dict:
-    result = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+    result = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-show_chapters", "-of", "json", str(path)],
                             capture_output=True, text=True, check=True, timeout=30)
     return json.loads(result.stdout)
 
@@ -300,11 +305,14 @@ def render_inputs(project: dict, start: float, end: float) -> list[dict]:
     kinds = {asset(s["asset_id"])["kind"] for s in selected}
     if kinds != {"broll", "image"}:
         raise HTTPException(409, "Storytelling exports require both B-roll and locally generated images")
+    checked = set()
     for scene in selected:
         item = asset(scene["asset_id"])
         path = asset_file(item)
-        if not path.is_file() or digest(path) != item["hash"]:
-            raise HTTPException(409, "Selected media changed or is missing")
+        if item["id"] not in checked:
+            if not path.is_file() or digest(path) != item["hash"]:
+                raise HTTPException(409, "Selected media changed or is missing")
+            checked.add(item["id"])
         length = min(scene["end"], end) - max(scene["start"], start)
         if item["kind"] == "broll" and scene["trim"] + max(scene["start"], start) - scene["start"] + length > item["duration"] + .01:
             raise HTTPException(400, "B-roll is shorter than its scene; trim or split the scene")
@@ -313,19 +321,24 @@ def render_inputs(project: dict, start: float, end: float) -> list[dict]:
 
 async def command(arguments: list[str], cwd: Path) -> None:
     process = await asyncio.create_subprocess_exec(*arguments, cwd=cwd, stdout=asyncio.subprocess.DEVNULL,
-                                                 stderr=asyncio.subprocess.PIPE)
+                                                 stderr=asyncio.subprocess.PIPE, start_new_session=True)
     try:
         _, error = await process.communicate()
         if process.returncode:
             raise RuntimeError(error.decode(errors="replace")[-2000:])
     except asyncio.CancelledError:
         if process.returncode is None:
-            process.kill()
-        await process.wait()
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(process.wait(), 3)
+            except asyncio.TimeoutError:
+                os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
         raise
 
 
-async def render(project: dict, destination: Path, start: float, end: float, aspect: str, preview: bool) -> None:
+async def render(project: dict, destination: Path, start: float, end: float, aspect: str, preview: bool,
+                 checkpoint: Any = None) -> None:
     scenes = await asyncio.to_thread(render_inputs, project, start, end)
     audio = await asyncio.to_thread(audio_file, project)
     width, height = ASPECTS[aspect]
@@ -340,25 +353,103 @@ async def render(project: dict, destination: Path, start: float, end: float, asp
         scale = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:(iw-ow)*{scene['crop_x']}:(ih-oh)*{scene['crop_y']},setsar=1,fps=30"
         if item["kind"] == "image" and scene["motion"] == "zoom":
             scale += f",zoompan=z='min(zoom+0.0003,1.08)':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s={width}x{height}:fps=30"
-        path = destination / f"scene-{index:04d}.mp4"
-        await command(["ffmpeg", "-y", "-v", "error", *inputs, "-i", str(asset_file(item)), "-t", str(length),
-                       "-vf", scale, "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(path)], destination)
+        signature = {"renderer": 1, "asset": item["hash"], "inputs": inputs, "length": length, "filter": scale}
+        key = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()
+        cache = child(ROOT / "cache", key)
+        cache.mkdir(parents=True, exist_ok=True)
+        path = cache / "scene.mp4"
+        valid = False
+        if path.is_file():
+            try:
+                info = await asyncio.to_thread(probe, path)
+                valid = abs(float(info["format"]["duration"]) - length) < .1
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
+        if not valid:
+            temporary = cache / "scene.partial.mp4"
+            try:
+                await command(["ffmpeg", "-y", "-v", "error", *inputs, "-i", str(asset_file(item)), "-t", str(length),
+                               "-vf", scale, "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(temporary)], destination)
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        if checkpoint:
+            checkpoint(index + 1, len(scenes), "preparing scenes")
         paths.append(path)
-    (destination / "concat.txt").write_text("".join(f"file '{p.name}'\n" for p in paths))
-    await command(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "1", "-i", "concat.txt", "-ss", str(start),
-                   "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0", "-t", str(end-start), "-c:v", "copy", "-c:a", "aac",
-                   "-b:a", "192k", "-movflags", "+faststart", "episode.mp4"], destination)
+    (destination / "concat.txt").write_text("".join(f"file '{p.as_posix()}'\n" for p in paths))
+    write_sidecars(project, scenes, destination, start, end)
+    if checkpoint:
+        checkpoint(len(scenes), len(scenes), "assembling video")
+    caption_filter = ["-vf", "subtitles=captions.srt"] if (destination / "captions.srt").read_text().strip() else []
+    await command(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-ss", str(start),
+                   "-i", str(audio), "-i", "chapters.ffmeta", "-map_metadata", "2", "-map", "0:v:0", "-map", "1:a:0",
+                   "-t", str(end-start), *caption_filter, "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                   "-b:a", "192k", "-movflags", "+faststart", "episode.partial.mp4"], destination)
+    (destination / "episode.partial.mp4").replace(destination / "episode.mp4")
 
 
-@router.post("/projects/{project_id}/exports")
+def stamp(seconds: float) -> str:
+    milliseconds = max(0, round(seconds * 1000))
+    return f"{milliseconds//3600000:02}:{milliseconds//60000%60:02}:{milliseconds//1000%60:02},{milliseconds%1000:03}"
+
+
+def write_sidecars(project: dict, scenes: list[dict], destination: Path, start: float, end: float) -> None:
+    changed = [s for s in scenes if s.get("caption", "") != s.get("text", "")]
+    rows = []
+    for row in project["transcript"]:
+        words = row["text"].split()
+        count = max(1, math.ceil(len(words)/12))
+        for index in range(count):
+            a = row["start"] + (row["end"]-row["start"])*index/count
+            b = row["start"] + (row["end"]-row["start"])*(index+1)/count
+            fragments = [(a,b)]
+            for scene in changed:
+                fragments = [(left,right) for x,y in fragments for left,right in
+                             [(x,min(y,scene["start"])),(max(x,scene["end"]),y)] if right>left]
+            rows += [{"start":a,"end":b,"text":" ".join(words[index*12:(index+1)*12])} for a,b in fragments]
+    rows += [{"start": s["start"], "end": s["end"], "text": s["caption"]} for s in changed]
+    entries = []
+    for row in sorted(rows, key=lambda r: r["start"]):
+        a, b = max(start, row["start"]), min(end, row["end"])
+        if b <= a or not row["text"].strip():
+            continue
+        words = row["text"].split()
+        phrases = [" ".join(words[i:i+12]) for i in range(0, len(words), 12)]
+        for index, phrase in enumerate(phrases):
+            left, right = a + (b-a)*index/len(phrases), a + (b-a)*(index+1)/len(phrases)
+            entries.append(f"{len(entries)+1}\n{stamp(left-start)} --> {stamp(right-start)}\n{phrase.replace('<', '').replace('>', '')}\n")
+    (destination / "captions.srt").write_text("\n".join(entries))
+    sources = {s["asset_id"]: asset(s["asset_id"])["source"] for s in scenes}
+    (destination / "credits.txt").write_text("\n\n".join(json.dumps(source, indent=2) for source in sources.values()))
+    chapters = [";FFMETADATA1"]
+    for index, scene in enumerate(scenes):
+        if index % 8:
+            continue
+        left = max(start, scene["start"])
+        right = min(end, scenes[min(index+7, len(scenes)-1)]["end"])
+        title = re.sub(r"[\\;=#\r\n]", " ", scene["intent"])
+        chapters.append(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={round((left-start)*1000)}\nEND={round((right-start)*1000)}\ntitle={title}")
+    (destination / "chapters.ffmeta").write_text("\n".join(chapters))
+
+
+@router.post("/projects/{project_id}/exports", status_code=202)
 async def export(project_id: str, body: dict = Body(...)):
     project = read(project_path(project_id))
     start, end = number(body.get("start", 0), maximum=project["duration"]), number(body.get("end", project["duration"]), maximum=project["duration"])
-    if not 0 < end-start <= 90:
-        raise HTTPException(400, "Phase-one proof exports must be between 0 and 90 seconds")
+    if end <= start:
+        raise HTTPException(400, "Export end must follow its start")
+    if queue is None:
+        raise HTTPException(503, "Video worker is not ready")
+    await asyncio.to_thread(render_inputs, project, start, end)
+    await asyncio.to_thread(audio_file, project)
     identifier = uuid4().hex
-    await render(project, child(ROOT / "exports", identifier), start, end, "horizontal", bool(body.get("preview", True)))
-    return {"id": identifier, "download_url": f"/api/video/exports/{identifier}/download"}
+    job = {"id": identifier, "project_id": project_id, "project": project, "revision": project["revision"],
+           "start": start, "end": end, "aspect": "horizontal", "preview": bool(body.get("preview", True)),
+           "status": "queued", "phase": "queued", "done": 0, "total": 0, "error": None,
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    atomic(child(ROOT / "exports", identifier) / "job.json", job)
+    await queue.put(identifier)
+    return job
 
 
 @router.get("/exports/{export_id}/download")
@@ -367,3 +458,102 @@ async def download(export_id: str):
     if not path.is_file():
         raise HTTPException(404, "Video export not found")
     return FileResponse(path, media_type="video/mp4", filename="episode.mp4")
+
+
+@router.get("/jobs")
+async def jobs():
+    return {"jobs": [{k: v for k, v in read(p).items() if k != "project"}
+                     for p in sorted((ROOT / "exports").glob("*/job.json"), key=lambda p: p.stat().st_mtime, reverse=True)][:100]}
+
+
+@router.get("/jobs/{job_id}")
+async def job_status(job_id: str):
+    job = read(child(ROOT / "exports", job_id) / "job.json")
+    return {k: v for k, v in job.items() if k != "project"}
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel(job_id: str):
+    path = child(ROOT / "exports", job_id) / "job.json"
+    job = read(path)
+    if job["status"] not in {"queued", "running", "cancelled"}:
+        raise HTTPException(409, "Only active jobs can be cancelled")
+    job.update(status="cancelled", phase="cancelled")
+    atomic(path, job)
+    task = tasks.get(job_id)
+    if task:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    return await job_status(job_id)
+
+
+@router.get("/exports/{export_id}/sidecar/{name}")
+async def sidecar(export_id: str, name: str):
+    if name not in {"captions.srt", "credits.txt", "chapters.ffmeta"}:
+        raise HTTPException(404, "Export sidecar not found")
+    path = child(ROOT / "exports", export_id) / name
+    if not path.is_file():
+        raise HTTPException(404, "Export sidecar not found")
+    return FileResponse(path, filename=name)
+
+
+async def process_job(identifier: str) -> None:
+    folder = child(ROOT / "exports", identifier)
+    path = folder / "job.json"
+    job = read(path)
+    if job["status"] not in {"queued", "running"}:
+        return
+    def checkpoint(done: int, total: int, phase: str) -> None:
+        job.update(done=done, total=total, phase=phase)
+        atomic(path, job)
+    job.update(status="running", error=None)
+    atomic(path, job)
+    try:
+        await render(job["project"], folder, job["start"], job["end"], job["aspect"], job["preview"], checkpoint)
+        job.update(status="complete", phase="complete", download_url=f"/api/video/exports/{identifier}/download")
+    except asyncio.CancelledError:
+        persisted = read(path)
+        job["status"] = "cancelled" if persisted["status"] == "cancelled" else "queued"
+        job["phase"] = job["status"]
+        raise
+    except Exception as exc:
+        job.update(status="failed", error=exc.detail if isinstance(exc, HTTPException) else str(exc), phase="failed")
+    finally:
+        (folder / "episode.partial.mp4").unlink(missing_ok=True)
+        atomic(path, job)
+
+
+async def consume() -> None:
+    while True:
+        identifier = await queue.get()
+        task = asyncio.create_task(process_job(identifier))
+        tasks[identifier] = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise
+        finally:
+            tasks.pop(identifier, None)
+            queue.task_done()
+
+
+async def start_workers() -> None:
+    global queue, worker
+    queue = asyncio.Queue()
+    for path in (ROOT / "exports").glob("*/job.json"):
+        job = read(path)
+        if job["status"] in {"queued", "running"}:
+            job.update(status="queued", phase="recovering")
+            atomic(path, job)
+            await queue.put(job["id"])
+    worker = asyncio.create_task(consume())
+
+
+async def stop_workers() -> None:
+    global queue, worker
+    if worker:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+    worker = None
+    queue = None

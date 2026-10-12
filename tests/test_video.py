@@ -146,5 +146,81 @@ def test_real_ffmpeg_storytelling_proof(tmp_path, monkeypatch):
     asyncio.run(video.render(project, destination, 0, 60, "horizontal", True))
     info = video.probe(destination / "episode.mp4")
     assert abs(float(info["format"]["duration"]) - 60) < .15
-    assert {s["codec_type"] for s in info["streams"]} == {"audio", "video"}
+    kinds = {s["codec_type"] for s in info["streams"]}
+    assert {"audio", "video"} <= kinds <= {"audio", "video", "data"}
+    assert info["chapters"]
     assert video.digest(folder / "episode.mp3") == project["audio_hash"]
+    assert (destination / "captions.srt").is_file()
+    assert (destination / "credits.txt").is_file()
+    calls = []
+    original = video.command
+    async def count(args, cwd):
+        calls.append(args)
+        await original(args, cwd)
+    monkeypatch.setattr(video, "command", count)
+    asyncio.run(video.render(project, destination, 0, 60, "horizontal", True))
+    assert len(calls) == 1, "Validated scene cache must avoid repeated scene rendering"
+
+
+def test_video_job_cancellation_and_restart_recovery(studio, monkeypatch):
+    project = make_project(studio)
+    project["scenes"][0]["asset_id"] = fake_asset("broll")["id"]
+    project["scenes"][1]["asset_id"] = fake_asset("image")["id"]
+    entered = asyncio.Event()
+    released = asyncio.Event()
+    async def block(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            released.set()
+    monkeypatch.setattr(video, "render", block)
+    async def run():
+        video.atomic(video.project_path(project["id"]), project)
+        await video.start_workers()
+        try:
+            job = await video.export(project["id"], {"start": 0, "end": 16})
+            await asyncio.wait_for(entered.wait(), 2)
+            cancelled = await video.cancel(job["id"])
+            assert cancelled["status"] == "cancelled"
+            assert released.is_set()
+            await asyncio.wait_for(video.queue.join(), 2)
+            assert not video.worker.done()
+            assert (await video.cancel(job["id"]))["status"] == "cancelled"
+            entered.clear()
+            other = await video.export(project["id"], {"start": 0, "end": 16})
+            await asyncio.wait_for(entered.wait(), 2)
+            await video.stop_workers()
+            assert (await video.job_status(other["id"]))["status"] == "queued"
+            await video.start_workers()
+            await asyncio.wait_for(entered.wait(), 2)
+            assert (await video.job_status(job["id"]))["status"] == "cancelled"
+        finally:
+            await video.stop_workers()
+    asyncio.run(run())
+
+
+def test_video_export_freezes_project_and_does_not_block_audio(studio, monkeypatch):
+    project = make_project(studio)
+    project["scenes"][0]["asset_id"] = fake_asset("broll")["id"]
+    project["scenes"][1]["asset_id"] = fake_asset("image")["id"]
+    video.atomic(video.project_path(project["id"]), project)
+    async def run():
+        monkeypatch.setattr(video, "queue", asyncio.Queue())
+        job = await video.export(project["id"], {"end":16})
+        project["scenes"][0]["prompt"] = "Later edit"
+        video.atomic(video.project_path(project["id"]), project)
+        frozen = video.read(video.child(video.ROOT / "exports", job["id"]) / "job.json")
+        assert frozen["project"]["scenes"][0]["prompt"] != "Later edit"
+        assert frozen["revision"] == 1
+    asyncio.run(run())
+
+
+def test_subprocess_cancellation_terminates_renderer(tmp_path):
+    async def run():
+        task = asyncio.create_task(video.command(["/workspace/.venvs/patch-notes-America/bin/python", "-c", "import time;time.sleep(60)"], tmp_path))
+        await asyncio.sleep(.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 3)
+    asyncio.run(run())

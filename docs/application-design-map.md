@@ -363,3 +363,5 @@ Update this map whenever a change introduces a new primary object, workflow stag
 ## Video production boundary
 
 `app/video.py` owns a separate versioned project schema and media library under `data/video/`. It snapshots finished audio hashes and the additive `video_timeline` (including mixed intro and music timing), without altering saved episode documents. `/api/video` exposes projects, assets, local scene images, and proof exports. `app/static/video-studio.js` provides editable scene cards, import provenance, media selection, trim/crop/motion controls, and a video preview. Exports require both B-roll and local images. GPU image inference remains fail-closed.
+
+Full video exports use a separate persistent queue with atomic `job.json` snapshots under `data/video/exports/`. Active jobs recover on restart; cancelled jobs remain terminal. Content-addressed scene outputs survive retry and exports include caption/credits/chapter sidecars. The video queue never invokes TTS. Its lifecycle is started/stopped alongside the existing audio queue.

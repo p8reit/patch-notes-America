@@ -32,6 +32,7 @@ from app.audio_utils import (
     validate_audio_segment,
 )
 from app.video import router as video_router
+from app import video as video_studio
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
@@ -1408,9 +1409,11 @@ async def stop_generation_workers() -> None:
 @asynccontextmanager
 async def application_lifespan(_app: FastAPI):
     await start_generation_workers()
+    await video_studio.start_workers()
     try:
         yield
     finally:
+        await video_studio.stop_workers()
         await stop_generation_workers()
 
 
