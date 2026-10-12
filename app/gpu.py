@@ -63,6 +63,52 @@ async def unload_planner(client: httpx.AsyncClient) -> None:
         result.raise_for_status()
 
 
+def describe_handoff_error(exc: httpx.HTTPError) -> str:
+    """Report service/stage without exposing request credentials or bodies."""
+    from app import main
+    try:
+        request = exc.request
+    except RuntimeError:
+        request = None
+    names = {(url.host, url.port): name for name, url in
+             [("Chatterbox", httpx.URL(main.CHATTERBOX_URL)),
+              ("imagegen", httpx.URL(main.LOCAL_IMAGES_URL)),
+              ("Ollama", httpx.URL(main.LOCAL_AI_URL))]}
+    service = names.get((request.url.host, request.url.port), "model service") if request else "model service"
+    allowed_paths = {"/models/load", "/models/unload", "/api/ps", "/api/generate"}
+    operation = request.url.path if request and request.url.path in allowed_paths else "request"
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in {401, 403}:
+            hint = ("Ollama API access was denied; check the configured local endpoint and access settings." if service == "Ollama" else
+                    "Model-control authorization failed; verify that app, chatterbox and imagegen can read the same shared model-control key.")
+        elif code == 404:
+            hint = "Check the configured service URL and rebuild outdated containers; for Ollama, also verify the configured model is installed."
+        elif code == 503:
+            hint = "Check this service's health and logs for model-load, CUDA-memory or smoke-test failures."
+        else:
+            hint = "Check this service's logs for the underlying error."
+        return f"{service} {operation} returned HTTP {code}. {hint}"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"{service} {operation} timed out. Check service readiness and whether model loading is stalled."
+    return f"{service} {operation} could not complete ({type(exc).__name__}). Check that the service is running and reachable from app."
+
+
+def handoff_failure(exc: httpx.HTTPError) -> str:
+    detail = "GPU model handoff failed: " + describe_handoff_error(exc)
+    # A failing restore in the existing finally block can replace an earlier
+    # handoff error. Surface both without changing cleanup or retry behavior.
+    previous = exc.__context__
+    seen = {id(exc)}
+    while previous is not None and id(previous) not in seen and len(seen) < 4:
+        seen.add(id(previous))
+        if isinstance(previous, httpx.HTTPError):
+            detail += " Earlier failure: " + describe_handoff_error(previous)
+            break
+        previous = previous.__context__
+    return detail
+
+
 @asynccontextmanager
 async def lease(kind: str):
     if not enabled or owner.get() == kind:
@@ -98,7 +144,7 @@ async def lease(kind: str):
                     if kind != "speech":
                         await control(client, main.CHATTERBOX_URL, "load")
         except httpx.HTTPError as exc:
-            raise HTTPException(503, "GPU model handoff failed. Check local service readiness and shared model-control mounts.") from exc
+            raise HTTPException(503, handoff_failure(exc)) from exc
         finally:
             owner.reset(context)
             state["active"] = "finishing cancelled inference" if state.get("pending") else "idle"
