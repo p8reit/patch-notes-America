@@ -50,7 +50,7 @@ def _synthesize(device: str, mode: str, text: str, seed: int, prompt: str | None
         request = server.SpeechRequest(input=text, seed=seed)
         with torch.inference_mode():
             wav = server.generate_audio(model, request, prompt, mode=mode, contract=contract)
-        return {"ok": True, **server._validate_audio(wav, model.sr)}, wav, model.sr
+        return {"ok": True, **server._validate_audio(wav, model.sr, max_seconds=server.MAX_SPEECH_SECONDS)}, wav, model.sr
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, locals().get("wav"), getattr(locals().get("model"), "sr", None)
 

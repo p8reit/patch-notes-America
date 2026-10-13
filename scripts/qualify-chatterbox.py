@@ -145,7 +145,7 @@ def render_case(
         torchaudio.save(str(destination), wav, model.sr, encoding="PCM_S", bits_per_sample=16)
         decoded, rate = torchaudio.load(str(destination))
         metrics = audio_metrics(decoded, rate, destination)
-        server._validate_audio(decoded, rate)
+        server._validate_audio(decoded, rate, max_seconds=server.MAX_SPEECH_SECONDS)
         return {"ok": True, "elapsed_seconds": round(time.monotonic() - started, 3), "metrics": metrics}
     except Exception as exc:
         return {

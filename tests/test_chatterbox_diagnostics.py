@@ -156,11 +156,23 @@ def test_speech_validates_each_render_before_returning_it(server, monkeypatch):
     monkeypatch.setitem(server._readiness, "synthesis_ready", True)
     monkeypatch.setattr(server, "get_model", lambda: model)
     monkeypatch.setattr(server, "generate_audio", lambda *_args: generated)
-    monkeypatch.setattr(server, "_validate_audio", lambda audio, rate: validated.append((audio, rate)))
+    monkeypatch.setattr(server, "_validate_audio", lambda audio, rate, **settings: validated.append((audio, rate, settings)))
     monkeypatch.setattr(server, "encode_wav", lambda *_args: b"RIFF-valid")
     server.torch.inference_mode = lambda: __import__("contextlib").nullcontext()
 
     response = server.speech(server.SpeechRequest(input="Validate this render."))
 
     assert response.body == b"RIFF-valid"
-    assert validated == [(generated, 24_000)]
+    assert validated == [(generated, 24_000, {"max_seconds": server.MAX_SPEECH_SECONDS})]
+
+
+def test_episode_duration_does_not_use_short_smoke_probe_limit(server):
+    server._validate_duration(40.0, server.MAX_SPEECH_SECONDS)
+    with pytest.raises(RuntimeError, match="duration is implausible"):
+        server._validate_duration(40.0, server.MAX_SMOKE_SECONDS)
+
+
+@pytest.mark.parametrize("duration", [0.0, 0.05, 60.001, float("nan"), float("inf")])
+def test_episode_duration_still_rejects_empty_or_runaway_audio(server, duration):
+    with pytest.raises(RuntimeError, match="duration is implausible"):
+        server._validate_duration(duration, server.MAX_SPEECH_SECONDS)

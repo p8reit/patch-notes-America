@@ -131,6 +131,7 @@ async def lease(kind: str):
         state["active"] = kind
         context = owner.set(kind)
         image_url = main.LOCAL_IMAGES_URL.rsplit("/v1/", 1)[0]
+        provider_error = None
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10)) as client:
                 try:
@@ -144,7 +145,13 @@ async def lease(kind: str):
                     await unload_planner(client)
                     if kind in {"speech", "image"}:
                         await control(client, main.CHATTERBOX_URL if kind == "speech" else image_url, "load")
-                    yield
+                    try:
+                        yield
+                    except httpx.HTTPError as exc:
+                        # Provider failures belong to their caller's retry and
+                        # diagnostic policy, rather than model-control handling.
+                        provider_error = exc
+                        raise
                 finally:
                     if kind == "image":
                         await control(client, image_url, "unload")
@@ -153,6 +160,8 @@ async def lease(kind: str):
                     if kind != "speech":
                         await control(client, main.CHATTERBOX_URL, "load")
         except httpx.HTTPError as exc:
+            if exc is provider_error:
+                raise
             raise HTTPException(503, handoff_failure(exc)) from exc
         finally:
             owner.reset(context)
