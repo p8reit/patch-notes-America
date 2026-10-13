@@ -83,6 +83,34 @@ def test_lease_still_restores_speech_and_releases_ownership_after_failed_image_l
     asyncio.run(run())
 
 
+def test_failed_restore_still_reports_handoff_when_provider_also_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr(gpu, "enabled", True)
+    monkeypatch.setattr(gpu, "lock", asyncio.Lock())
+    monkeypatch.setattr(gpu, "state", {"active": "idle"})
+    monkeypatch.setattr(gpu, "token_file", tmp_path / "control.key")
+    gpu.initialize()
+
+    def respond(request):
+        failed = str(request.url) == main.CHATTERBOX_URL + "/models/load"
+        return httpx.Response(503 if failed else 200, json={"models": []})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs))
+
+    async def run():
+        with pytest.raises(HTTPException) as raised:
+            async with gpu.lease("image"):
+                request = httpx.Request("POST", main.LOCAL_IMAGES_URL)
+                response = httpx.Response(500, request=request)
+                response.raise_for_status()
+        assert "Chatterbox /models/load returned HTTP 503" in raised.value.detail
+        assert "Earlier failure: imagegen request returned HTTP 500" in raised.value.detail
+        assert not gpu.lock.locked()
+        assert gpu.owner.get() is None
+
+    asyncio.run(run())
+
+
 def test_cancelled_image_cleanup_waits_for_inference_before_restoring_speech(tmp_path, monkeypatch):
     monkeypatch.setattr(gpu, "enabled", True)
     monkeypatch.setattr(gpu, "lock", asyncio.Lock())
@@ -158,5 +186,52 @@ def test_permanently_busy_model_is_bounded_and_does_not_restore_competing_speech
         assert main.CHATTERBOX_URL + "/models/load" not in calls
         assert gpu.state["active"] == "finishing cancelled inference"
         assert not gpu.lock.locked()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("status,attempts", [(500, 2), (400, 1)])
+def test_speech_provider_errors_reach_chunk_retry_policy(tmp_path, monkeypatch, status, attempts):
+    monkeypatch.setattr(gpu, "enabled", True)
+    monkeypatch.setattr(gpu, "lock", asyncio.Lock())
+    monkeypatch.setattr(gpu, "state", {"active": "idle"})
+    monkeypatch.setattr(gpu, "token_file", tmp_path / "control.key")
+    gpu.initialize()
+    monkeypatch.setattr(main, "TTS_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(main, "TTS_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(main, "normalize_audio_segment", lambda *_args: {"raw_duration": 1})
+    monkeypatch.setattr(main, "validate_audio_segment", lambda *_args: (True, ""))
+    seeds = []
+
+    def respond(request):
+        if request.url.path == main.CHATTERBOX_TTS_PATH:
+            import json
+            seeds.append(json.loads(request.content)["seed"])
+            if len(seeds) == 1:
+                return httpx.Response(status, json={"detail": "Synthesis failed"})
+            return httpx.Response(200, content=b"RIFF-valid-audio", headers={"content-type": "audio/wav"})
+        return httpx.Response(200, json={"models": []})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs))
+    destination = tmp_path / "chunks/chunk.wav"
+    destination.parent.mkdir()
+    chunk = {"text": "A spoken sentence.", "voice": "default", "tempo": 1}
+    job = {"chunks": [chunk]}
+
+    async def run():
+        if status == 400:
+            with pytest.raises(httpx.HTTPStatusError) as raised:
+                await main.synthesize_chunk_with_retry(tmp_path, job, chunk, destination)
+            assert raised.value.response.status_code == status
+            assert "Chatterbox returned HTTP 400" in chunk["error"]
+            assert "GPU model handoff" not in chunk["error"]
+        else:
+            await main.synthesize_chunk_with_retry(tmp_path, job, chunk, destination)
+            assert chunk["status"] == "complete"
+            assert destination.read_bytes() == b"RIFF-valid-audio"
+        assert len(seeds) == attempts
+        assert not gpu.lock.locked()
+        assert gpu.owner.get() is None
 
     asyncio.run(run())

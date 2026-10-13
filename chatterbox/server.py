@@ -45,6 +45,7 @@ _readiness: dict[str, Any] = {
 SMOKE_TEXT = "This is a short Chatterbox readiness test."
 MIN_SMOKE_SECONDS = 0.1
 MAX_SMOKE_SECONDS = 30.0
+MAX_SPEECH_SECONDS = 60.0
 MAX_STATIC_ZERO_CROSSING_RATIO = 0.35
 MIN_STATIC_RMS = 0.02
 MIN_STATIC_SECONDS = 0.5
@@ -191,8 +192,15 @@ def _check_model_placement(parameters: list[dict[str, str]], requested_device: s
         raise RuntimeError(f"Unsupported model parameter dtype: {actual}")
 
 
-def _validate_audio(wav: torch.Tensor, sample_rate: int) -> dict[str, float | int]:
-    """Reject common silent/corrupt synthesis results before declaring readiness."""
+def _validate_duration(duration: float, max_seconds: float) -> None:
+    if not MIN_SMOKE_SECONDS <= duration <= max_seconds:
+        raise RuntimeError(f"Synthesis duration is implausible ({duration:.3f}s; allowed {MIN_SMOKE_SECONDS:g}–{max_seconds:g}s)")
+
+
+def _validate_audio(
+    wav: torch.Tensor, sample_rate: int, *, max_seconds: float = MAX_SMOKE_SECONDS,
+) -> dict[str, float | int]:
+    """Reject corrupt audio with the duration bound for the synthesis context."""
     if not isinstance(wav, torch.Tensor) or wav.numel() == 0:
         raise RuntimeError("Smoke synthesis returned empty audio")
     samples = wav.detach().float().cpu().reshape(-1)
@@ -212,8 +220,7 @@ def _validate_audio(wav: torch.Tensor, sample_rate: int) -> dict[str, float | in
     if clipped_fraction > 0.02:
         raise RuntimeError(f"Smoke synthesis is severely clipped ({clipped_fraction:.1%} of samples)")
     duration = samples.numel() / sample_rate
-    if not MIN_SMOKE_SECONDS <= duration <= MAX_SMOKE_SECONDS:
-        raise RuntimeError(f"Smoke synthesis duration is implausible ({duration:.3f}s)")
+    _validate_duration(duration, max_seconds)
     if samples.numel() > 1:
         zero_crossings = ((samples[:-1] < 0) != (samples[1:] < 0)).float().mean()
         zero_crossing_ratio = float(zero_crossings)
@@ -500,5 +507,5 @@ def speech(request: SpeechRequest) -> Response:
         # Readiness proves one seed works, but individual stochastic renders can
         # still collapse into hiss. Never return corrupt PCM as a successful WAV;
         # the application will retry 5xx responses with a fresh seed.
-        _validate_audio(wav, model.sr)
+        _validate_audio(wav, model.sr, max_seconds=MAX_SPEECH_SECONDS)
     return Response(encode_wav(wav, model.sr, request.speed), media_type="audio/wav")

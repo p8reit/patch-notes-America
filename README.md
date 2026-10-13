@@ -1082,6 +1082,14 @@ recover speech left parked by an interrupted handoff when no GPU lease is active
 it unloads other models and requires Chatterbox's real synthesis smoke test.
 Actual smoke-test failures remain unready and are not automatically retried by
 health checks. Audio submission remains disabled until synthesis is verified.
+Speech-provider HTTP failures retain their synthesis diagnostics and the existing
+chunk retry policy, including fresh seeds for retryable 5xx responses. They are
+not relabeled as GPU handoff failures; model-control and restoration failures
+still report the affected service and handoff operation.
+The short readiness probe retains its 30-second maximum duration. Episode
+speech chunks allow up to 60 seconds before speed adjustment; a 40-second chunk
+does not fail solely because it exceeds the smoke probe's limit. Both paths
+retain the same static, clipping, non-finite, constant-tone and repetition checks.
 
 Rebuild app, chatterbox and imagegen together when adopting these controls.
 GPU/CPU Compose choices remain explicit and failed CUDA validation never falls
