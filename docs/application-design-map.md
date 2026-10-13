@@ -180,6 +180,12 @@ shutdown keeps interrupted jobs recoverable instead of marking them cancelled.
 The local image service runs inference outside the request event loop and stops
 disconnected requests before inference or at the next denoising checkpoint;
 external providers may continue computation after their connection closes.
+GPU handoff control retries busy responses for up to 120 seconds, allowing
+cancelled inference to finish before model release and speech restoration.
+When no GPU lease is active, health checks recover speech left parked by an
+interrupted handoff through the normal speech lease and synthesis smoke test.
+Genuine synthesis failures remain unready; busy image cleanup never permits
+loading speech alongside the active image model.
 
 ### Clip production
 

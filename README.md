@@ -1073,6 +1073,16 @@ controls are authenticated and refuse to unload active inference. No Docker
 socket is exposed to the app. Set handoff false only when managing model memory
 yourself; the legacy full Compose file does not configure automatic handoff.
 
+Busy model-control responses (HTTP 409) are retried once per second for up to
+120 seconds so cancelled inference can finish before models are unloaded or
+speech is restored. The existing model-load request timeout still applies to
+loading and smoke inference. If image cleanup remains busy, speech is not loaded
+alongside it; the error requests a service health/log check. A health check can
+recover speech left parked by an interrupted handoff when no GPU lease is active:
+it unloads other models and requires Chatterbox's real synthesis smoke test.
+Actual smoke-test failures remain unready and are not automatically retried by
+health checks. Audio submission remains disabled until synthesis is verified.
+
 Rebuild app, chatterbox and imagegen together when adopting these controls.
 GPU/CPU Compose choices remain explicit and failed CUDA validation never falls
 back silently. GPU hardware/memory performance still requires target-host testing.
