@@ -14,6 +14,8 @@ enabled = os.getenv("GPU_MODEL_HANDOFF", "false").lower() == "true"
 lock = asyncio.Lock()
 owner = ContextVar("gpu_owner", default=None)
 state = {"active": "idle", "free_vram_mb": None, "total_vram_mb": None}
+CONTROL_BUSY_TIMEOUT_SECONDS = 120
+CONTROL_BUSY_RETRY_SECONDS = 1
 token_file = Path(os.getenv("MODEL_CONTROL_FILE", Path(__file__).resolve().parent.parent / "data/video/model-control.key"))
 
 
@@ -38,12 +40,19 @@ def model(kind: str, when=None):
 
 
 async def control(client: httpx.AsyncClient, url: str, operation: str) -> None:
-    response = await client.post(url.rstrip("/") + "/models/" + operation,
-                                 headers={"Authorization": "Bearer " + token_file.read_text().strip()})
-    if response.status_code == 409:
+    deadline = asyncio.get_running_loop().time() + CONTROL_BUSY_TIMEOUT_SECONDS
+    while True:
+        response = await client.post(url.rstrip("/") + "/models/" + operation,
+                                     headers={"Authorization": "Bearer " + token_file.read_text().strip()})
+        if response.status_code != 409:
+            break
         state["pending"] = True
-        raise HTTPException(503, "A model is still finishing cancelled work. Retry after its current step.")
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise HTTPException(503, "GPU model control timed out waiting for active inference to finish. Check model service health and logs before retrying.")
+        await asyncio.sleep(min(CONTROL_BUSY_RETRY_SECONDS, remaining))
     response.raise_for_status()
+    state["pending"] = False
     body = response.json()
     for key in ["free_vram_mb", "total_vram_mb"]:
         if key in body:

@@ -1042,7 +1042,17 @@ async def chatterbox_status() -> dict:
         response = await client.get(chatterbox_endpoint(CHATTERBOX_HEALTH_PATH))
         response.raise_for_status()
         if response.headers.get("content-type", "").startswith("application/json"):
-            return response.json()
+            status = response.json()
+            # Recover speech left parked by an interrupted visual handoff. Never
+            # retry genuine smoke-test failures or contend with an active lease.
+            if (gpu.enabled and not gpu.lock.locked()
+                    and status.get("failure") == "Speech model parked while Video Studio uses the GPU"
+                    and not status.get("synthesis_ready")):
+                async with gpu.lease("speech"):
+                    response = await client.get(chatterbox_endpoint(CHATTERBOX_HEALTH_PATH))
+                    response.raise_for_status()
+                    return response.json()
+            return status
         return {"detail": response.text[:200] or "Chatterbox is reachable"}
 
 
