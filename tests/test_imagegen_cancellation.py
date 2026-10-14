@@ -264,3 +264,91 @@ def test_service_default_detail_uses_base_settings_without_turbo_defaults(servic
     assert received["width"] == 1024 and received["height"] == 1024
     assert received["num_inference_steps"] == 30 and received["guidance_scale"] == 5
     assert result["model"] == service.DETAIL_MODEL_ID
+
+
+@pytest.mark.parametrize("service", ["detail"], indirect=True)
+def test_control_loads_requested_draft_once_and_reuses_it_for_generation(service, monkeypatch):
+    loads, smokes = [], []
+    monkeypatch.setattr(service, "authorize_control", lambda _: None)
+    monkeypatch.setattr(service.torch.cuda, "mem_get_info", lambda: (1, 2), raising=False)
+    def pipeline(**kwargs): return SimpleNamespace(images=[fake_image()])
+    def load(preset=None):
+        loads.append(preset)
+        service._pipeline = pipeline
+        service._loaded_preset = preset or service._loaded_preset
+        return pipeline
+    monkeypatch.setattr(service, "_load_pipeline", load)
+    monkeypatch.setattr(service, "_smoke_test", lambda _: smokes.append(service._loaded_preset))
+    service._readiness["ok"] = False
+    request = service.ModelLoadRequest(preset="draft")
+    service.load_model("Bearer test", request)
+    service.load_model("Bearer test", request)
+    service._generate_image(service.ImageRequest(prompt="Scene", preset="draft", model=service.MODEL_ID),
+                            768, 512, threading.Event())
+    assert loads == ["draft"] and smokes == ["draft"]
+    assert service._readiness["ok"] and service._loaded_preset == "draft"
+
+
+def test_model_switch_releases_hooks_and_previous_weights_before_loading(service, monkeypatch):
+    import weakref
+    events = []
+    class Pipeline:
+        _execution_device = SimpleNamespace(type="cuda")
+        unet = SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device=SimpleNamespace(type="cuda"))]))
+        def remove_all_hooks(self): events.append("remove-hooks")
+        def enable_vae_slicing(self): pass
+        def enable_vae_tiling(self): pass
+        def enable_model_cpu_offload(self): pass
+        def to(self, device): pass
+    service._pipeline = Pipeline()
+    old = weakref.ref(service._pipeline)
+    def load(*args, **kwargs):
+        assert old() is None and events == ["remove-hooks", "empty-cache"]
+        return Pipeline()
+    monkeypatch.setattr(service.torch.cuda, "is_available", lambda: True, raising=False)
+    monkeypatch.setattr(service.torch.cuda, "empty_cache", lambda: events.append("empty-cache"))
+    monkeypatch.setattr(service.torch, "float16", "fp16", raising=False)
+    monkeypatch.setattr(service, "AutoPipelineForText2Image", SimpleNamespace(from_pretrained=load))
+    service._load_pipeline("draft")
+    loaded = weakref.ref(service._pipeline)
+    monkeypatch.setattr(service, "authorize_control", lambda _: None)
+    service.unload_model("Bearer test")
+    assert loaded() is None and service._pipeline is None
+    assert service._readiness["parked"] and not service._readiness["model_loaded"]
+
+
+def test_failed_control_smoke_releases_loaded_model_and_blocks_readiness(service, monkeypatch):
+    calls = []
+    class Pipeline:
+        def remove_all_hooks(self): calls.append("released")
+    def load(preset):
+        service._pipeline = Pipeline()
+        return service._pipeline
+    monkeypatch.setattr(service, "authorize_control", lambda _: None)
+    monkeypatch.setattr(service, "_load_pipeline", load)
+    def failed(_): raise RuntimeError("CUDA smoke failure")
+    monkeypatch.setattr(service, "_smoke_test", failed)
+    with pytest.raises(HTTPException) as error:
+        service.load_model("Bearer test", service.ModelLoadRequest(preset="draft"))
+    assert error.value.status_code == 503
+    assert calls == ["released"] and service._pipeline is None
+    assert not service._readiness["ok"] and not service._readiness["model_loaded"]
+
+
+def test_control_endpoint_validates_preset_and_preserves_legacy_empty_body(service, monkeypatch):
+    from fastapi.testclient import TestClient
+    calls = []
+    monkeypatch.setattr(service, "authorize_control", lambda _: None)
+    monkeypatch.setattr(service.torch.cuda, "mem_get_info", lambda: (1, 2), raising=False)
+    def prepare(preset=None):
+        calls.append(preset)
+        service._pipeline = object()
+        service._loaded_preset = preset or service._loaded_preset
+        service._readiness["ok"] = True
+    monkeypatch.setattr(service, "_prepare_pipeline", prepare)
+    service._readiness["ok"] = False
+    client = TestClient(service.app)
+    assert client.post("/models/load").status_code == 200
+    assert client.post("/models/load", json={"preset": "detail"}).status_code == 200
+    assert client.post("/models/load", json={"preset": "unknown"}).status_code == 422
+    assert calls == [None, "detail"]

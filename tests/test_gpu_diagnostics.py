@@ -235,3 +235,29 @@ def test_speech_provider_errors_reach_chunk_retry_policy(tmp_path, monkeypatch, 
         assert gpu.owner.get() is None
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("preset", ["draft", "detail"])
+def test_image_lease_passes_requested_preset_and_restores_speech(tmp_path, monkeypatch, preset):
+    monkeypatch.setattr(gpu, "enabled", True)
+    monkeypatch.setattr(gpu, "lock", asyncio.Lock())
+    monkeypatch.setattr(gpu, "token_file", tmp_path / "control.key")
+    gpu.initialize()
+    requests = []
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"models": []})
+    original = httpx.AsyncClient
+    monkeypatch.setattr(gpu.httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs))
+    async def run():
+        async with gpu.lease("image", image_preset=preset):
+            async with gpu.lease("image", image_preset=preset):
+                pass
+    asyncio.run(run())
+    import json
+    image_base = main.LOCAL_IMAGES_URL.rsplit("/v1/", 1)[0]
+    loads = [r for r in requests if str(r.url) == image_base + "/models/load"]
+    assert len(loads) == 1 and json.loads(loads[0].content) == {"preset": preset}
+    assert str(requests[-2].url) == image_base + "/models/unload"
+    assert str(requests[-1].url) == main.CHATTERBOX_URL + "/models/load"
+    assert requests[-1].content == b""  # Speech control keeps its existing contract.

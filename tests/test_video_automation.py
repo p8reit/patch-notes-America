@@ -121,7 +121,8 @@ def test_batch_images_have_durable_progress_and_skip_locked_or_selected_scenes(t
     from contextlib import asynccontextmanager
     leases=[]
     @asynccontextmanager
-    async def lease(kind):
+    async def lease(kind, image_preset=None):
+        assert image_preset == "draft"
         leases.append(kind)
         yield
     monkeypatch.setattr(gpu,"lease",lease)

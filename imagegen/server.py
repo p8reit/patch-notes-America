@@ -75,16 +75,29 @@ def _require_cuda() -> None:
         raise RuntimeError("IMAGEGEN_DEVICE=cuda was requested, but CUDA is not visible inside the container")
 
 
+def _release_pipeline() -> None:
+    """Remove offload hooks and release model references before collecting memory."""
+    global _pipeline
+    pipeline, _pipeline = _pipeline, None
+    _readiness.update(ok=False, model_loaded=False)
+    try:
+        remove_hooks = getattr(pipeline, "remove_all_hooks", None)
+        if callable(remove_hooks):
+            remove_hooks()
+    finally:
+        del pipeline
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
 def _load_pipeline(preset: str | None = None) -> Any:
     global _pipeline, _loaded_preset
     _require_cuda()
     preset = preset or _loaded_preset
     settings = profile(preset)
     # Never hold Turbo and Base weights at the same time, even on a failed load.
-    _pipeline = None
-    gc.collect()
-    torch.cuda.empty_cache()
-    _readiness.update(ok=False, model_loaded=False, failure="Loading and testing image model")
+    _release_pipeline()
+    _readiness.update(parked=False, failure="Loading and testing image model")
     pipeline = AutoPipelineForText2Image.from_pretrained(
         settings["model"],
         torch_dtype=torch.float16,
@@ -123,6 +136,21 @@ def _smoke_test(pipeline: Any) -> None:
     _readiness.update(model=settings["model"], preset=_loaded_preset,
                       steps=settings["steps"], guidance=settings["guidance"],
                       smoke_size=[width, height], cpu_offload=settings["offload"])
+
+
+def _prepare_pipeline(preset: str | None = None) -> None:
+    """Release temporary references even when CUDA smoke validation fails."""
+    try:
+        pipeline = _load_pipeline() if preset is None else _load_pipeline(preset)
+        try:
+            _smoke_test(pipeline)
+        finally:
+            del pipeline
+    except Exception:
+        _release_pipeline()
+        raise
+    _readiness.update(ok=True, model_loaded=True, parked=False, failure=None,
+                      device="cuda-with-cpu-offload" if profile(_loaded_preset)["offload"] else "cuda")
 
 
 @asynccontextmanager
@@ -168,26 +196,26 @@ def unload_model(authorization: str = Header("")):
     if not _lock.acquire(blocking=False):
         raise HTTPException(409, "Image inference is still active")
     try:
-        _pipeline = None
-        gc.collect()
-        torch.cuda.empty_cache()
-        _readiness.update(ok=False, model_loaded=False, parked=True, failure="Image model parked")
+        _release_pipeline()
+        _readiness.update(parked=True, failure="Image model parked")
         return _readiness
     finally:
         _lock.release()
 
 
+class ModelLoadRequest(BaseModel):
+    preset: Literal["draft", "detail"]
+
+
 @app.post("/models/load")
-def load_model(authorization: str = Header("")):
+def load_model(authorization: str = Header(""), request: ModelLoadRequest | None = None):
     authorize_control(authorization)
     if not _lock.acquire(blocking=False):
         raise HTTPException(409, "Image model is busy")
     try:
-        if not _readiness["ok"]:
-            pipeline = _load_pipeline()
-            _smoke_test(pipeline)
-            _readiness.update(ok=True, model_loaded=True, parked=False, failure=None,
-                              device="cuda-with-cpu-offload" if profile(_loaded_preset)["offload"] else "cuda")
+        preset = request.preset if request is not None else None
+        if not _readiness["ok"] or _pipeline is None or (preset is not None and preset != _loaded_preset):
+            _prepare_pipeline(preset)
         free, total = torch.cuda.mem_get_info()
         return {**_readiness, "free_vram_mb": free // 1048576, "total_vram_mb": total // 1048576}
     except Exception as exc:
@@ -258,12 +286,8 @@ def _generate_image(
                 raise HTTPException(503, "Image model is parked")
             if _loaded_preset != request.preset:
                 try:
-                    pipeline = _load_pipeline(request.preset)
-                    _smoke_test(pipeline)
-                    del pipeline
-                    _readiness.update(ok=True, model_loaded=True, parked=False, failure=None)
+                    _prepare_pipeline(request.preset)
                 except Exception as exc:
-                    _pipeline = None
                     _readiness.update(ok=False, model_loaded=False, failure="Image preset failed CUDA readiness: " + type(exc).__name__)
                     raise HTTPException(503, "Image preset failed CUDA readiness") from exc
             check_cancelled()

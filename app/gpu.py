@@ -39,11 +39,12 @@ def model(kind: str, when=None):
     return decorate
 
 
-async def control(client: httpx.AsyncClient, url: str, operation: str) -> None:
+async def control(client: httpx.AsyncClient, url: str, operation: str, preset: str | None = None) -> None:
     deadline = asyncio.get_running_loop().time() + CONTROL_BUSY_TIMEOUT_SECONDS
     while True:
+        options = {"json": {"preset": preset}} if preset is not None else {}
         response = await client.post(url.rstrip("/") + "/models/" + operation,
-                                     headers={"Authorization": "Bearer " + token_file.read_text().strip()})
+                                     headers={"Authorization": "Bearer " + token_file.read_text().strip()}, **options)
         if response.status_code != 409:
             break
         state["pending"] = True
@@ -119,7 +120,9 @@ def handoff_failure(exc: httpx.HTTPError) -> str:
 
 
 @asynccontextmanager
-async def lease(kind: str):
+async def lease(kind: str, image_preset: str | None = None):
+    if image_preset is not None and (kind != "image" or image_preset not in {"draft", "detail"}):
+        raise ValueError("Image preset requires an image lease and must be draft or detail")
     if not enabled or owner.get() == kind:
         yield
         return
@@ -144,7 +147,10 @@ async def lease(kind: str):
                             pass
                     await unload_planner(client)
                     if kind in {"speech", "image"}:
-                        await control(client, main.CHATTERBOX_URL if kind == "speech" else image_url, "load")
+                        if kind == "image" and image_preset is not None:
+                            await control(client, image_url, "load", preset=image_preset)
+                        else:
+                            await control(client, main.CHATTERBOX_URL if kind == "speech" else image_url, "load")
                     try:
                         yield
                     except httpx.HTTPError as exc:

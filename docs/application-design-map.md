@@ -372,7 +372,13 @@ Update this map whenever a change introduces a new primary object, workflow stag
 
 Full video exports use a separate persistent queue with atomic `job.json` snapshots under `data/video/exports/`. Active jobs recover on restart; cancelled jobs remain terminal. Content-addressed scene outputs survive retry and exports include caption/credits/chapter sidecars. The video queue never invokes TTS. Its lifecycle is started/stopped alongside the existing audio queue.
 
-`app/video_automation.py` adds local-only visual planning, durable image batches, and bounded Pixabay/Pexels search/import. `app/gpu.py` serializes model ownership using token-authenticated `/models/load` and `/models/unload` endpoints on internal services, with no Docker daemon access. Compose shares a read-only control mount and parks images until CUDA loading and smoke testing complete. Locked scenes survive planning and concurrent edits are detected.
+`app/video_automation.py` adds local-only visual planning, durable image batches, and bounded Pixabay/Pexels search/import. `app/gpu.py` serializes model ownership using token-authenticated `/models/load` and `/models/unload` endpoints on internal services, with no Docker daemon access. Compose shares a read-only control mount and parks images until CUDA loading and smoke testing complete. Locked scenes survive planning and concurrent edits are detected. Video Studio
+passes its validated image preset into the GPU lease. Imagegen's authenticated
+`POST /models/load` accepts an optional `{ "preset": "draft" | "detail" }` body;
+empty-body callers retain the last-selected-preset behavior. Requested presets
+load and pass CUDA smoke testing before the image request, avoiding an initial
+default-model switch. Offload hooks and model references are released before
+replacement/unload; a failed smoke test also releases the model.
 
 GPU handoff HTTP errors expose a safe service name, permitted operation path,
 status and targeted troubleshooting hint. Credentials, request/response bodies

@@ -552,7 +552,9 @@ def test_real_ffmpeg_build_downloads_selected_stock_generates_local_images_and_e
     leases = []
     from contextlib import asynccontextmanager
     @asynccontextmanager
-    async def lease(kind):
+    async def lease(kind, image_preset=None):
+        if kind == "image":
+            assert image_preset == project["image_preset"]
         leases.append(kind)
         yield
     monkeypatch.setattr(video.gpu, "lease", lease)
@@ -636,7 +638,9 @@ def test_video_provider_quality_and_gpu_boundary(studio, monkeypatch, provider):
     assert studio.put(f"/api/video/projects/{project['id']}", json=project).status_code == 200
     leases, requests = [], []
     @asynccontextmanager
-    async def lease(kind):
+    async def lease(kind, image_preset=None):
+        if kind == "image":
+            assert image_preset == project["image_preset"]
         leases.append(kind)
         yield
     class Client:
