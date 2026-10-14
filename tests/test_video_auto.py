@@ -26,6 +26,8 @@ def setup(tmp_path, monkeypatch):
     calls = []
     async def local(client, instruction, material):
         calls.append(("ai", material))
+        if material.get("task") == "broll_queries":
+            return {"queries": ["residential street", "apartment buildings", "construction"]}
         if "scenes" in material:
             return {"scenes": [{"id": s["id"], "media_type": "broll" if int(s["id"][5:]) % 2 == 0 else "image",
                                 "intent": "Establish neighborhood", "query": "housing neighborhood city", "prompt": "A neighborhood illustration"}
@@ -113,7 +115,7 @@ def test_auto_no_results_is_bounded_and_never_claims_a_mixed_video(setup, monkey
     monkeypatch.setattr(stock, "search", empty)
     with pytest.raises(HTTPException, match="No suitable B-roll found"):
         asyncio.run(auto.automatic_visuals(job, lambda *x: None))
-    assert len(queries) == 8  # Two queries per scene, four total passages.
+    assert len(queries) == 20  # Five distinct phrases per passage; empty pages stop pagination.
     assert all(s["stock_id"] is None for s in job["project"]["scenes"])
 
 
@@ -277,3 +279,155 @@ def test_local_ai_planning_request_uses_scene_specific_schema(monkeypatch):
     assert array["items"]["properties"]["id"]["enum"] == ["one", "two"]
     assert array["items"]["properties"]["media_type"]["enum"] == ["image", "broll"]
     assert set(array["items"]["required"]) == {"id", "media_type", "intent", "query", "prompt"}
+
+
+def test_search_rewrites_abstract_query_using_passage_and_intent(setup, monkeypatch):
+    job, candidate, calls = setup
+    scene = job["project"]["scenes"][0]
+    scene.update(query="affordability legislative debate", intent="Housing costs",
+                 text="New housing policy is being debated")
+    searches = []
+    async def search(body):
+        searches.append(body)
+        return {"created": 123, "candidates": [candidate] if body["query"] == "apartment buildings" else []}
+    async def choose(client, instruction, material):
+        if material.get("task") == "broll_queries":
+            assert material["passage"] == scene["text"]
+            assert material["intent"] == scene["intent"]
+            return {"queries": ["residential street", "apartment buildings", "construction"]}
+        assert "do not require the exact" in instruction
+        return {"candidate_id": "clip", "reason": "Related housing setting"}
+    monkeypatch.setattr(stock, "search", search)
+    monkeypatch.setattr(auto, "local_json", choose)
+    result = asyncio.run(auto.select_footage(None, scene, "pixabay"))
+    assert result["stock"] == candidate
+    assert [b["query"] for b in searches] == ["affordability legislative debate", "affordability legislative", "residential street", "apartment buildings"]
+
+
+def test_search_ranks_results_beyond_first_ten(setup, monkeypatch):
+    job, candidate, calls = setup
+    rows = [{**candidate, "id": str(i), "url": f"https://cdn.pixabay.com/video/{i}.mp4"} for i in range(25)]
+    batches = []
+    async def search(body): return {"created": 123, "candidates": rows}
+    async def choose(client, instruction, material):
+        ids = [c["id"] for c in material["candidates"]]
+        batches.append(ids)
+        return {"candidate_id": "22" if "22" in ids else None, "reason": "Metadata match"}
+    monkeypatch.setattr(stock, "search", search)
+    monkeypatch.setattr(auto, "local_json", choose)
+    result = asyncio.run(auto.select_footage(None, job["project"]["scenes"][0], "pixabay"))
+    assert result["stock"]["id"] == "22"
+    assert list(map(len, batches)) == [10, 10, 5]
+
+
+def test_search_paginates_after_full_page_of_short_clips(setup, monkeypatch):
+    job, candidate, calls = setup
+    searches = []
+    async def search(body):
+        searches.append(body)
+        rows = [{**candidate, "id": str(i), "duration": 1} for i in range(30)] if body["page"] == 1 else [candidate]
+        return {"created": 123, "candidates": rows}
+    monkeypatch.setattr(stock, "search", search)
+    result = asyncio.run(auto.select_footage(None, job["project"]["scenes"][0], "pixabay"))
+    assert result["stock"] == candidate
+    assert [body["page"] for body in searches] == [1, 2]
+    assert all(body["per_page"] == 30 for body in searches)
+
+
+def test_search_considers_reused_clip_when_fresh_clips_are_irrelevant(setup, monkeypatch):
+    job, candidate, calls = setup
+    fresh = {**candidate, "id": "fresh", "url": "https://cdn.pixabay.com/video/fresh.mp4"}
+    batches = []
+    async def search(body): return {"created": 123, "candidates": [candidate, fresh]}
+    async def choose(client, instruction, material):
+        ids = [c["id"] for c in material["candidates"]]
+        batches.append(ids)
+        return {"candidate_id": "clip" if "clip" in ids else None, "reason": "Only reused clip matches"}
+    monkeypatch.setattr(stock, "search", search)
+    monkeypatch.setattr(auto, "local_json", choose)
+    result = asyncio.run(auto.select_footage(None, job["project"]["scenes"][0], "pixabay", {candidate["url"]}))
+    assert result["stock"] == candidate
+    assert batches == [["fresh"], ["clip"]]
+
+
+def test_search_deduplicates_queries_and_rejected_candidate_urls(setup, monkeypatch):
+    job, candidate, calls = setup
+    searches, ranks = [], []
+    async def search(body):
+        searches.append(body)
+        return {"created": 123, "candidates": [candidate, candidate]}
+    async def choose(client, instruction, material):
+        if material.get("task") == "broll_queries":
+            return {"queries": ["HOUSING", "housing", "apartment"]}
+        ranks.append(material)
+        return {"candidate_id": None, "reason": "Unrelated"}
+    monkeypatch.setattr(stock, "search", search)
+    monkeypatch.setattr(auto, "local_json", choose)
+    assert asyncio.run(auto.select_footage(None, job["project"]["scenes"][0], "pixabay")) is None
+    assert [b["query"] for b in searches] == ["housing", "apartment"]
+    assert len(ranks) == 1 and len(ranks[0]["candidates"]) == 1
+
+
+def test_search_never_selects_an_id_from_another_ranking_batch(setup, monkeypatch):
+    job, candidate, calls = setup
+    rows = [{**candidate, "id": str(i), "url": f"https://cdn.pixabay.com/video/{i}.mp4"} for i in range(20)]
+    async def search(body): return {"created": 123, "candidates": rows}
+    async def choose(*args): return {"candidate_id": "15", "reason": "Outside this batch"}
+    monkeypatch.setattr(stock, "search", search)
+    monkeypatch.setattr(auto, "local_json", choose)
+    with pytest.raises(HTTPException, match="outside the provider results"):
+        asyncio.run(auto.select_footage(None, job["project"]["scenes"][0], "pixabay"))
+    assert not (video.ROOT / "stock-selections").exists()
+
+
+def test_search_exhaustion_is_bounded_even_when_all_pages_are_full(setup, monkeypatch):
+    job, candidate, calls = setup
+    scene = job["project"]["scenes"][0]
+    scene["query"] = "housing neighborhood city"
+    searches = []
+    async def search(body):
+        searches.append(body)
+        return {"created": 123, "candidates": [{**candidate, "duration": 1} for _ in range(30)]}
+    monkeypatch.setattr(stock, "search", search)
+    assert asyncio.run(auto.select_footage(None, scene, "pixabay")) is None
+    assert len(searches) == 10
+    assert all(b["per_page"] == 30 for b in searches)
+    assert sum(kind == "ai" for kind, _ in calls) == 1  # Only query expansion, no unsafe/short ranking.
+
+
+def test_search_stops_on_provider_quota_error(setup, monkeypatch):
+    job, candidate, calls = setup
+    searches = []
+    async def search(body):
+        searches.append(body)
+        raise HTTPException(429, "Quota reached")
+    monkeypatch.setattr(stock, "search", search)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(auto.select_footage(None, job["project"]["scenes"][0], "pixabay"))
+    assert error.value.status_code == 429 and len(searches) == 1
+    assert calls == []
+
+
+@pytest.mark.parametrize("queries", [None, [], [" "], [1], ["a", "b", "c", "d"]])
+def test_search_rejects_malformed_query_expansion(setup, monkeypatch, queries):
+    job, candidate, calls = setup
+    async def search(body): return {"created": 123, "candidates": []}
+    async def choose(*args): return {"queries": queries}
+    monkeypatch.setattr(stock, "search", search)
+    monkeypatch.setattr(auto, "local_json", choose)
+    with pytest.raises(HTTPException, match="invalid B-roll search queries"):
+        asyncio.run(auto.select_footage(None, job["project"]["scenes"][0], "pixabay"))
+
+
+def test_query_and_choice_requests_are_constrained_by_schema(monkeypatch):
+    requests = []
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": '{}'}})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            await auto.local_json(client, "Expand", {"task": "broll_queries"})
+            await auto.local_json(client, "Choose", {"candidates": [{"id": "approved"}]})
+    asyncio.run(run())
+    assert requests[0]["format"]["properties"]["queries"]["maxItems"] == 3
+    assert requests[1]["format"]["properties"]["candidate_id"]["enum"] == [None, "approved"]

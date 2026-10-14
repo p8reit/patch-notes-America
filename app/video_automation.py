@@ -26,10 +26,17 @@ async def search(body: dict = Body(...)):
     provider, query = body.get("provider", "pixabay"), str(body.get("query", "")).strip()[:100]
     if provider not in {"pixabay", "pexels"} or not query:
         raise HTTPException(400, "Choose Pixabay or Pexels and a search phrase")
+    page, per_page = body.get("page", 1), body.get("per_page", 10)
+    if (type(page) is not int or not 1 <= page <= 2
+            or type(per_page) is not int or not 3 <= per_page <= 30):
+        raise HTTPException(400, "Stock search supports pages 1-2 and 3-30 results per page")
     key = os.getenv("PIXABAY_API_KEY" if provider == "pixabay" else "PEXELS_API_KEY", "")
     if not key:
         raise HTTPException(503, f"Configure {provider.upper()}_API_KEY or import downloaded free footage")
-    cache_id = hashlib.sha256((provider + query).encode()).hexdigest()
+    cache_key = provider + query
+    if page != 1 or per_page != 10:
+        cache_key = json.dumps([provider, query, page, per_page])
+    cache_id = hashlib.sha256(cache_key.encode()).hexdigest()
     path = video.ROOT / "search" / (cache_id + ".json")
     if path.exists():
         cached = video.read(path)
@@ -37,16 +44,16 @@ async def search(body: dict = Body(...)):
             return cached
     async with httpx.AsyncClient(timeout=30) as client:
         if provider == "pixabay":
-            response = await client.get("https://pixabay.com/api/videos/", params={"key": key, "q": query, "per_page": 10, "safesearch": "true"})
+            response = await client.get("https://pixabay.com/api/videos/", params={"key": key, "q": query, "per_page": per_page, "page": page, "safesearch": "true"})
         else:
-            response = await client.get("https://api.pexels.com/v1/videos/search", params={"query": query, "per_page": 10}, headers={"Authorization": key})
+            response = await client.get("https://api.pexels.com/v1/videos/search", params={"query": query, "per_page": per_page, "page": page}, headers={"Authorization": key})
         if response.status_code == 429:
             raise HTTPException(429, "Stock search quota reached. Reuse cached results or import footage.")
         if not response.is_success:
             raise HTTPException(502, "Stock provider search failed; check your API access")
         payload = response.json()
     candidates = []
-    for row in payload.get("hits" if provider == "pixabay" else "videos", [])[:10]:
+    for row in payload.get("hits" if provider == "pixabay" else "videos", [])[:per_page]:
         if provider == "pixabay":
             variants = [v for v in row.get("videos", {}).values() if v.get("url")]
             creator, source = row.get("user", "Unknown"), row.get("pageURL", "")

@@ -957,9 +957,14 @@ requires it on your host. The app reports missing keys or unavailable Ollama
 without using a paid model.
 
 The AI chooses from provider metadata (tags, source URLs, duration, dimensions);
-it does not inspect video frames. Each scene uses at most two ten-result searches,
-only chosen footage is downloaded, previously used footage is avoided when
-alternatives exist, and repeated chosen clips reuse their download. Missing
+it does not inspect video frames. Automatic search first tries the scene query
+and its shorter form, then asks local AI for up to three distinct, concrete
+search phrases when those fail. Each phrase searches up to two pages of 30
+results; short pages stop pagination. Safe clips long enough for the scene
+are ranked in batches of ten, allowing related settings and activities to
+illustrate abstract or named-event passages without claiming actual event footage.
+Only chosen footage is downloaded. Unseen clips are ranked first, with reused
+clips considered if those do not match; repeated choices reuse their download. Missing
 matches can become generated images, with notes on the job. If no B-roll can
 be found for the range, the job stops with an actionable error rather than
 producing an image-only video. Planning batches and selected clips are
