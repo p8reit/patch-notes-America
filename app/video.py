@@ -335,9 +335,9 @@ def image_options(project: dict) -> tuple[str, dict]:
 
 @asynccontextmanager
 async def image_lease(project: dict):
-    provider, _ = image_options(project)
+    provider, settings = image_options(project)
     if provider == "local":
-        async with gpu.lease("image"):
+        async with gpu.lease("image", image_preset=settings["preset"]):
             yield
     else:
         yield

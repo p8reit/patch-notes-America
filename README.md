@@ -845,11 +845,20 @@ LOCAL_IMAGE_MAX_PROMPT_CHARS=4000
 Start/rebuild with `./scripts/start-and-check.sh --gpu --local-image`.
 Weights persist in `imagegen-models`. First downloads may take minutes. The
 service starts parked with handoffs enabled; model load requires a real CUDA
-image smoke test. The initial lease loads `LOCAL_IMAGE_PRESET` (Detail by
-default). Switching
-profiles releases the previous model before loading and smoke-testing the new
-one at native square resolution with its actual step/guidance settings. Later
-loads use the last selected profile.
+image smoke test. Video Studio leases load the storyboard's requested preset
+directly, so a Draft storyboard does not first load and test Detail. Legacy
+load requests without a preset use the last selected profile (initially
+`LOCAL_IMAGE_PRESET`, Detail by default). Switching profiles and unloading remove
+offload hooks, release model references, collect garbage and clear the CUDA
+cache before another model loads. The requested model is smoke-tested at native
+square resolution with its actual step/guidance settings. Failed smoke tests
+also release the loaded model. Rebuild both app and imagegen for this control
+request change; stored projects and assets need no migration.
+
+CPU offload reduces VRAM use by keeping weights in host RAM; it does not reduce
+the host's memory requirement. A 16 GiB host can still run out of RAM during
+image generation. These cleanup changes do not establish a measured peak-memory
+guarantee; monitor host RAM/swap and container memory on the target hardware.
 Failed loading or smoke testing leaves inference unready. Keep handoffs enabled
 to park speech during local image work. The legacy full Compose configuration
 has no automatic handoffs; manage model contention explicitly there.
