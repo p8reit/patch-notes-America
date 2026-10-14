@@ -378,7 +378,11 @@ passes its validated image preset into the GPU lease. Imagegen's authenticated
 empty-body callers retain the last-selected-preset behavior. Requested presets
 load and pass CUDA smoke testing before the image request, avoiding an initial
 default-model switch. Offload hooks and model references are released before
-replacement/unload; a failed smoke test also releases the model.
+replacement/unload; a failed smoke test also releases the model. Both image
+presets require full CUDA residency for UNet, VAE and text-encoder parameters
+and buffers. CPU offload settings are rejected even at parked startup; Compose
+and example configuration disable them. VRAM exhaustion fails without CPU
+offload. Host CPU work for model loading, tokenization and PNG encoding remains.
 
 GPU handoff HTTP errors expose a safe service name, permitted operation path,
 status and targeted troubleshooting hint. Credentials, request/response bodies
