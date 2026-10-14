@@ -407,9 +407,17 @@ request. Automatic jobs defer missing-source validation until local planning and
 selection finish. Unassigned, unlocked scenes are planned in bounded 12-scene
 Ollama batches; selected media is preserved. The local model ranks trusted stock
 results using metadata, after duration/CDN filtering. It cannot invent a URL or
-choose an ID outside the results. At most two ten-result searches are used per
-passage, with up to three alternate passages if necessary to retain a mixed
-export. No-match scenes become images with recorded warnings; provider
+choose an ID outside the results. Automatic search tries the original and
+shortened phrase, then up to three concrete, context-aware local-AI rewrites.
+Each phrase retrieves at most two 30-result pages, stopping on a short page.
+`POST /api/video/stock/search` accepts optional `page` (1-2) and `per_page`
+(3-30), with the original defaults of page 1 and ten results. Expanded searches
+have separate cache keys; existing saved search IDs remain usable.
+Trusted, sufficiently long clips are deduplicated by URL and ranked in batches
+of ten, preferring unseen clips but allowing relevant reused footage when
+fresh candidates fail. Related settings and activities can illustrate a topic
+without claiming to document a named event. Up to three alternate passages
+are searched if necessary to retain a mixed export. No-match scenes become images with recorded warnings; provider
 or model errors remain visible failures. The planner GPU lease completes before
 the image lease. Planning/selection checkpoints and per-job downloaded-stock
 reuse join the existing cancellation/recovery behavior. The Auto-create button

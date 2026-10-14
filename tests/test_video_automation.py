@@ -166,3 +166,45 @@ def test_build_reuses_one_prepared_clip_across_split_scenes_and_repairs_missing_
     assert video.read(path)["asset_id"] == "clip"
     assert video.read(other_path)["asset_id"] == "clip"
     assert checkpoints[-1] == (2, 2, "assets ready")
+
+
+@pytest.mark.parametrize("provider", ["pixabay", "pexels"])
+def test_expanded_search_paginates_and_separates_cache_entries(tmp_path, monkeypatch, provider):
+    monkeypatch.setattr(video, "ROOT", tmp_path)
+    monkeypatch.setenv(f"{provider.upper()}_API_KEY", "private-key")
+    calls = []
+    class Client:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def get(self, url, **kwargs):
+            calls.append(kwargs)
+            page = kwargs["params"]["page"]
+            rows = [{"id": page*100+i, "user": {"name": "Creator"} if provider == "pexels" else "Creator",
+                     "pageURL": "https://pixabay.com/videos/example/", "url": "https://www.pexels.com/video/example/",
+                     "duration": 12,
+                     "videos": {"large": {"url": "https://cdn.pixabay.com/video/example.mp4", "width": 1920, "height": 1080}},
+                     "video_files": [{"link": "https://videos.pexels.com/example.mp4", "file_type": "video/mp4", "width": 1920, "height": 1080}]}
+                    for i in range(35)]
+            return Result({"hits" if provider == "pixabay" else "videos": rows})
+    monkeypatch.setattr(automation.httpx, "AsyncClient", Client)
+    async def run():
+        default = await automation.search({"provider": provider, "query": "housing"})
+        expanded = await automation.search({"provider": provider, "query": "housing", "per_page": 30})
+        second = await automation.search({"provider": provider, "query": "housing", "per_page": 30, "page": 2})
+        assert len(default["candidates"]) == 10
+        assert len(expanded["candidates"]) == len(second["candidates"]) == 30
+        assert len({default["id"], expanded["id"], second["id"]}) == 3
+        assert second["candidates"][0]["id"] == "200"
+        assert await automation.search({"provider": provider, "query": "housing", "per_page": 30, "page": 2}) == second
+    asyncio.run(run())
+    assert len(calls) == 3
+    assert [c["params"]["per_page"] for c in calls] == [10, 30, 30]
+    assert all("private-key" not in path.read_text() for path in (tmp_path / "search").glob("*.json"))
+
+
+@pytest.mark.parametrize("bounds", [{"page": 0}, {"page": 3}, {"page": True}, {"per_page": 31}, {"per_page": "30"}])
+def test_stock_search_rejects_unbounded_pagination(bounds):
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(automation.search({"query": "housing", **bounds}))
+    assert error.value.status_code == 400
