@@ -217,3 +217,63 @@ def test_auto_accepts_numeric_provider_ids_only_when_present_in_results(setup, m
     monkeypatch.setattr(auto, "local_json", choose)
     result = asyncio.run(auto.select_footage(None, job["project"]["scenes"][0], "pixabay"))
     assert result["stock"]["id"] == "123"
+
+
+@pytest.mark.parametrize("failure", ["missing", "duplicate", "empty", "json"])
+def test_auto_retries_malformed_plan_before_applying_choices(setup, monkeypatch, failure):
+    job, candidate, calls = setup
+    original = auto.local_json
+    snapshot = copy.deepcopy(job["project"])
+    attempts = []
+    async def respond(client, instruction, material):
+        if "scenes" not in material:
+            return await original(client, instruction, material)
+        attempts.append(material)
+        assert job["project"] == snapshot
+        if len(attempts) == 1:
+            if failure == "json":
+                raise HTTPException(502, "Invalid JSON")
+            result = await original(client, instruction, material)
+            if failure == "missing":
+                result["scenes"].pop()
+            elif failure == "duplicate":
+                result["scenes"][-1] = result["scenes"][0]
+            else:
+                result["scenes"][-1]["query"] = " "
+            return result
+        return await original(client, instruction, material)
+    monkeypatch.setattr(auto, "local_json", respond)
+    checkpoints = []
+    asyncio.run(auto.automatic_visuals(job, lambda *args: checkpoints.append(args)))
+    assert len(attempts) == 2
+    assert job["auto_plan_complete"]
+    assert (0, 4, "retrying invalid visual plan locally") in checkpoints
+
+
+def test_auto_does_not_retry_unavailable_planner(setup, monkeypatch):
+    job, candidate, calls = setup
+    attempts = []
+    async def unavailable(*args):
+        attempts.append(args)
+        raise HTTPException(503, "Unavailable")
+    monkeypatch.setattr(auto, "local_json", unavailable)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(auto.automatic_visuals(job, lambda *args: None))
+    assert error.value.status_code == 503
+    assert len(attempts) == 1
+
+
+def test_local_ai_planning_request_uses_scene_specific_schema(monkeypatch):
+    requests = []
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": '{"scenes":[]}'}})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            await auto.local_json(client, "Plan visuals", {"scenes": [{"id": "one"}, {"id": "two"}]})
+    asyncio.run(run())
+    array = requests[0]["format"]["properties"]["scenes"]
+    assert array["minItems"] == array["maxItems"] == 2
+    assert array["items"]["properties"]["id"]["enum"] == ["one", "two"]
+    assert array["items"]["properties"]["media_type"]["enum"] == ["image", "broll"]
+    assert set(array["items"]["required"]) == {"id", "media_type", "intent", "query", "prompt"}
