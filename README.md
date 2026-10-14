@@ -963,7 +963,9 @@ alternatives exist, and repeated chosen clips reuse their download. Missing
 matches can become generated images, with notes on the job. If no B-roll can
 be found for the range, the job stops with an actionable error rather than
 producing an image-only video. Planning batches and selected clips are
-checkpointed for restart recovery. Review the completed video before publishing.
+checkpointed for restart recovery. Automatic planning requests a scene-specific JSON
+schema and retries a malformed batch once before reporting an error; invalid
+batches never replace scene choices. Review the completed video before publishing.
 
 Choose a finished episode in **Video Studio**, create or load a storyboard,
 and choose **Create an image** or **Find free B-roll** for every scene.
