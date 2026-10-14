@@ -808,11 +808,11 @@ are not qualified. SDXL Base has roughly 3.5 billion parameters across its UNet,
 text encoders and VAE: fp16 weights alone are about 7 GB (decimal), before
 latents, classifier-free-guidance activations, CUDA workspace and VAE decode.
 Full CUDA placement can approach or exceed the usable 12 GB at native resolution,
-especially alongside speech. Detail therefore defaults to model CPU offload,
-VAE slicing/tiling, and one loaded image model at a time. CUDA remains mandatory;
-offload moves inactive components to CPU and still executes inference on CUDA.
-Allow at least 16 GB system RAM (32 GB recommended), plus disk space for both
-model downloads. Exact peak RAM/VRAM must be measured on the target host.
+especially alongside speech. Both presets require full CUDA placement: CPU
+offload is prohibited. VAE slicing/tiling and one loaded image model at a time
+reduce VRAM pressure. Model loading, tokenization and PNG encoding still use
+host CPU/RAM; neural image generation stays on the GPU. Exact peak RAM/VRAM
+must be measured on the target host; select Draft when Detail cannot fit.
 
 | Profile | Model | Steps / guidance | Actual square / landscape / portrait PNG |
 | --- | --- | --- | --- |
@@ -838,7 +838,7 @@ LOCAL_IMAGE_CPU_OFFLOAD=false
 LOCAL_IMAGE_DETAIL_MODEL=stabilityai/stable-diffusion-xl-base-1.0
 LOCAL_IMAGE_DETAIL_STEPS=30
 LOCAL_IMAGE_DETAIL_GUIDANCE=5.0
-LOCAL_IMAGE_DETAIL_CPU_OFFLOAD=true
+LOCAL_IMAGE_DETAIL_CPU_OFFLOAD=false
 LOCAL_IMAGE_MAX_PROMPT_CHARS=4000
 ```
 
@@ -855,22 +855,21 @@ square resolution with its actual step/guidance settings. Failed smoke tests
 also release the loaded model. Rebuild both app and imagegen for this control
 request change; stored projects and assets need no migration.
 
-CPU offload reduces VRAM use by keeping weights in host RAM; it does not reduce
-the host's memory requirement. A 16 GiB host can still run out of RAM during
-image generation. These cleanup changes do not establish a measured peak-memory
-guarantee; monitor host RAM/swap and container memory on the target hardware.
+Existing `.env` files must set both `LOCAL_IMAGE_CPU_OFFLOAD=false` and
+`LOCAL_IMAGE_DETAIL_CPU_OFFLOAD=false`. Enabled offload settings now fail
+readiness with a configuration error, including parked startup. Model placement
+validates UNet, VAE and text-encoder parameters/buffers on CUDA; insufficient
+VRAM fails instead of moving weights to CPU. Peak memory remains hardware-dependent.
 Failed loading or smoke testing leaves inference unready. Keep handoffs enabled
 to park speech during local image work. The legacy full Compose configuration
 has no automatic handoffs; manage model contention explicitly there.
 
-Draft is the faster preview option. Detail's 30 steps, larger latents, CPU
-transfers, model loads and full-resolution smoke tests can make requests take
+Draft is the faster preview option. Detail's 30 steps, larger latents,
+model loads and full-resolution smoke tests can make requests take
 minutes; no measured 3060 latency or peak-memory figures are available here.
 The app allows a 600-second provider timeout. Each request is serialized.
 If Detail runs out of VRAM, select Draft explicitly rather than expecting a
-silent CPU fallback. Keep `LOCAL_IMAGE_DETAIL_CPU_OFFLOAD=true` on a 3060 unless
-you have measured adequate headroom. Disabling offload is for qualified larger
-GPUs. Faces/hands can still contain artifacts; inspect results and retry with
+CPU offload. Both offload settings must remain false. Faces/hands can still contain artifacts; inspect results and retry with
 clear lighting, framing, fictional subjects and fewer people. Neither model nor
 High hosted quality guarantees perfect faces.
 

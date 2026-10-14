@@ -25,7 +25,7 @@ DETAIL_MODEL_ID = os.getenv("IMAGEGEN_DETAIL_MODEL", "stabilityai/stable-diffusi
 DETAIL_MODEL_REVISION = os.getenv("IMAGEGEN_DETAIL_MODEL_REVISION", "")
 DETAIL_STEPS = int(os.getenv("IMAGEGEN_DETAIL_STEPS", "30"))
 DETAIL_GUIDANCE = float(os.getenv("IMAGEGEN_DETAIL_GUIDANCE", "5.0"))
-DETAIL_CPU_OFFLOAD = os.getenv("IMAGEGEN_DETAIL_CPU_OFFLOAD", "true").lower() in {"1", "true", "yes"}
+DETAIL_CPU_OFFLOAD = os.getenv("IMAGEGEN_DETAIL_CPU_OFFLOAD", "false").lower() in {"1", "true", "yes"}
 DEFAULT_PRESET = os.getenv("IMAGEGEN_DEFAULT_PRESET", "detail")
 _loaded_preset = DEFAULT_PRESET
 
@@ -69,6 +69,9 @@ class ImageRequest(BaseModel):
 
 
 def _require_cuda() -> None:
+    if CPU_OFFLOAD or DETAIL_CPU_OFFLOAD:
+        raise RuntimeError("CPU offload is disabled: set LOCAL_IMAGE_CPU_OFFLOAD=false and "
+                           "LOCAL_IMAGE_DETAIL_CPU_OFFLOAD=false, then recreate imagegen")
     if DEVICE != "cuda":
         raise RuntimeError("Local image generation is fail-closed and requires IMAGEGEN_DEVICE=cuda")
     if not torch.cuda.is_available():
@@ -90,6 +93,22 @@ def _release_pipeline() -> None:
         torch.cuda.empty_cache()
 
 
+def _validate_pipeline_cuda(pipeline: Any) -> None:
+    """Require every neural component's parameters and buffers to stay on CUDA."""
+    for name in ["unet", "vae", "text_encoder", "text_encoder_2"]:
+        component = getattr(pipeline, name, None)
+        if component is None:
+            if name == "unet":
+                raise RuntimeError("Image model has no CUDA UNet")
+            continue
+        tensors = list(component.parameters())
+        buffers = getattr(component, "buffers", None)
+        if callable(buffers):
+            tensors.extend(buffers())
+        if not tensors or any(tensor.device.type != "cuda" for tensor in tensors):
+            raise RuntimeError(f"Image component {name} did not resolve entirely to CUDA; CPU offload is disabled")
+
+
 def _load_pipeline(preset: str | None = None) -> Any:
     global _pipeline, _loaded_preset
     _require_cuda()
@@ -107,15 +126,8 @@ def _load_pipeline(preset: str | None = None) -> Any:
     )
     pipeline.enable_vae_slicing()
     pipeline.enable_vae_tiling()
-    if settings["offload"]:
-        pipeline.enable_model_cpu_offload()
-        if pipeline._execution_device.type != "cuda":
-            raise RuntimeError("Offloaded image model did not resolve to CUDA execution")
-    else:
-        pipeline.to("cuda")
-        parameters = list(pipeline.unet.parameters())
-        if not parameters or parameters[0].device.type != "cuda":
-            raise RuntimeError("Image model did not resolve to CUDA")
+    pipeline.to("cuda")
+    _validate_pipeline_cuda(pipeline)
     _loaded_preset = preset
     _pipeline = pipeline
     return pipeline
@@ -150,7 +162,7 @@ def _prepare_pipeline(preset: str | None = None) -> None:
         _release_pipeline()
         raise
     _readiness.update(ok=True, model_loaded=True, parked=False, failure=None,
-                      device="cuda-with-cpu-offload" if profile(_loaded_preset)["offload"] else "cuda")
+                      device="cuda")
 
 
 @asynccontextmanager
@@ -170,7 +182,7 @@ async def lifespan(_app: FastAPI):
             "model_loaded": True,
             "failure": None,
             "model": profile(_loaded_preset)["model"],
-            "device": "cuda-with-cpu-offload" if profile(_loaded_preset)["offload"] else str(next(pipeline.unet.parameters()).device),
+            "device": "cuda",
             "gpu": torch.cuda.get_device_name(0),
         })
         del pipeline  # Do not retain startup weights across later preset switches.
@@ -292,7 +304,7 @@ def _generate_image(
                     raise HTTPException(503, "Image preset failed CUDA readiness") from exc
             check_cancelled()
             settings = profile(request.preset)
-            _readiness["device"] = "cuda-with-cpu-offload" if settings["offload"] else "cuda"
+            _readiness["device"] = "cuda"
             image = _pipeline(
                 prompt=request.prompt,
                 num_inference_steps=settings["steps"],
@@ -305,7 +317,7 @@ def _generate_image(
             check_cancelled()
     except torch.OutOfMemoryError as exc:
         torch.cuda.empty_cache()
-        raise HTTPException(status_code=503, detail="GPU ran out of memory during image generation") from exc
+        raise HTTPException(status_code=503, detail="GPU ran out of memory during image generation; select Draft or free GPU memory. CPU offload is disabled") from exc
     check_cancelled()
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)

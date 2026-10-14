@@ -167,7 +167,7 @@ def test_profile_smoke_uses_native_resolution_and_appropriate_inference(service,
     assert service._readiness['preset'] == preset
 
 
-@pytest.mark.parametrize('preset,offload', [('draft', False), ('detail', True)])
+@pytest.mark.parametrize('preset,offload', [('draft', False), ('detail', False)])
 def test_loading_selects_model_precision_and_memory_strategy(service, monkeypatch, preset, offload):
     calls = []
     class Pipeline:
@@ -237,14 +237,15 @@ def test_loading_remains_fail_closed_without_cuda(service, monkeypatch):
         service._load_pipeline('detail')
 
 
-def test_offload_cannot_resolve_to_cpu_execution(service, monkeypatch):
+def test_loading_rejects_cpu_component_placement(service, monkeypatch):
     pipeline = SimpleNamespace(
         enable_vae_slicing=lambda: None, enable_vae_tiling=lambda: None,
-        enable_model_cpu_offload=lambda: None, _execution_device=SimpleNamespace(type='cpu'))
+        to=lambda _: None,
+        unet=SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device=SimpleNamespace(type='cpu'))])))
     monkeypatch.setattr(service, 'AutoPipelineForText2Image', SimpleNamespace(from_pretrained=lambda *args, **kwargs: pipeline))
     monkeypatch.setattr(service.torch, 'float16', 'fp16', raising=False)
     monkeypatch.setattr(service.torch.cuda, 'is_available', lambda: True, raising=False)
-    with pytest.raises(RuntimeError, match='CUDA execution'):
+    with pytest.raises(RuntimeError, match='entirely to CUDA'):
         service._load_pipeline('detail')
     assert service._pipeline is None and not service._readiness['ok']
 
@@ -352,3 +353,37 @@ def test_control_endpoint_validates_preset_and_preserves_legacy_empty_body(servi
     assert client.post("/models/load", json={"preset": "detail"}).status_code == 200
     assert client.post("/models/load", json={"preset": "unknown"}).status_code == 422
     assert calls == [None, "detail"]
+
+
+@pytest.mark.parametrize("flag", ["CPU_OFFLOAD", "DETAIL_CPU_OFFLOAD"])
+def test_cpu_offload_configuration_is_rejected_before_loading(service, monkeypatch, flag):
+    monkeypatch.setattr(service, flag, True)
+    monkeypatch.setattr(service.torch.cuda, "is_available", lambda: True, raising=False)
+    with pytest.raises(RuntimeError, match="CPU offload is disabled"):
+        service._load_pipeline("draft")
+    monkeypatch.setenv("IMAGEGEN_LAZY_LOAD", "true")
+    async def run():
+        with pytest.raises(RuntimeError, match="CPU offload is disabled"):
+            async with service.lifespan(service.app):
+                pytest.fail("Offload configuration must not become ready or parked")
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("component", ["unet", "vae", "text_encoder", "text_encoder_2"])
+@pytest.mark.parametrize("kind", ["parameter", "buffer"])
+def test_every_image_component_rejects_cpu_tensors(service, component, kind):
+    cuda = SimpleNamespace(device=SimpleNamespace(type="cuda"))
+    cpu = SimpleNamespace(device=SimpleNamespace(type="cpu"))
+    modules = {name: SimpleNamespace(parameters=lambda: iter([cuda]), buffers=lambda: iter([]))
+               for name in ["unet", "vae", "text_encoder", "text_encoder_2"]}
+    modules[component] = SimpleNamespace(
+        parameters=lambda: iter([cpu if kind == "parameter" else cuda]),
+        buffers=lambda: iter([cpu] if kind == "buffer" else []))
+    with pytest.raises(RuntimeError, match=f"Image component {component}"):
+        service._validate_pipeline_cuda(SimpleNamespace(**modules))
+
+
+def test_fully_cuda_image_components_pass_placement_validation(service):
+    cuda = SimpleNamespace(device=SimpleNamespace(type="cuda"))
+    module = SimpleNamespace(parameters=lambda: iter([cuda]), buffers=lambda: iter([cuda]))
+    service._validate_pipeline_cuda(SimpleNamespace(unet=module, vae=module, text_encoder=module, text_encoder_2=module))

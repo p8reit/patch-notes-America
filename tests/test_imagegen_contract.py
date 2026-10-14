@@ -19,7 +19,7 @@ def test_local_image_service_is_fail_closed_on_cuda():
 
 def test_local_image_service_defaults_to_full_cuda_placement():
     assert 'os.getenv("IMAGEGEN_CPU_OFFLOAD", "false")' in SERVER
-    assert 'pipeline.enable_model_cpu_offload()' in SERVER
+    assert 'pipeline.enable_model_cpu_offload()' not in SERVER
     assert 'pipeline.to("cuda")' in SERVER
 
 
@@ -68,3 +68,13 @@ def test_gpu_override_reserves_device_for_local_image_service():
     devices = compose["services"]["imagegen"]["deploy"]["resources"]["reservations"]["devices"]
 
     assert devices == [{"driver": "nvidia", "count": 1, "capabilities": ["gpu"]}]
+
+
+def test_image_compose_and_example_disable_cpu_offload():
+    for name in ["docker-compose.yml", "docker-compose.full.yml"]:
+        env = yaml.safe_load((ROOT / name).read_text())["services"]["imagegen"]["environment"]
+        assert env["IMAGEGEN_CPU_OFFLOAD"] == "${LOCAL_IMAGE_CPU_OFFLOAD:-false}"
+        assert env["IMAGEGEN_DETAIL_CPU_OFFLOAD"] == "${LOCAL_IMAGE_DETAIL_CPU_OFFLOAD:-false}"
+    example = (ROOT / ".env.example").read_text()
+    assert "LOCAL_IMAGE_CPU_OFFLOAD=false" in example
+    assert "LOCAL_IMAGE_DETAIL_CPU_OFFLOAD=false" in example
