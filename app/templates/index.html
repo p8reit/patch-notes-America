@@ -14,6 +14,12 @@
       <p class="lede">Build a character-driven podcast or create standalone artwork.</p>
     </header>
 
+    <section class="card" aria-labelledby="production-queue-title">
+      <h2 id="production-queue-title">Shared production queue</h2>
+      <p class="hint">Audio, images, and video run one job at a time, in submission order. A long job holds the queue until it finishes.</p>
+      <div id="production-queue-status" role="status" aria-live="polite">Loading queue…</div>
+    </section>
+
     <div class="workspace-tabs" role="tablist" aria-label="Production tools">
       <button id="podcast-tab" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="podcast-panel">Podcast Studio</button>
       <button id="image-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="image-panel" tabindex="-1">Image Studio</button>
@@ -1622,5 +1628,6 @@
     refreshSavedEpisodes().catch(err => { document.getElementById('episode-save-status').textContent = err.message; });
   </script>
   <script src="/static/video-studio.js"></script>
+  <script src="/static/production-queue.js"></script>
 </body>
 </html>
