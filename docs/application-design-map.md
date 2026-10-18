@@ -66,6 +66,7 @@ The application has three top-level tabs: **Video Studio** adds persistent scene
 
 ```text
 Production Studio
+├── Shared production queue (active job and FIFO waiting positions)
 ├── Podcast Studio
 │   ├── Services status card
 │   ├── Numbered workflow navigation
@@ -170,6 +171,21 @@ sequenceDiagram
 ```
 
 Jobs are filesystem-backed rather than browser-backed. On application startup, incomplete manifests are re-enqueued, valid completed chunks are reused, and a producer can leave and later return to the queue.
+
+`app/production_queue.py` provides one FIFO admission queue shared by audio,
+video and image features. Durable jobs reserve positions at enqueue time and
+keep admission for their entire processing/retry/cleanup lifecycle. Nested
+model leases reuse that turn. Only one job runs, independent of `JOB_WORKERS`
+and `GPU_MODEL_HANDOFF`; model handoffs still own authenticated memory cleanup
+and readiness. Startup merges recoverable audio/video work by `created_at`,
+then deterministic identifiers; manifests lacking valid timestamps recover
+first. Their existing schemas and cancellation/reuse rules remain intact.
+Synchronous images, previews, local planning and legacy render/clip routes also
+wait for admission, retaining their response contracts and in-memory lifetime.
+They require resubmission after restart. Chatterbox readiness still gates audio
+submission. `GET /api/production-queue` and the shared panel expose the active
+kind/ID and numbered waiting positions without changing existing job APIs.
+Coordination requires one app process/instance per GPU.
 
 Queued or running jobs can be cancelled from the queue. Cancellation is durable:
 cancelled jobs are not re-enqueued on startup or processed from stale queue
@@ -370,7 +386,7 @@ Update this map whenever a change introduces a new primary object, workflow stag
 
 `app/video.py` owns a separate versioned project schema and media library under `data/video/`. It snapshots finished audio hashes and the additive `video_timeline` (including mixed intro and music timing), without altering saved episode documents. `/api/video` exposes projects, assets, provider-selected scene images, and proof exports. `app/static/video-studio.js` provides editable scene cards, import provenance, media selection, trim/crop/motion controls, and a video preview. Exports require both B-roll and generated images. GPU image inference remains fail-closed.
 
-Full video exports use a separate persistent queue with atomic `job.json` snapshots under `data/video/exports/`. Active jobs recover on restart; cancelled jobs remain terminal. Content-addressed scene outputs survive retry and exports include caption/credits/chapter sidecars. The video queue never invokes TTS. Its lifecycle is started/stopped alongside the existing audio queue.
+Full video exports retain their persistent queue with atomic `job.json` snapshots under `data/video/exports/`, with execution admitted by the shared production FIFO. Active jobs recover on restart; cancelled jobs remain terminal. Content-addressed scene outputs survive retry and exports include caption/credits/chapter sidecars. Video rendering never invokes TTS. Its lifecycle is started/stopped alongside the audio queue, and recovered jobs enter the shared FIFO before dispatch begins.
 
 `app/video_automation.py` adds local-only visual planning, durable image batches, and bounded Pixabay/Pexels search/import. `app/gpu.py` serializes model ownership using token-authenticated `/models/load` and `/models/unload` endpoints on internal services, with no Docker daemon access. Compose shares a read-only control mount and parks images until CUDA loading and smoke testing complete. Locked scenes survive planning and concurrent edits are detected. Video Studio
 passes its validated image preset into the GPU lease. Imagegen's authenticated

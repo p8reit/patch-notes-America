@@ -33,7 +33,7 @@ from app.audio_utils import (
 )
 from app.video import router as video_router
 from app import video as video_studio
-from app import gpu, video_automation
+from app import gpu, video_automation, production_queue
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 EPISODES_DIR = Path(os.getenv("EPISODES_DIR", APP_ROOT / "episodes"))
@@ -1288,7 +1288,7 @@ async def generation_worker(worker_number: int) -> None:
     assert generation_queue is not None
     while True:
         job_id = await generation_queue.get()
-        task = asyncio.create_task(process_generation_job(job_id))
+        task = asyncio.create_task(production_queue.run(generation_queue, job_id, process_generation_job))
         generation_tasks[job_id] = task
         try:
             await task
@@ -1297,6 +1297,8 @@ async def generation_worker(worker_number: int) -> None:
             # Worker shutdown still propagates cancellation for restart recovery.
             if asyncio.current_task().cancelling():
                 raise
+        except Exception:
+            logger.exception("Audio worker could not process job %s; retaining remaining queue", job_id)
         finally:
             generation_tasks.pop(job_id, None)
             generation_queue.task_done()
@@ -1382,15 +1384,19 @@ async def queue_generation_job(job_id: str) -> None:
 async def start_generation_workers() -> None:
     """Start workers and recover work interrupted by a container restart."""
     global generation_queue
-    generation_queue = asyncio.Queue()
+    generation_queue = production_queue.JobQueue("audio")
     for number in range(JOB_WORKERS):
         generation_workers.append(asyncio.create_task(generation_worker(number + 1)))
 
+    recovered = []
     for manifest in sorted(OUTPUT_DIR.glob("*/job.json")):
         try:
             job = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        recovered.append((manifest, job))
+    recovered.sort(key=lambda item: production_queue.recovery_order(item[1].get("created_at"), item[0].parent.name))
+    for manifest, job in recovered:
         _migrate_job_manifest(job)
         if job.get("status") not in {"queued", "running"}:
             continue
@@ -1409,7 +1415,7 @@ async def start_generation_workers() -> None:
             chunk["audio_metrics"] = None
             chunk["error"] = None
         _write_job(manifest.parent, job)
-        await generation_queue.put(job["id"])
+        generation_queue.enqueue(job["id"], job.get("created_at"))
 
 
 async def stop_generation_workers() -> None:
@@ -1419,6 +1425,7 @@ async def stop_generation_workers() -> None:
     if generation_workers:
         await asyncio.gather(*generation_workers, return_exceptions=True)
     generation_workers.clear()
+    production_queue.close(generation_queue)
     generation_queue = None
 
 
@@ -1427,6 +1434,7 @@ async def application_lifespan(_app: FastAPI):
     gpu.initialize()
     await start_generation_workers()
     await video_studio.start_workers()
+    production_queue.scheduler().sort_recovery()
     try:
         yield
     finally:
@@ -1824,6 +1832,7 @@ def summarize_clip_art_errors(clips: list[dict[str, Any]]) -> str | None:
     return "; ".join(errors) if errors else None
 
 
+@production_queue.job("image")
 @gpu.model("image", lambda: CLIP_IMAGE_PROVIDER == "local")
 async def generate_clip_art(
     title: str,
@@ -2027,6 +2036,7 @@ async def index(request: Request):
 
 
 @app.post("/api/images/generations")
+@production_queue.job("image")
 @gpu.model("image", lambda: CLIP_IMAGE_PROVIDER == "local")
 async def create_standalone_image(
     prompt: str = Form(...),
@@ -2461,6 +2471,12 @@ async def create_generation_job(
     }
 
 
+@app.get("/api/production-queue")
+async def production_queue_status():
+    """Report the active production job and FIFO positions across features."""
+    return production_queue.scheduler().snapshot()
+
+
 @app.get("/api/generation-jobs")
 async def list_generation_jobs():
     """Return recent durable jobs so a browser can reconnect after being closed."""
@@ -2510,12 +2526,14 @@ async def cancel_generation_job(job_id: str):
     if task is not None:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+    production_queue.discard(generation_queue, job_id)
     _, job = _load_job(job_id)
     job["progress"] = _job_progress(job)
     return job
 
 
 @app.post("/api/generate")
+@production_queue.job("audio")
 async def generate(
     title: str = Form(...),
     script: str = Form(...),
@@ -2632,6 +2650,7 @@ async def clip_suggestions(episode_slug: str):
 
 
 @app.post("/api/episodes/{episode_slug}/clips")
+@production_queue.job("video")
 async def create_clip(
     episode_slug: str,
     start: float = Form(...),

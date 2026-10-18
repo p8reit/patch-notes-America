@@ -474,9 +474,45 @@ by default with an increasing delay. Configure `TTS_MAX_ATTEMPTS` and
 attempt and each completed chunk is written to `job.json`, so the Render queue
 continues to show useful progress during a slow CPU render.
 
-Set `JOB_WORKERS` above `1` only for a GPU-backed TTS service or a host known to
-have enough capacity. Run one Uvicorn application worker because the queue is
-process-local; multiple Uvicorn workers would each create a queue consumer.
+### Shared production FIFO
+
+Audio renders, Video Studio builds/exports/image batches, standalone images,
+scene images, previews, local planning, and custom clips share one FIFO
+admission queue. Only one production job runs at a time, even when
+`GPU_MODEL_HANDOFF=false` or `JOB_WORKERS` exceeds one. A durable job reserves
+its position when submitted, before a feature worker reaches inference. Its
+entire render, retries, model handoffs, and cleanup keep that turn; nested
+speech/image/encoding operations do not enqueue again. Long videos therefore
+delay short image or audio requests. Hosted image requests also use this queue.
+
+The **Shared production queue** panel above the studio tabs reports the running
+job and numbered waiting positions. `GET /api/production-queue` returns
+`concurrency`, `active` (`null` or `{kind, id}`), and `waiting` (`{kind, id,
+position}` entries). Existing audio/video panels retain job progress, errors,
+cancellation, and downloads. Waiting durable jobs remain `queued` until
+admitted. Existing Chatterbox readiness checks still apply to audio submission.
+
+Audio/video manifests remain the durable recovery source; no schema migration
+is needed. Startup restores their combined submission order using `created_at`,
+with deterministic IDs breaking ties. Legacy manifests without a usable
+timestamp recover first in deterministic order because their original order
+cannot be reconstructed. Completed speech chunks and prepared video assets
+retain their existing reuse rules. Cancelling a waiting job removes its
+reservation; cancelling running work releases admission after cleanup.
+Unexpected job errors do not stop later jobs from being dispatched.
+
+Standalone images, previews, manual scene images/planning, and legacy synchronous
+render/clip endpoints retain their request/response contracts. Their waiting
+requests are held in memory and are **not** recovered after an app restart;
+resubmit them if interrupted. Provider timeouts and existing bounded TTS retries
+remain in effect. The queue does not impose a new whole-job timeout or estimate
+completion times.
+
+Run one Uvicorn application worker and one app instance per shared GPU. Admission
+and model locks are process-local; this does not coordinate multiple replicas or
+external GPU clients. Serialization limits contention, but one model/job can
+still exceed VRAM. GPU handoff, CUDA checks, authentication, ports, and CPU/GPU
+deployment selection retain their existing behavior.
 
 ```text
 POST /api/generation-jobs

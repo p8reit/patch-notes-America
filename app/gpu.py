@@ -10,6 +10,8 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 
+from app import production_queue
+
 enabled = os.getenv("GPU_MODEL_HANDOFF", "false").lower() == "true"
 lock = asyncio.Lock()
 owner = ContextVar("gpu_owner", default=None)
@@ -121,6 +123,13 @@ def handoff_failure(exc: httpx.HTTPError) -> str:
 
 @asynccontextmanager
 async def lease(kind: str, image_preset: str | None = None):
+    async with production_queue.turn(kind):
+        async with _model_lease(kind, image_preset):
+            yield
+
+
+@asynccontextmanager
+async def _model_lease(kind: str, image_preset: str | None = None):
     if image_preset is not None and (kind != "image" or image_preset not in {"draft", "detail"}):
         raise ValueError("Image preset requires an image lease and must be draft or detail")
     if not enabled or owner.get() == kind:

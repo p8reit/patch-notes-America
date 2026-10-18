@@ -18,7 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from app import gpu
+from app import gpu, production_queue
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
@@ -343,6 +343,7 @@ async def image_lease(project: dict):
         yield
 
 
+@production_queue.job("image")
 async def generate_scene_asset(project: dict, scene: dict) -> dict:
     """Generate a snapshot asset; lease local CUDA only for local requests."""
     from app import main
@@ -427,6 +428,7 @@ async def command(arguments: list[str], cwd: Path) -> None:
         raise
 
 
+@production_queue.job("video")
 async def render(project: dict, destination: Path, start: float, end: float, aspect: str, preview: bool,
                  checkpoint: Any = None, encoder: str = "libx264", captions: str = "standard") -> None:
     scenes = await asyncio.to_thread(render_inputs, project, start, end)
@@ -617,6 +619,7 @@ async def cancel(job_id: str):
     if task:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+    production_queue.discard(queue, job_id)
     return await job_status(job_id)
 
 
@@ -685,7 +688,7 @@ async def process_job(identifier: str) -> None:
 async def consume() -> None:
     while True:
         identifier = await queue.get()
-        task = asyncio.create_task(process_job(identifier))
+        task = asyncio.create_task(production_queue.run(queue, identifier, process_job))
         tasks[identifier] = task
         try:
             await task
@@ -701,17 +704,21 @@ async def consume() -> None:
 
 async def start_workers() -> None:
     global queue, worker
-    queue = asyncio.Queue()
+    queue = production_queue.JobQueue("video")
+    recovered = []
     for path in (ROOT / "exports").glob("*/job.json"):
         try:
             job = read(path)
         except (ValueError,OSError):
             logger.warning("Unreadable video job manifest: %s",path)
             continue
+        recovered.append((path, job))
+    recovered.sort(key=lambda item: production_queue.recovery_order(item[1].get("created_at"), item[0].parent.name))
+    for path, job in recovered:
         if job["status"] in {"queued", "running"}:
             job.update(status="queued", phase="recovering")
             atomic(path, job)
-            await queue.put(job["id"])
+            queue.enqueue(job["id"], job.get("created_at"))
     worker = asyncio.create_task(consume())
 
 
@@ -721,4 +728,5 @@ async def stop_workers() -> None:
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
     worker = None
+    production_queue.close(queue)
     queue = None
