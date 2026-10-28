@@ -18,6 +18,14 @@ def test_episode_json_import_browser_behavior():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_episode_description_browser_behavior():
+    result = subprocess.run(
+        ["node", "--test", "tests/browser/episode_description.test.js"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_imported_episode_uses_existing_save_and_load_contract(tmp_path, monkeypatch):
     result = subprocess.run(
         ["node", "-e", """
@@ -42,6 +50,15 @@ process.stdout.write(JSON.stringify(parsed.episodes.map((episode, index) => impo
             assert restored[key] == imported[key]
         assert restored["hosts"][0]["id"] == imported["hosts"][0]["id"]
         assert restored["hosts"][0]["voice"] == "default"
+        description = subprocess.run(
+            ["node", "-e", """
+const fs = require('node:fs');
+const display = require('./app/static/episode-description.js');
+process.stdout.write(display.descriptionFromEpisode(JSON.parse(fs.readFileSync(0, 'utf8'))));
+"""], cwd=ROOT, input=json.dumps(restored), capture_output=True, text=True, check=True,
+        ).stdout
+        original_metadata = json.loads(imported["story_notes"].split("\n", 1)[1])
+        assert description == original_metadata["episode"].get("description", "")
     assert len(set(saved_ids)) == 2
     assert len(client.get("/api/saved-episodes").json()["episodes"]) == 2
     assert imported_episodes[0]["intro_lines"] == "A little light is back."

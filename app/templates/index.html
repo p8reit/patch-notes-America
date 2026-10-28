@@ -69,6 +69,15 @@
         Episode title
         <input id="episode-title" name="title" placeholder="My next great episode" required>
       </label>
+      <label for="episode-description">
+        Episode description
+        <textarea id="episode-description" rows="5" readonly aria-describedby="episode-description-help episode-description-status" placeholder="The imported episode description will appear here."></textarea>
+        <span id="episode-description-help" class="hint">Publishing copy from the episode JSON, available here when you import or load the episode.</span>
+      </label>
+      <div class="section-actions">
+        <button id="copy-episode-description" class="secondary" type="button" disabled aria-describedby="episode-description-status">Copy description</button>
+        <span id="episode-description-status" class="hint" role="status" aria-live="polite">No episode description available.</span>
+      </div>
       <details class="episode-json-import">
         <summary><strong>Import episode JSON</strong> — paste or upload episode details</summary>
         <p id="episode-json-help" class="hint">Manual entry is always available. Import a single episode, an array of episodes, or a schema_version 1.0 production document with an episodes array. Each episode needs title, host, and transcript. For multiple episodes, select which one to edit; no title is required on the production document. Cold open text fills the show-open controls. The host must match a profile in Cast. Import creates an editable, unsaved episode.</p>
@@ -477,6 +486,7 @@
   <script src="/static/research-packets.js"></script>
   <script src="/static/episode-editor-state.js"></script>
   <script src="/static/episode-json-import.js?v=2"></script>
+  <script src="/static/episode-description.js"></script>
   <script src="/static/workflow-navigation.js"></script>
   <script src="/static/render-queue-controls.js"></script>
   <script src="/static/image-creation-progress.js"></script>
@@ -509,6 +519,12 @@
     function reportStatus(element, message, error = false) {
       a11y.setStatus(element, message, {error});
     }
+
+    const episodeDescription = window.EpisodeDescription.init({
+      document,
+      reportStatus,
+      writeClipboard: navigator.clipboard ? (value) => navigator.clipboard.writeText(value) : null,
+    });
 
     const workspaceTabs = [document.getElementById('podcast-tab'), document.getElementById('image-tab'), document.getElementById('video-tab')];
     function selectWorkspace(tab) {
@@ -1352,6 +1368,7 @@
 
     function loadEpisodeIntoEditor(episode, episodeId) {
       document.querySelector('input[name="title"]').value = episode.title || '';
+      episodeDescription.show(episode);
       hostsContainer.replaceChildren();
       (episode.hosts || []).forEach(addHost);
       const packet = episode.research_packet || {};

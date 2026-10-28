@@ -431,6 +431,15 @@ Save the first imported episode before selecting and importing the next one.
 Changed JSON is read again before it can replace the editor, so an old selection
 cannot import details from an earlier document.
 
+The imported `description` is displayed below **Episode title** in a read-only
+**Episode description** box. Choose **Copy description** to reuse the text in
+your publishing platform. If automatic clipboard access is unavailable, the text
+is selected for copying with Ctrl+C or Cmd+C. Loading a saved imported episode
+restores this display from the description already retained in source notes;
+no saved-document migration is needed. Episodes without a description show an
+empty box, with copying disabled. Keep the imported source notes to retain the
+description for later publishing.
+
 To create a show open, select an **Intro track** and add **Host intro lines** using
 the same `[Host Name]` speaker tags as the main script. Leave **Play the host
 intro over the music** selected to start both together, and use **Music volume
