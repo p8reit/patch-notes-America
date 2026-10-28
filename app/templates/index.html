@@ -71,7 +71,7 @@
       </label>
       <details class="episode-json-import">
         <summary><strong>Import episode JSON</strong> — paste or upload episode details</summary>
-        <p id="episode-json-help" class="hint">Manual entry is always available. Import a single episode or a schema_version 1.0 document with an episodes array. Each episode needs title, host, and transcript. The host must match a profile in Cast. Import creates an editable, unsaved episode; it does not generate audio.</p>
+        <p id="episode-json-help" class="hint">Manual entry is always available. Import a single episode, an array of episodes, or a schema_version 1.0 production document with an episodes array. Each episode needs title, host, and transcript. For multiple episodes, select which one to edit; no title is required on the production document. Cold open text fills the show-open controls. The host must match a profile in Cast. Import creates an editable, unsaved episode.</p>
         <label for="episode-json-file">JSON file</label>
         <input id="episode-json-file" type="file" accept=".json,.txt,application/json,text/plain" aria-describedby="episode-json-help episode-json-status">
         <label for="episode-json-input">Episode JSON</label>
@@ -169,9 +169,9 @@
           <span class="hint">The full track is kept; the episode begins after both the track and spoken intro finish.</span>
         </label>
         <label>
-          Host intro lines
+          Cold open / host intro lines
           <textarea id="intro-lines" name="intro_lines" rows="6" placeholder="Welcome to the show.&#10;&#10;[Jordan Lee]&#10;Here is what we are covering today."></textarea>
-          <span class="hint">Use the same speaker-tag format as the episode script.</span>
+          <span class="hint">Use the same speaker-tag format as the episode script. JSON cold_open text appears here; an identical opening passage is separated from the imported main script to avoid duplicate speech.</span>
         </label>
       </details>
 
@@ -476,7 +476,7 @@
   <script src="/static/accessibility.js"></script>
   <script src="/static/research-packets.js"></script>
   <script src="/static/episode-editor-state.js"></script>
-  <script src="/static/episode-json-import.js"></script>
+  <script src="/static/episode-json-import.js?v=2"></script>
   <script src="/static/workflow-navigation.js"></script>
   <script src="/static/render-queue-controls.js"></script>
   <script src="/static/image-creation-progress.js"></script>
@@ -1645,6 +1645,7 @@
       confirmReplacement: (title) => editorState.confirmEpisodeReplacement(title),
       replaceEpisode(episode) {
         loadEpisodeIntoEditor(episode, '');
+        document.querySelector('.intro-section').open = Boolean(episode.intro_lines);
         document.getElementById('saved-episode-select').value = '';
         reportStatus(document.getElementById('episode-save-status'), 'Imported episode is unsaved. Review the fields, then choose Save episode.');
         document.getElementById('episode-title').focus();

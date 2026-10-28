@@ -57,17 +57,19 @@
     let document;
     try { document = JSON.parse(raw.replace(/^\uFEFF/, '')); }
     catch (error) { throw new Error(`Invalid or incomplete JSON. Check commas, quotes, and closing brackets. ${error.message}`); }
-    if (!isObject(document)) throw new Error('JSON must be an episode object or an object with an episodes array.');
-    if (document.schema_version !== undefined && document.schema_version !== '1.0') {
+    if (!isObject(document) && !Array.isArray(document)) throw new Error('JSON must be an episode object, an episodes array, or a production document with an episodes array.');
+    if (!Array.isArray(document) && document.schema_version !== undefined && document.schema_version !== '1.0') {
       throw new Error('Unsupported schema_version. Use "1.0".');
     }
-    const episodes = document.episodes === undefined ? [document] : document.episodes;
+    // Resolve the collection before validating individual titles. A production
+    // document does not need an episode title of its own.
+    const episodes = Array.isArray(document) ? document : document.episodes === undefined ? [document] : document.episodes;
     if (!Array.isArray(episodes) || !episodes.length) throw new Error('episodes must be a non-empty array.');
     episodes.forEach((episode, index) => {
       try { validateEpisode(episode); }
       catch (error) { throw new Error(`Episode ${index + 1}: ${error.message}`); }
     });
-    const shared = document.episodes === undefined ? {} : Object.fromEntries(
+    const shared = Array.isArray(document) || document.episodes === undefined ? {} : Object.fromEntries(
       Object.entries(document).filter(([key]) => key !== 'episodes'),
     );
     text(shared, 'editorial_direction');
@@ -75,6 +77,7 @@
   }
 
   function toEditor(parsed, index, hosts) {
+    if (!Number.isInteger(index) || index < 0) throw new Error('Choose an episode to import.');
     const episode = parsed.episodes[index];
     if (!episode) throw new Error('Choose an episode to import.');
     const name = episode.host.trim().toLowerCase();
@@ -86,10 +89,20 @@
     }
     const facts = episode.fact_check || {};
     const metadata = Object.fromEntries(Object.entries(episode).filter(([key]) => key !== 'transcript'));
+    const coldOpen = (episode.cold_open || '').trim();
+    const transcript = episode.transcript;
+    const spokenText = transcript.trimStart();
+    // Only remove an exact, complete opening passage. Do not remove similar
+    // words or an occurrence later in the script.
+    const openingIsRepeated = Boolean(coldOpen && spokenText.startsWith(coldOpen)
+      && (spokenText.length === coldOpen.length || /^\s/.test(spokenText.slice(coldOpen.length))));
+    const script = openingIsRepeated ? spokenText.slice(coldOpen.length).trimStart() : transcript;
+    // Keep the original source available when splitting it into editor fields.
+    if (openingIsRepeated) metadata.transcript = transcript;
     return {
       title: episode.title.trim(),
       hosts: [JSON.parse(JSON.stringify(matches[0]))],
-      script: episode.transcript,
+      script,
       research_packet: {
         episode_angle: episode.theme || episode.description || '',
         stories: [{
@@ -102,12 +115,13 @@
         }],
       },
       // Retain all production/episode metadata in an existing editable field.
-      // The transcript is already kept verbatim in script, including any open/close.
+      // Preserve the original transcript in notes when its opening was split out.
       story_notes: `Imported production and episode details:\n${JSON.stringify({production: parsed.shared, episode: metadata}, null, 2)}`,
       target_minutes: Math.round(episode.estimated_runtime_minutes ?? 8),
       conversation_tone: parsed.shared.editorial_direction || 'smart, funny, conversational, politically non-tribal',
       image_prompt: (episode.promotional_creative || {}).image_prompt || '',
-      intro_lines: '', intro_overlap: true, intro_music_volume: 0.25,
+      intro_lines: coldOpen,
+      intro_overlap: true, intro_music_volume: 0.25,
       performance: {version: 1, enabled: false, beats: []},
     };
   }
@@ -120,10 +134,12 @@
     const select = document.getElementById('episode-json-select');
     const status = document.getElementById('episode-json-status');
     let parsed = null;
+    let parsedRaw = '';
     let revision = 0;
 
     function clearSelection(message) {
       parsed = null;
+      parsedRaw = '';
       select.replaceChildren();
       select.disabled = true;
       importButton.disabled = true;
@@ -154,27 +170,48 @@
         if (currentRevision === revision || !fileInput.files.length) readButton.disabled = false;
       }
     });
-    readButton.addEventListener('click', () => {
+    function readJson() {
       clearSelection('Checking JSON…');
       try {
         parsed = parse(input.value);
+        parsedRaw = input.value;
+        if (parsed.episodes.length > 1) {
+          const placeholder = document.createElement('option');
+          placeholder.value = '';
+          placeholder.textContent = `Choose one of ${parsed.episodes.length} episodes…`;
+          select.appendChild(placeholder);
+        }
         parsed.episodes.forEach((episode, index) => {
           const option = document.createElement('option');
           option.value = String(index);
           option.textContent = `${index + 1}. ${episode.title} · ${episode.host}${episode.format ? ` · ${episode.format}` : ''}`;
           select.appendChild(option);
         });
-        select.value = '0';
+        select.value = parsed.episodes.length === 1 ? '0' : '';
         select.disabled = false;
-        importButton.disabled = false;
+        importButton.disabled = !select.value;
         reportStatus(status, `Found ${parsed.episodes.length} episode${parsed.episodes.length === 1 ? '' : 's'}. Choose one, then import it for review.`);
       } catch (error) {
         reportStatus(status, error.message, true);
         input.focus();
       }
+    }
+    readButton.addEventListener('click', readJson);
+    select.addEventListener('change', () => {
+      importButton.disabled = !parsed || select.value === '';
+      if (!importButton.disabled) {
+        const episode = parsed.episodes[Number(select.value)];
+        reportStatus(status, `Selected “${episode.title}”. Import this episode to edit its script and cold open. Other episodes remain available in the list.`);
+      }
     });
     importButton.addEventListener('click', () => {
       if (!parsed) return;
+      if (input.value !== parsedRaw) { readJson(); return; }
+      if (select.value === '') {
+        reportStatus(status, 'Choose an episode from the list before importing.', true);
+        select.focus();
+        return;
+      }
       try {
         const episode = toEditor(parsed, Number(select.value), getHosts());
         if (!confirmReplacement(episode.title)) {
@@ -182,7 +219,7 @@
           return;
         }
         replaceEpisode(episode);
-        reportStatus(status, `Imported “${episode.title}” as a new, unsaved episode. Review the cast, research, and script, then save. Cold open and closing are retained in notes; the transcript is used once.`);
+        reportStatus(status, `Imported “${episode.title}” as a new, unsaved episode. Review the cast, research, script, and cold open, then save. Other episodes remain available in the list.`);
       } catch (error) { reportStatus(status, error.message, true); }
     });
   }

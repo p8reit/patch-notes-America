@@ -8,12 +8,13 @@ const EditorState = require('../../app/static/episode-editor-state.js');
 const fixture = fs.readFileSync(path.join(__dirname, '../fixtures/episode-import.json'), 'utf8');
 const host = {id: 'a'.repeat(32), name: 'Wade Mercer', voice: 'wade.wav', tempo: 0.95, reference_audio_path: 'data/voices/wade/reference.wav'};
 
-test('production document maps selected episode and preserves transcript, source metadata, and voice identity', () => {
+test('production document maps selected episode, separates its cold open, and preserves source metadata and voice identity', () => {
   const parsed = Import.parse(fixture);
   const episode = Import.toEditor(parsed, 0, [host]);
   assert.equal(episode.title, parsed.episodes[0].title);
-  assert.equal(episode.script, parsed.episodes[0].transcript);
-  assert.equal(episode.intro_lines, '');
+  assert.equal(episode.script, "I'm Wade Mercer.\n\nThanks for listening.");
+  assert.equal(episode.intro_lines, 'A little light is back.');
+  assert.equal(`${episode.intro_lines}\n\n${episode.script}`, parsed.episodes[0].transcript);
   assert.deepEqual(episode.hosts, [host]);
   assert.notEqual(episode.hosts[0], host);
   assert.equal(episode.target_minutes, 15);
@@ -27,15 +28,46 @@ test('production document maps selected episode and preserves transcript, source
   assert.match(story.sources[0], /https:\/\/example.com\/report/);
   const metadata = JSON.parse(episode.story_notes.slice(episode.story_notes.indexOf('{')));
   assert.deepEqual(metadata.production, parsed.shared);
-  const {transcript, ...otherFields} = parsed.episodes[0];
-  assert.deepEqual(metadata.episode, otherFields);
+  assert.deepEqual(metadata.episode, parsed.episodes[0]);
   assert.equal(metadata.episode.sources[0].date, null);
   assert.equal(episode.performance.enabled, false);
   const second = Import.toEditor(parsed, 1, [host]);
   assert.equal(second.script, 'A second story.');
   assert.equal(second.image_prompt, '');
   assert.equal(second.target_minutes, 8);
+  assert.equal(second.intro_lines, '');
   assert.doesNotMatch(second.story_notes, /blinking light/);
+});
+
+test('wrapped production document and bare array both resolve two episodes without a collection title', () => {
+  const original = JSON.parse(fixture);
+  assert.equal(original.title, undefined);
+  for (const raw of [fixture, JSON.stringify(original.episodes)]) {
+    const parsed = Import.parse(raw);
+    assert.equal(parsed.episodes.length, 2);
+    for (let index = 0; index < 2; index += 1) {
+      const editor = Import.toEditor(parsed, index, [host]);
+      assert.equal(editor.title, original.episodes[index].title);
+      assert.equal(editor.intro_lines, original.episodes[index].cold_open || '');
+    }
+  }
+});
+
+test('cold open is editable when separate, repeated, absent, or the entire transcript', () => {
+  const base = {title: 'Cold open cases', host: host.name};
+  const cases = [
+    {cold_open: 'Opening.', transcript: 'Opening.\n\nMain script.', intro: 'Opening.', script: 'Main script.'},
+    {cold_open: 'Opening.', transcript: 'Main script.', intro: 'Opening.', script: 'Main script.'},
+    {cold_open: 'Open', transcript: 'Opening words.', intro: 'Open', script: 'Opening words.'},
+    {cold_open: 'Opening.', transcript: 'Opening.', intro: 'Opening.', script: ''},
+    {transcript: 'Main script.', intro: '', script: 'Main script.'},
+  ];
+  for (const {intro, script, ...input} of cases) {
+    const editor = Import.toEditor(Import.parse(JSON.stringify({...base, ...input})), 0, [host]);
+    assert.equal(editor.intro_lines, intro);
+    assert.equal(editor.script, script);
+    if (script !== input.transcript) assert.match(editor.story_notes, /"transcript":/);
+  }
 });
 
 test('single episode, BOM, string sources, and fractional runtime are supported', () => {
@@ -69,6 +101,9 @@ test('unknown and ambiguous hosts require explicit cast configuration', () => {
   const parsed = Import.parse(fixture);
   assert.throws(() => Import.toEditor(parsed, 0, []), /Add or rename a host in Cast/);
   assert.throws(() => Import.toEditor(parsed, 0, [host, {...host, id: 'b'.repeat(32)}]), /unique names/);
+  for (const index of [-1, 0.5, NaN, undefined, '']) {
+    assert.throws(() => Import.toEditor(parsed, index, [host]), /Choose an episode/);
+  }
 });
 
 function setup(confirm = () => true) {
@@ -101,6 +136,7 @@ function setup(confirm = () => true) {
     get replacements() { return replacements; },
     fire: (id, event = 'click') => elements.get(id).listeners[event](),
     read(raw = fixture) { elements.get('episode-json-input').value = raw; return this.fire('read-episode-json'); },
+    choose(index) { elements.get('episode-json-select').value = String(index); this.fire('episode-json-select', 'change'); },
   };
 }
 
@@ -109,19 +145,55 @@ test('read and select only preview JSON; importing the second episode leaves it 
   ui.read();
   assert.equal(ui.replacements, 0);
   const select = ui.elements.get('episode-json-select');
-  assert.equal(select.children.length, 2);
+  assert.equal(select.children.length, 3);
   assert.equal(select.disabled, false);
-  select.value = '1';
+  assert.equal(select.value, '');
+  assert.equal(ui.elements.get('import-episode-json').disabled, true);
+  ui.fire('import-episode-json');
+  assert.equal(ui.replacements, 0);
+  ui.choose(1);
   ui.fire('import-episode-json');
   assert.equal(ui.state.title, 'The second episode');
   assert.equal(ui.editorState.isDirty(), true);
   assert.match(ui.elements.get('episode-json-status').textContent, /unsaved episode/);
 });
 
+test('both episodes can be imported in sequence without mixing titles, scripts, or cold opens', () => {
+  for (const raw of [fixture, JSON.stringify(JSON.parse(fixture).episodes)]) {
+    const ui = setup();
+    ui.read(raw);
+    ui.choose(0);
+    ui.fire('import-episode-json');
+    assert.equal(ui.state.title, 'A little blinking light');
+    assert.equal(ui.state.intro_lines, 'A little light is back.');
+    assert.equal(ui.state.script, "I'm Wade Mercer.\n\nThanks for listening.");
+    ui.choose(1);
+    ui.fire('import-episode-json');
+    assert.equal(ui.state.title, 'The second episode');
+    assert.equal(ui.state.script, 'A second story.');
+    assert.equal(ui.state.intro_lines, '');
+    assert.equal(ui.replacements, 2);
+    assert.equal(ui.elements.get('episode-json-select').children.length, 3);
+  }
+});
+
+test('import reparses changed text rather than using an obsolete episode collection', () => {
+  const ui = setup();
+  ui.read();
+  ui.choose(0);
+  ui.elements.get('episode-json-input').value = JSON.stringify({title: 'New input', host: host.name, transcript: 'New words.'});
+  ui.fire('import-episode-json');
+  assert.equal(ui.replacements, 0);
+  ui.fire('import-episode-json');
+  assert.equal(ui.state.title, 'New input');
+  assert.equal(ui.state.script, 'New words.');
+});
+
 test('canceled replacement, validation errors, and changed JSON preserve manual work', () => {
   const ui = setup(() => false);
   ui.state = {...ui.state, script: 'Unsaved manual edit'};
   ui.read();
+  ui.choose(0);
   ui.fire('import-episode-json');
   assert.equal(ui.replacements, 0);
   assert.match(ui.elements.get('episode-json-status').textContent, /canceled/);
@@ -156,6 +228,7 @@ test('file read has loading, success and error states and ignores stale reads af
   await ui.fire('episode-json-file', 'change');
   assert.match(ui.elements.get('episode-json-status').textContent, /File ready/);
   ui.fire('read-episode-json');
+  ui.choose(0);
   assert.equal(ui.elements.get('import-episode-json').disabled, false);
   file.files = [{size: 3 * 1024 * 1024}];
   await ui.fire('episode-json-file', 'change');
@@ -170,15 +243,16 @@ test('file read has loading, success and error states and ignores stale reads af
 
 test('template integration imports as a new document without marking it saved', () => {
   const template = fs.readFileSync(path.join(__dirname, '../../app/templates/index.html'), 'utf8');
-  assert.match(template, /src="\/static\/episode-json-import.js"/);
+  assert.match(template, /src="\/static\/episode-json-import.js\?v=2"/);
   const start = template.indexOf('window.EpisodeJsonImport.init({');
   const end = template.indexOf('window.WorkflowNavigation.init', start);
   let options;
   const elements = new Map(['saved-episode-select', 'episode-save-status', 'episode-title'].map((id) => [id, {value: 'old', focus() { this.focused = true; }}]));
   let loaded;
+  const introSection = {open: false};
   vm.runInNewContext(template.slice(start, end), {
     window: {EpisodeJsonImport: {init: (value) => { options = value; }}},
-    document: {getElementById: (id) => elements.get(id)},
+    document: {getElementById: (id) => elements.get(id), querySelector: () => introSection},
     reportStatus: (element, message) => { element.textContent = message; },
     serializeHosts: () => [{...host, tempo: 1.2}], initialProfiles: [host],
     editorState: {confirmEpisodeReplacement: () => true},
@@ -192,4 +266,7 @@ test('template integration imports as a new document without marking it saved', 
   assert.equal(loaded.episode, episode);
   assert.equal(elements.get('saved-episode-select').value, '');
   assert.equal(elements.get('episode-title').focused, true);
+  assert.equal(introSection.open, true);
+  options.replaceEpisode(Import.toEditor(Import.parse(fixture), 1, [host]));
+  assert.equal(introSection.open, false);
 });
