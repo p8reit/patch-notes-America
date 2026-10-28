@@ -40,6 +40,13 @@ h1 { margin: 0; font-size: clamp(2.2rem, 6vw, 4.5rem); line-height: .95; }
 .episode-library-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .episode-library-controls select { min-width: 240px; }
 #episode-save-status { grid-column: 1 / -1; margin: 0; }
+.episode-json-import { margin-top: 20px; padding: 18px; border: 1px solid #30363d; border-radius: 12px; background: #0d1117; }
+.episode-json-import > summary { cursor: pointer; color: #c9d1d9; }
+.episode-json-import > label { margin-bottom: 8px; }
+.episode-json-import > input, .episode-json-import > textarea, .episode-json-import > select, .episode-json-import > button { margin-bottom: 18px; }
+.episode-json-import > select { min-width: 0; max-width: 100%; }
+#episode-json-input { font-family: ui-monospace, monospace; }
+#episode-json-status { margin-bottom: 0; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .episode-library { grid-template-columns: 1fr; } #episode-save-status { grid-column: auto; } }
 .status-card div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
 .ok { color: #3fb950; }

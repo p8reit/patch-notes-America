@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "show": "Patch Notes",
+  "production_date": "2026-10-28",
+  "production_timezone": "America/New_York",
+  "editorial_direction": "Light, entertaining, fact-checked",
+  "episodes": [
+    {
+      "episode_number": 1,
+      "format": "HOTFIX",
+      "theme": "Rediscovery and conservation",
+      "title": "A little blinking light",
+      "host": "Wade Mercer",
+      "cold_open": "A little light is back.",
+      "description": "A story about careful fieldwork.",
+      "transcript": "A little light is back.\n\nI'm Wade Mercer.\n\nThanks for listening.",
+      "closing": "Thanks for listening.",
+      "promotional_creative": {"image_prompt": "Fireflies over a meadow", "clip_prompt": "Animate a blinking light"},
+      "fact_check": {
+        "confirmed": ["An observation was documented."],
+        "uncertain_or_developing": ["Population size is unknown."],
+        "editorial_cautions": ["Avoid overstating recovery."]
+      },
+      "sources": [{"title": "Field report", "publisher": "Example", "date": null, "url": "https://example.com/report", "type": "primary"}],
+      "estimated_runtime_minutes": 15,
+      "transcript_word_count": 13,
+      "cold_open_estimated_seconds": 3,
+      "custom_producer_note": "Keep this extra field."
+    },
+    {"title": "The second episode", "host": "Wade Mercer", "transcript": "A second story."}
+  ]
+}
