@@ -69,6 +69,19 @@
         Episode title
         <input id="episode-title" name="title" placeholder="My next great episode" required>
       </label>
+      <details class="episode-json-import">
+        <summary><strong>Import episode JSON</strong> — paste or upload episode details</summary>
+        <p id="episode-json-help" class="hint">Manual entry is always available. Import a single episode or a schema_version 1.0 document with an episodes array. Each episode needs title, host, and transcript. The host must match a profile in Cast. Import creates an editable, unsaved episode; it does not generate audio.</p>
+        <label for="episode-json-file">JSON file</label>
+        <input id="episode-json-file" type="file" accept=".json,.txt,application/json,text/plain" aria-describedby="episode-json-help episode-json-status">
+        <label for="episode-json-input">Episode JSON</label>
+        <textarea id="episode-json-input" rows="10" spellcheck="false" aria-describedby="episode-json-help episode-json-status" placeholder='{"schema_version":"1.0","episodes":[{"title":"My episode","host":"Wade Mercer","transcript":"Welcome to Patch Notes."}]}'></textarea>
+        <button id="read-episode-json" class="secondary" type="button" aria-describedby="episode-json-status">Read JSON</button>
+        <label for="episode-json-select">Episode to import</label>
+        <select id="episode-json-select" disabled aria-describedby="episode-json-status"><option value="">Read JSON first…</option></select>
+        <button id="import-episode-json" class="secondary" type="button" disabled aria-describedby="episode-json-status">Import selected episode</button>
+        <p id="episode-json-status" class="hint" role="status" aria-live="polite">Paste JSON or choose a file (up to 2 MB), then choose Read JSON.</p>
+      </details>
       </section>
 
       <section id="stage-2" class="workflow-stage hosts-section" aria-labelledby="cast-title" data-workflow-stage>
@@ -463,6 +476,7 @@
   <script src="/static/accessibility.js"></script>
   <script src="/static/research-packets.js"></script>
   <script src="/static/episode-editor-state.js"></script>
+  <script src="/static/episode-json-import.js"></script>
   <script src="/static/workflow-navigation.js"></script>
   <script src="/static/render-queue-controls.js"></script>
   <script src="/static/image-creation-progress.js"></script>
@@ -1620,6 +1634,21 @@
       form: document.getElementById('episode-form'),
       serialize: serializeEditorState,
       confirm: window.confirm.bind(window),
+    });
+    window.EpisodeJsonImport.init({
+      document,
+      reportStatus,
+      getHosts: () => {
+        const current = serializeHosts();
+        return [...current, ...initialProfiles.filter((profile) => !current.some((host) => host.id === profile.id))];
+      },
+      confirmReplacement: (title) => editorState.confirmEpisodeReplacement(title),
+      replaceEpisode(episode) {
+        loadEpisodeIntoEditor(episode, '');
+        document.getElementById('saved-episode-select').value = '';
+        reportStatus(document.getElementById('episode-save-status'), 'Imported episode is unsaved. Review the fields, then choose Save episode.');
+        document.getElementById('episode-title').focus();
+      },
     });
     window.WorkflowNavigation.init({document, window});
     refreshVoices();

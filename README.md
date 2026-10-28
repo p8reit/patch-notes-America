@@ -357,6 +357,64 @@ survive application and container restarts with the existing `episodes/` bind
 mount. A restored intro track is also reused automatically when the episode is
 submitted for audio generation; it does not need to be uploaded again.
 
+### Import episode details from JSON
+
+Manual entry and AI drafting remain available. In **Episode setup**, expand
+**Import episode JSON**, paste JSON or upload a `.json`/`.txt` file (up to 2 MB),
+then choose **Read JSON**. Select an episode from the list and choose
+**Import selected episode**. A production document can contain multiple episodes:
+
+```json
+{
+  "schema_version": "1.0",
+  "show": "Patch Notes",
+  "production_date": "2026-10-28",
+  "production_timezone": "America/New_York",
+  "editorial_direction": "Light, entertaining, fact-checked",
+  "episodes": [
+    {
+      "title": "My next episode",
+      "host": "Wade Mercer",
+      "theme": "Why this story matters",
+      "transcript": "Welcome to Patch Notes.\n\nHere is today's story.",
+      "estimated_runtime_minutes": 15,
+      "promotional_creative": {"image_prompt": "An editorial photograph"},
+      "fact_check": {
+        "confirmed": ["A verified fact"],
+        "uncertain_or_developing": ["An unresolved question"],
+        "editorial_cautions": ["A framing caution"]
+      },
+      "sources": [{"title": "Source title", "url": "https://example.com"}]
+    }
+  ]
+}
+```
+
+A single episode object also works. Each episode requires non-empty `title`,
+`host`, and `transcript` strings. The host name must uniquely match an existing
+Cast profile (case-insensitive); configure a missing host and its voice before
+importing. Matching retains its identity, voice, and performance settings without
+saving changes to workspace profiles. Optional estimated runtime must be 2–60
+minutes and is rounded to the nearest whole minute; the default is 8 minutes.
+An image prompt is limited to 2000 characters.
+
+Import copies the transcript verbatim into the script, maps fact-check lists and
+sources into the research editor, and fills the image prompt and conversation
+tone. Shared production metadata and all episode fields except the transcript
+are retained in **Quick story / source notes**, including description, format,
+cold open, closing, promotional clip prompt, and extra producer fields. Cold open
+and closing are not automatically appended to the transcript or host intro; this
+avoids duplicate speech when they are already part of the transcript. Fact-check
+labels are imported as provided; the importer does not independently verify claims.
+
+Import validates the complete document before replacing editor content and uses
+the existing unsaved-edit warning. Invalid JSON or an unmatched host keeps the
+current episode intact. It creates a new, unsaved editor session, clears the old
+intro audio and performance beats, and leaves audio generation to the normal
+workflow. Review all fields and choose **Save episode** to retain the imported
+episode using the existing saved-document format. Other episodes in the JSON are
+available for subsequent imports; importing does not batch-save or render them.
+
 To create a show open, select an **Intro track** and add **Host intro lines** using
 the same `[Host Name]` speaker tags as the main script. Leave **Play the host
 intro over the music** selected to start both together, and use **Music volume
