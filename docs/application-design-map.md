@@ -27,7 +27,7 @@ Workspace
 
 ## 2. Experience map
 
-The product is a single, vertically scrolling production workspace organized into six numbered regions. A compact sticky navigation identifies the current region and links directly to each stage; on narrow screens it becomes a non-sticky, single-column list. The usual path is left-to-right below; users can also skip AI drafting and write a script directly.
+The product is a single, vertically scrolling production workspace organized into six numbered regions. A sticky side navigator identifies the current region on screens at least 1200px wide. On smaller screens it sits above the editor; on narrow screens it becomes a non-sticky, single-column list. The usual path is left-to-right below; users can also skip AI drafting and write a script directly.
 
 ```mermaid
 flowchart LR
@@ -105,8 +105,8 @@ Production Studio
 
 ### Responsive behavior and visual language
 
-- The workspace is constrained to `980px` and centered on a dark canvas.
-- Cards establish the major hierarchy; nested bordered panels group hosts, intros, and clip editing.
+- The workspace uses up to `1380px` on wide screens, with a 195px workflow navigator beside the podcast editor; below 1200px it returns to a centered `980px` layout.
+- Layered slate cards, compact headings and consistent controls establish the hierarchy; nested panels group host settings and optional tools. The script has a larger reading surface. Design references and rationale are recorded in [studio design reference](studio-design-reference.md).
 - Green is the primary action/success color, blue indicates active/informational state, red indicates destructive/error state, and muted gray supports secondary copy.
 - Multi-column host, queue, and clip controls collapse progressively at `900px`, `760px`, and `700px` breakpoints.
 - Native inputs, disclosure widgets, file pickers, and audio players keep the interaction model lightweight and accessible.
