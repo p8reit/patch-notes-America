@@ -74,6 +74,7 @@ Production Studio
 │   ├── 1. Episode setup
 │   ├── Episode file (load / save)
 │   ├── Episode title
+│   ├── Episode description (read-only publishing copy + copy action)
 │   ├── Optional JSON import (paste / file, episode selection, import for review)
 │   ├── 2. Cast
 │   │   └── Repeating host card
@@ -118,6 +119,7 @@ Production Studio
 - Dynamic workflow feedback is announced politely to assistive technology. Actionable validation and job failures use assertive alerts, identify their related fields, and move keyboard focus to the first invalid control; disabled actions expose their reason in adjacent text.
 - The browser compares the active episode, cast, research, show-open, image-prompt, and script fields with the last successfully loaded or saved snapshot. It warns before navigation or replacing that work with another episode or AI draft; it does not autosave episode or research documents.
 - Saving an episode persists its editable document and copies its uploaded intro track into that saved episode's directory.
+- Episode setup displays an imported description below the title with a copy action for publishing. Importing, loading, or starting an episode refreshes this read-only display from the production metadata already retained in source notes. Missing descriptions clear the display; unavailable clipboard access selects the text for manual copying. The saved-document format is unchanged.
 - Episode setup also accepts a single JSON episode, a bare episode array, or a schema-version 1.0 production document with multiple episodes. A collection needs no episode title of its own, and multiple episodes require explicit selection before import. Browser-only validation feeds the existing editor fields. Import reuses a uniquely matching host profile, maps fact checks/sources to research, and retains production metadata and promotional directions in source notes. The cold open fills the existing intro lines and reveals the show-open controls. An identical opening passage is separated from the main script, with the original transcript retained in notes. It starts a new unsaved session using the existing replacement warning and saved-document format; no import API, automatic save, or render is involved. Other episodes stay available in the import list. Manual entry and drafting remain available.
 - Host profiles are workspace-level entities. A host can use a legacy Chatterbox voice or a normalized, host-specific reference recording.
 - Voice preview is transient: it synthesizes sample text, returns WAV audio, and removes the preview artifact after the response is served.
