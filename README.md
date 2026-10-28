@@ -23,6 +23,10 @@ Initial podcast-production application for turning a narration script into a fin
 - Health endpoint showing whether the app can reach Chatterbox
 - Basic unit tests and GitHub Actions CI
 
+The production workspace uses a wide desktop editor with side navigation and a
+responsive stacked layout on smaller screens. See the [design references](docs/studio-design-reference.md)
+for the research and visual direction behind the interface.
+
 ## Architecture
 
 For a product-level view of the interface, workflows, data, APIs, and runtime

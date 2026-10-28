@@ -6,6 +6,20 @@ TEMPLATE = (ROOT / "app/templates/index.html").read_text(encoding="utf-8")
 STYLES = (ROOT / "app/static/styles.css").read_text(encoding="utf-8")
 
 
+def test_studio_theme_is_linked_and_available_as_a_local_asset():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    workspace = client.get("/")
+    assert workspace.status_code == 200
+    assert 'href="/static/studio-theme.css?v=1"' in workspace.text
+    theme = client.get("/static/studio-theme.css?v=1")
+    assert theme.status_code == 200
+    assert theme.headers["content-type"].startswith("text/css")
+    assert theme.text == (ROOT / "app/static/studio-theme.css").read_text(encoding="utf-8")
+
+
 def test_workspace_has_six_ordered_labeled_regions_and_navigation():
     labels = [
         "Episode setup", "Cast", "Research and draft", "Script and show open",
