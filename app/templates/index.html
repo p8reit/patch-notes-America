@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Patch Notes: America Production Studio</title>
   <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/studio-theme.css?v=1">
+  <link rel="stylesheet" href="/static/studio-theme.css?v=2">
 </head>
 <body>
   <main class="shell">
@@ -670,6 +670,8 @@
       ['#clip-title', 'The headline displayed on the rendered social clip.'],
     ];
 
+    let settingHelpSequence = 0;
+
     function addSettingInfo(root = document) {
       root.querySelectorAll('label').forEach((label) => {
         if (label.querySelector('.setting-info') || label.classList.contains('queue-control')) return;
@@ -679,7 +681,7 @@
         const labelText = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
         const settingName = labelText?.textContent.trim() || control.name || 'setting';
         const helpText = match?.[1] || `Choose the ${settingName.toLowerCase()} for this item.`;
-        const helpId = `setting-help-${crypto.randomUUID()}`;
+        const helpId = `setting-help-${++settingHelpSequence}`;
         const info = document.createElement('span');
         info.className = 'setting-info';
         info.innerHTML = `<button type="button" class="setting-info-button" aria-label="About ${escapeHtml(settingName)}" aria-describedby="${helpId}" aria-expanded="false">?</button><span id="${helpId}" class="setting-tooltip" role="tooltip">${escapeHtml(helpText)}</span>`;

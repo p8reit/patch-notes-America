@@ -83,3 +83,37 @@ test('healthy synthesis remains available when optional health diagnostics fail'
   assert.match(elements.get('health-details').textContent, /Health diagnostics could not be displayed/);
   assert.doesNotMatch(elements.get('progress').textContent, /generation is unavailable/);
 });
+
+test('help creation works without secure-context crypto and keeps tooltip IDs unique', () => {
+  function label() {
+    const control = {matches: () => false, name: 'example'};
+    return {
+      control, info: null, childNodes: [{nodeType: 3, textContent: 'Example setting'}],
+      classList: {contains: () => false},
+      querySelector(selector) { return selector === '.setting-info' ? this.info : control; },
+      insertBefore(info) { this.info = info; },
+    };
+  }
+  const labels = [label(), label()];
+  const context = {
+    document: {
+      querySelectorAll: () => labels,
+      createElement() {
+        return {querySelector: () => ({addEventListener() {}})};
+      },
+    },
+    Node: {TEXT_NODE: 3}, settingHelp: [], escapeHtml: (text) => text,
+    crypto: {},
+  };
+  const help = handler('let settingHelpSequence = 0;', 'function formatElapsed(');
+  vm.runInNewContext(`${help}; this.add = addSettingInfo;`, context);
+  context.add();
+  const first = labels[0].info;
+  assert.match(first.innerHTML, /id="setting-help-1"/);
+  assert.match(labels[1].info.innerHTML, /id="setting-help-2"/);
+  context.add();
+  assert.equal(labels[0].info, first);
+  const later = label();
+  context.add({querySelectorAll: () => [later]});
+  assert.match(later.info.innerHTML, /id="setting-help-3"/);
+});

@@ -13,8 +13,8 @@ def test_studio_theme_is_linked_and_available_as_a_local_asset():
     client = TestClient(app)
     workspace = client.get("/")
     assert workspace.status_code == 200
-    assert 'href="/static/studio-theme.css?v=1"' in workspace.text
-    theme = client.get("/static/studio-theme.css?v=1")
+    assert 'href="/static/studio-theme.css?v=2"' in workspace.text
+    theme = client.get("/static/studio-theme.css?v=2")
     assert theme.status_code == 200
     assert theme.headers["content-type"].startswith("text/css")
     assert theme.text == (ROOT / "app/static/studio-theme.css").read_text(encoding="utf-8")
