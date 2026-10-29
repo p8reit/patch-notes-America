@@ -16,6 +16,11 @@ layout adds working room without changing the document or render model. Below
 1200px, navigation returns above the editor; below 700px it becomes a static
 single-column list. Studio tabs retain their existing keyboard interaction.
 
+Compact help buttons retain their original 20px circular geometry and tooltip
+styles; the theme's large action-button rules exclude them. Tooltip IDs use a
+page-local sequence so help creation does not require secure-context-only browser
+APIs or prevent import initialization on HTTP deployments.
+
 Acceptance criteria: all existing controls and IDs remain available, hidden panels
 stay hidden, manual and JSON input remain available, and saved work, render
 submission, polling, cancellation and downloads retain their behavior. No pricing,

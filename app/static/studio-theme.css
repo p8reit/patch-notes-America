@@ -38,8 +38,8 @@ input:hover, textarea:hover, select:hover { border-color: #65748a; }
 input:focus, textarea:focus, select:focus { border-color: var(--studio-accent); }
 textarea { line-height: 1.75; }
 textarea[readonly] { color: #c2ccda; background: #151b23; }
-button, .download { border-radius: 8px; font-size: .86rem; min-height: 42px; background: #287849; }
-button:hover:not(:disabled), .download:hover { background: #328951; }
+button:not(.setting-info-button), .download { border-radius: 8px; font-size: .86rem; min-height: 42px; background: #287849; }
+button:not(.setting-info-button):hover:not(:disabled), .download:hover { background: #328951; }
 button.secondary { background: #252e3b; border-color: #46546a; color: #e1e7f0; }
 button.secondary:hover:not(:disabled) { background: #303d4f; border-color: #6b7f9a; }
 button.danger-link { background: transparent; }
