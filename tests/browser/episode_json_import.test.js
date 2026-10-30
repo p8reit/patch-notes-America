@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const Import = require('../../app/static/episode-json-import.js');
 const EditorState = require('../../app/static/episode-editor-state.js');
 const fixture = fs.readFileSync(path.join(__dirname, '../fixtures/episode-import.json'), 'utf8');
+const singleFixture = fs.readFileSync(path.join(__dirname, '../fixtures/episode-import-single.json'), 'utf8');
 const host = {id: 'a'.repeat(32), name: 'Wade Mercer', voice: 'wade.wav', tempo: 0.95, reference_audio_path: 'data/voices/wade/reference.wav'};
 
 test('production document maps selected episode, separates its cold open, and preserves source metadata and voice identity', () => {
@@ -50,6 +51,34 @@ test('wrapped production document and bare array both resolve two episodes witho
       assert.equal(editor.title, original.episodes[index].title);
       assert.equal(editor.intro_lines, original.episodes[index].cold_open || '');
     }
+  }
+});
+
+test('singular episode wrapper preserves production metadata and imports runtime alias', () => {
+  const original = JSON.parse(singleFixture);
+  const parsed = Import.parse(singleFixture);
+  assert.deepEqual(parsed.episodes, [original.episode]);
+  assert.deepEqual(parsed.shared, {schema_version: '1.0', show: original.show, production_date: original.production_date});
+  const editor = Import.toEditor(parsed, 0, [host]);
+  assert.equal(editor.title, original.episode.title);
+  assert.equal(editor.target_minutes, 11);
+  assert.equal(editor.intro_lines, original.episode.cold_open);
+  assert.equal(editor.script, 'Here is the main story.');
+  const metadata = JSON.parse(editor.story_notes.split('\n').slice(1).join('\n'));
+  assert.deepEqual(metadata.episode, original.episode);
+  parsed.episodes[0].estimated_runtime_minutes = 14;
+  assert.equal(Import.toEditor(parsed, 0, [host]).target_minutes, 14);
+});
+
+test('malformed and ambiguous episode wrappers and invalid runtime aliases fail before import', () => {
+  for (const episode of [null, [], 'text', 5]) {
+    assert.throws(() => Import.parse(JSON.stringify({episode})), /episode must be an object/);
+  }
+  const original = JSON.parse(singleFixture);
+  assert.throws(() => Import.parse(JSON.stringify({...original, episodes: [original.episode]})), /not both/);
+  for (const value of ['11.1', null, 0, 61]) {
+    original.episode.estimated_runtime_minutes_at_145_wpm = value;
+    assert.throws(() => Import.parse(JSON.stringify(original)), /estimated_runtime_minutes_at_145_wpm/);
   }
 });
 
@@ -177,6 +206,18 @@ test('both episodes can be imported in sequence without mixing titles, scripts, 
   }
 });
 
+test('read and import a singular wrapped episode without selecting a collection item', () => {
+  const ui = setup();
+  ui.read(singleFixture);
+  assert.equal(ui.elements.get('import-episode-json').disabled, false);
+  ui.fire('import-episode-json');
+  assert.equal(ui.state.title, 'The Freezer Went Rogue');
+  assert.equal(ui.state.target_minutes, 11);
+  assert.equal(ui.state.intro_lines, 'A cold chain gets a security check.');
+  assert.equal(ui.state.script, 'Here is the main story.');
+  assert.equal(ui.editorState.isDirty(), true);
+});
+
 test('import reparses changed text rather than using an obsolete episode collection', () => {
   const ui = setup();
   ui.read();
@@ -243,7 +284,7 @@ test('file read has loading, success and error states and ignores stale reads af
 
 test('template integration imports as a new document without marking it saved', () => {
   const template = fs.readFileSync(path.join(__dirname, '../../app/templates/index.html'), 'utf8');
-  assert.match(template, /src="\/static\/episode-json-import.js\?v=2"/);
+  assert.match(template, /src="\/static\/episode-json-import.js\?v=3"/);
   const start = template.indexOf('window.EpisodeJsonImport.init({');
   const end = template.indexOf('window.WorkflowNavigation.init', start);
   let options;

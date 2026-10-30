@@ -2,6 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import main
@@ -26,15 +27,16 @@ def test_episode_description_browser_behavior():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_imported_episode_uses_existing_save_and_load_contract(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fixture_name, expected_count", [("episode-import.json", 2), ("episode-import-single.json", 1)])
+def test_imported_episode_uses_existing_save_and_load_contract(tmp_path, monkeypatch, fixture_name, expected_count):
     result = subprocess.run(
         ["node", "-e", """
 const fs = require('node:fs');
 const importer = require('./app/static/episode-json-import.js');
-const parsed = importer.parse(fs.readFileSync('tests/fixtures/episode-import.json', 'utf8'));
+const parsed = importer.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const host = {id: 'a'.repeat(32), name: 'Wade Mercer', voice: 'default', tempo: 1};
 process.stdout.write(JSON.stringify(parsed.episodes.map((episode, index) => importer.toEditor(parsed, index, [host]))));
-"""], cwd=ROOT, capture_output=True, text=True, check=True,
+""", f"tests/fixtures/{fixture_name}"], cwd=ROOT, capture_output=True, text=True, check=True,
     )
     imported_episodes = json.loads(result.stdout)
     monkeypatch.setattr(main, "SAVED_EPISODES_DIR", tmp_path)
@@ -59,10 +61,10 @@ process.stdout.write(display.descriptionFromEpisode(JSON.parse(fs.readFileSync(0
         ).stdout
         original_metadata = json.loads(imported["story_notes"].split("\n", 1)[1])
         assert description == original_metadata["episode"].get("description", "")
-    assert len(set(saved_ids)) == 2
-    assert len(client.get("/api/saved-episodes").json()["episodes"]) == 2
-    assert imported_episodes[0]["intro_lines"] == "A little light is back."
-    assert "A little light is back." not in imported_episodes[0]["script"]
+    assert len(set(saved_ids)) == expected_count
+    assert len(client.get("/api/saved-episodes").json()["episodes"]) == expected_count
+    assert imported_episodes[0]["intro_lines"]
+    assert imported_episodes[0]["intro_lines"] not in imported_episodes[0]["script"]
 
 
 def test_imported_cold_open_is_spoken_once_before_main_script():

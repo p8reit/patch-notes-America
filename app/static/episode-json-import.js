@@ -28,10 +28,12 @@
     if (!isObject(episode)) throw new Error('Each episode must be an object.');
     ['title', 'host', 'transcript'].forEach((key) => text(episode, key, true));
     ['format', 'theme', 'cold_open', 'description', 'closing'].forEach((key) => text(episode, key));
-    if (episode.estimated_runtime_minutes !== undefined && (
-      typeof episode.estimated_runtime_minutes !== 'number' || !Number.isFinite(episode.estimated_runtime_minutes)
-      || episode.estimated_runtime_minutes < 2 || episode.estimated_runtime_minutes > 60
-    )) throw new Error('estimated_runtime_minutes must be a number between 2 and 60.');
+    ['estimated_runtime_minutes', 'estimated_runtime_minutes_at_145_wpm'].forEach((key) => {
+      if (episode[key] !== undefined && (
+        typeof episode[key] !== 'number' || !Number.isFinite(episode[key])
+        || episode[key] < 2 || episode[key] > 60
+      )) throw new Error(`${key} must be a number between 2 and 60.`);
+    });
     if (episode.promotional_creative !== undefined && !isObject(episode.promotional_creative)) {
       throw new Error('promotional_creative must be an object.');
     }
@@ -57,20 +59,25 @@
     let document;
     try { document = JSON.parse(raw.replace(/^\uFEFF/, '')); }
     catch (error) { throw new Error(`Invalid or incomplete JSON. Check commas, quotes, and closing brackets. ${error.message}`); }
-    if (!isObject(document) && !Array.isArray(document)) throw new Error('JSON must be an episode object, an episodes array, or a production document with an episodes array.');
+    if (!isObject(document) && !Array.isArray(document)) throw new Error('JSON must be an episode object, an episodes array, or a production document with episode or episodes.');
     if (!Array.isArray(document) && document.schema_version !== undefined && document.schema_version !== '1.0') {
       throw new Error('Unsupported schema_version. Use "1.0".');
     }
     // Resolve the collection before validating individual titles. A production
     // document does not need an episode title of its own.
-    const episodes = Array.isArray(document) ? document : document.episodes === undefined ? [document] : document.episodes;
+    const hasEpisode = Object.hasOwn(document, 'episode');
+    const hasEpisodes = Object.hasOwn(document, 'episodes');
+    if (hasEpisode && hasEpisodes) throw new Error('Use either episode or episodes in a production document, not both.');
+    if (hasEpisode && !isObject(document.episode)) throw new Error('episode must be an object.');
+    const episodes = Array.isArray(document) ? document
+      : hasEpisodes ? document.episodes : hasEpisode ? [document.episode] : [document];
     if (!Array.isArray(episodes) || !episodes.length) throw new Error('episodes must be a non-empty array.');
     episodes.forEach((episode, index) => {
       try { validateEpisode(episode); }
       catch (error) { throw new Error(`Episode ${index + 1}: ${error.message}`); }
     });
-    const shared = Array.isArray(document) || document.episodes === undefined ? {} : Object.fromEntries(
-      Object.entries(document).filter(([key]) => key !== 'episodes'),
+    const shared = Array.isArray(document) || (!hasEpisode && !hasEpisodes) ? {} : Object.fromEntries(
+      Object.entries(document).filter(([key]) => key !== 'episodes' && key !== 'episode'),
     );
     text(shared, 'editorial_direction');
     return {shared, episodes};
@@ -117,7 +124,7 @@
       // Retain all production/episode metadata in an existing editable field.
       // Preserve the original transcript in notes when its opening was split out.
       story_notes: `Imported production and episode details:\n${JSON.stringify({production: parsed.shared, episode: metadata}, null, 2)}`,
-      target_minutes: Math.round(episode.estimated_runtime_minutes ?? 8),
+      target_minutes: Math.round(episode.estimated_runtime_minutes ?? episode.estimated_runtime_minutes_at_145_wpm ?? 8),
       conversation_tone: parsed.shared.editorial_direction || 'smart, funny, conversational, politically non-tribal',
       image_prompt: (episode.promotional_creative || {}).image_prompt || '',
       intro_lines: coldOpen,
