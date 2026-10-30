@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "show": "Patch Notes America",
+  "production_date": "2026-10-29",
+  "episode": {
+    "episode_number": 1,
+    "title": "The Freezer Went Rogue",
+    "host": "Wade Mercer",
+    "cold_open": "A cold chain gets a security check.",
+    "description": "A publishing description for the episode.",
+    "transcript": "A cold chain gets a security check.\n\nHere is the main story.",
+    "estimated_runtime_minutes_at_145_wpm": 11.1,
+    "sources": [{"title": "Source report", "url": "https://example.com/report", "role": "Background context"}]
+  }
+}

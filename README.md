@@ -403,12 +403,31 @@ production document can contain multiple episodes:
 }
 ```
 
-A single episode object or a bare array of episode objects also works. Each episode requires non-empty `title`,
+A single episode object, a bare array of episode objects, or a production document
+with a singular `episode` object also works:
+
+```json
+{
+  "schema_version": "1.0",
+  "show": "Patch Notes America",
+  "production_date": "2026-10-29",
+  "episode": {
+    "title": "My next episode",
+    "host": "Wade Mercer",
+    "transcript": "Welcome to the show.",
+    "estimated_runtime_minutes_at_145_wpm": 11.1
+  }
+}
+```
+
+Use either `episode` or `episodes` in a production document, not both. Each episode requires non-empty `title`,
 `host`, and `transcript` strings. The host name must uniquely match an existing
 Cast profile (case-insensitive); configure a missing host and its voice before
 importing. Matching retains its identity, voice, and performance settings without
 saving changes to workspace profiles. Optional estimated runtime must be 2–60
 minutes and is rounded to the nearest whole minute; the default is 8 minutes.
+`estimated_runtime_minutes_at_145_wpm` is also accepted, with
+`estimated_runtime_minutes` taking precedence when both are supplied.
 An image prompt is limited to 2000 characters.
 
 Import fills the script, maps fact-check lists and

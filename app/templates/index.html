@@ -84,7 +84,7 @@
       </div>
       <details class="episode-json-import">
         <summary><strong>Import episode JSON</strong> — paste or upload episode details</summary>
-        <p id="episode-json-help" class="hint">Manual entry is always available. Import a single episode, an array of episodes, or a schema_version 1.0 production document with an episodes array. Each episode needs title, host, and transcript. For multiple episodes, select which one to edit; no title is required on the production document. Cold open text fills the show-open controls. The host must match a profile in Cast. Import creates an editable, unsaved episode.</p>
+        <p id="episode-json-help" class="hint">Manual entry is always available. Import a single episode, an array of episodes, or a schema_version 1.0 production document with an episode object or episodes array. Each episode needs title, host, and transcript. For multiple episodes, select which one to edit; no title is required on the production document. Cold open text fills the show-open controls. The host must match a profile in Cast. Import creates an editable, unsaved episode.</p>
         <label for="episode-json-file">JSON file</label>
         <input id="episode-json-file" type="file" accept=".json,.txt,application/json,text/plain" aria-describedby="episode-json-help episode-json-status">
         <label for="episode-json-input">Episode JSON</label>
@@ -489,7 +489,7 @@
   <script src="/static/accessibility.js"></script>
   <script src="/static/research-packets.js"></script>
   <script src="/static/episode-editor-state.js"></script>
-  <script src="/static/episode-json-import.js?v=2"></script>
+  <script src="/static/episode-json-import.js?v=3"></script>
   <script src="/static/episode-description.js"></script>
   <script src="/static/workflow-navigation.js"></script>
   <script src="/static/render-queue-controls.js"></script>
