@@ -428,6 +428,11 @@ saving changes to workspace profiles. Optional estimated runtime must be 2–60
 minutes and is rounded to the nearest whole minute; the default is 8 minutes.
 `estimated_runtime_minutes_at_145_wpm` is also accepted, with
 `estimated_runtime_minutes` taking precedence when both are supplied.
+Both runtime fields accept JSON numbers and decimal numeric strings, such as
+`58` or `"58"` and `11.1` or `"11.1"`. Surrounding whitespace is ignored for
+numeric strings. Values must still be between 2 and 60; unit labels such as
+`"58 minutes"`, empty strings, and non-numeric values are rejected. Original
+values remain in source-note metadata; the editor receives a whole-minute number.
 An image prompt is limited to 2000 characters.
 
 Import fills the script, maps fact-check lists and

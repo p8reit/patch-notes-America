@@ -9,7 +9,7 @@
     "cold_open": "A cold chain gets a security check.",
     "description": "A publishing description for the episode.",
     "transcript": "A cold chain gets a security check.\n\nHere is the main story.",
-    "estimated_runtime_minutes_at_145_wpm": 11.1,
+    "estimated_runtime_minutes_at_145_wpm": "11.1",
     "sources": [{"title": "Source report", "url": "https://example.com/report", "role": "Background context"}]
   }
 }
