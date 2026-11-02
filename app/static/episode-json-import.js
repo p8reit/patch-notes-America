@@ -24,16 +24,22 @@
     return value;
   }
 
+  function runtimeMinutes(episode, key) {
+    const value = episode[key];
+    if (value === undefined) return undefined;
+    const numeric = typeof value === 'string' && /^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value.trim())
+      ? Number(value.trim()) : value;
+    if (typeof numeric !== 'number' || !Number.isFinite(numeric) || numeric < 2 || numeric > 60) {
+      throw new Error(`${key} must be a number or numeric string between 2 and 60.`);
+    }
+    return numeric;
+  }
+
   function validateEpisode(episode) {
     if (!isObject(episode)) throw new Error('Each episode must be an object.');
     ['title', 'host', 'transcript'].forEach((key) => text(episode, key, true));
     ['format', 'theme', 'cold_open', 'description', 'closing'].forEach((key) => text(episode, key));
-    ['estimated_runtime_minutes', 'estimated_runtime_minutes_at_145_wpm'].forEach((key) => {
-      if (episode[key] !== undefined && (
-        typeof episode[key] !== 'number' || !Number.isFinite(episode[key])
-        || episode[key] < 2 || episode[key] > 60
-      )) throw new Error(`${key} must be a number between 2 and 60.`);
-    });
+    ['estimated_runtime_minutes', 'estimated_runtime_minutes_at_145_wpm'].forEach((key) => runtimeMinutes(episode, key));
     if (episode.promotional_creative !== undefined && !isObject(episode.promotional_creative)) {
       throw new Error('promotional_creative must be an object.');
     }
@@ -124,7 +130,7 @@
       // Retain all production/episode metadata in an existing editable field.
       // Preserve the original transcript in notes when its opening was split out.
       story_notes: `Imported production and episode details:\n${JSON.stringify({production: parsed.shared, episode: metadata}, null, 2)}`,
-      target_minutes: Math.round(episode.estimated_runtime_minutes ?? episode.estimated_runtime_minutes_at_145_wpm ?? 8),
+      target_minutes: Math.round(runtimeMinutes(episode, 'estimated_runtime_minutes') ?? runtimeMinutes(episode, 'estimated_runtime_minutes_at_145_wpm') ?? 8),
       conversation_tone: parsed.shared.editorial_direction || 'smart, funny, conversational, politically non-tribal',
       image_prompt: (episode.promotional_creative || {}).image_prompt || '',
       intro_lines: coldOpen,

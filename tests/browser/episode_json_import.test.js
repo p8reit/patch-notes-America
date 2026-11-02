@@ -76,9 +76,30 @@ test('malformed and ambiguous episode wrappers and invalid runtime aliases fail 
   }
   const original = JSON.parse(singleFixture);
   assert.throws(() => Import.parse(JSON.stringify({...original, episodes: [original.episode]})), /not both/);
-  for (const value of ['11.1', null, 0, 61]) {
+  for (const value of ['11 minutes', '', null, 0, 61]) {
     original.episode.estimated_runtime_minutes_at_145_wpm = value;
     assert.throws(() => Import.parse(JSON.stringify(original)), /estimated_runtime_minutes_at_145_wpm/);
+  }
+});
+
+test('decimal numeric strings normalize for both runtime fields without changing source metadata', () => {
+  for (const key of ['estimated_runtime_minutes', 'estimated_runtime_minutes_at_145_wpm']) {
+    for (const value of ['58', ' 11.1 ', '2', '60', 58]) {
+      const input = {title: 'Runtime import', host: host.name, transcript: 'Main script.', [key]: value};
+      const editor = Import.toEditor(Import.parse(JSON.stringify(input)), 0, [host]);
+      assert.equal(editor.target_minutes, Math.round(Number(value)));
+      const metadata = JSON.parse(editor.story_notes.split('\n').slice(1).join('\n'));
+      assert.equal(metadata.episode[key], value);
+    }
+  }
+});
+
+test('invalid numeric strings cannot bypass duration bounds or coerce non-numeric values', () => {
+  for (const key of ['estimated_runtime_minutes', 'estimated_runtime_minutes_at_145_wpm']) {
+    for (const value of ['', ' ', '58 minutes', '1.9', '60.1', 'Infinity', 'NaN', '0x3a', '5e1', null, true, [], {}]) {
+      const input = {title: 'Runtime import', host: host.name, transcript: 'Main script.', [key]: value};
+      assert.throws(() => Import.parse(JSON.stringify(input)), /between 2 and 60/);
+    }
   }
 });
 
@@ -115,7 +136,7 @@ test('malformed, incomplete, oversized, and incompatible JSON is rejected', () =
   }
   const cases = [
     ['title', ''], ['host', null], ['transcript', 5], ['estimated_runtime_minutes', 61],
-    ['estimated_runtime_minutes', '15'], ['estimated_runtime_minutes', 0],
+    ['estimated_runtime_minutes', '15 minutes'], ['estimated_runtime_minutes', 0],
     ['promotional_creative', []], ['promotional_creative', {image_prompt: 'x'.repeat(2001)}],
     ['fact_check', {confirmed: 'not a list'}], ['fact_check', {editorial_cautions: [true]}],
     ['sources', [false]], ['sources', [{url: 5}]], ['sources', {}],
@@ -284,7 +305,7 @@ test('file read has loading, success and error states and ignores stale reads af
 
 test('template integration imports as a new document without marking it saved', () => {
   const template = fs.readFileSync(path.join(__dirname, '../../app/templates/index.html'), 'utf8');
-  assert.match(template, /src="\/static\/episode-json-import.js\?v=3"/);
+  assert.match(template, /src="\/static\/episode-json-import.js\?v=4"/);
   const start = template.indexOf('window.EpisodeJsonImport.init({');
   const end = template.indexOf('window.WorkflowNavigation.init', start);
   let options;
